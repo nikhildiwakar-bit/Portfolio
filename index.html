@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Portfolio of Nikhil Diwakar" />
+  <title>Nikhil Diwakar | Portfolio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="nav">
+    <div class="container nav-inner">
+      <a href="#home" class="logo">ND<span>.</span></a>
+      <button class="menu-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
+      <nav>
+        <ul class="nav-links">
+          <li><a href="#about">About</a></li>
+          <li><a href="#skills">Skills</a></li>
+          <li><a href="#projects">Projects</a></li>
+          <li><a href="#experience">Experience</a></li>
+          <li><a href="#contact">Contact</a></li>
+          <li><button class="theme-toggle" aria-label="Toggle dark mode">🌙</button></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section id="home" class="hero">
+      <div class="container">
+        <p class="eyebrow">Hi, my name is</p>
+        <h1>Nikhil Diwakar.</h1>
+        <h2 class="typed">I build <span id="typed-text"></span><span class="cursor">|</span></h2>
+        <p class="lead">I'm a developer based in Surat, India, who enjoys turning ideas into clean, useful, and well-crafted digital experiences.</p>
+        <div class="hero-cta">
+          <a href="#projects" class="btn btn-primary">View My Work</a>
+          <a href="#contact" class="btn btn-outline">Get In Touch</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="about" class="section reveal">
+      <div class="container about-grid">
+        <div>
+          <h2 class="section-title">About Me</h2>
+          <p>I'm passionate about technology and problem solving. I love learning new tools, building projects end to end, and writing code that is easy to read and maintain.</p>
+          <p>When I'm not coding, you'll find me exploring new ideas, reading, or helping others learn. <em>(Edit this section in <code>index.html</code> to tell your story.)</em></p>
+        </div>
+        <div class="avatar" aria-hidden="true">ND</div>
+      </div>
+    </section>
+
+    <section id="skills" class="section alt reveal">
+      <div class="container">
+        <h2 class="section-title">Skills</h2>
+        <div class="skills-grid">
+          <div class="card"><h3>Frontend</h3><ul class="tags"><li>HTML</li><li>CSS</li><li>JavaScript</li><li>React</li></ul></div>
+          <div class="card"><h3>Backend</h3><ul class="tags"><li>Node.js</li><li>Python</li><li>SQL</li><li>REST APIs</li></ul></div>
+          <div class="card"><h3>Tools</h3><ul class="tags"><li>Git</li><li>GitHub</li><li>VS Code</li><li>Figma</li></ul></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="projects" class="section reveal">
+      <div class="container">
+        <h2 class="section-title">Projects</h2>
+        <div class="filters">
+          <button class="filter active" data-filter="all">All</button>
+          <button class="filter" data-filter="web">Web</button>
+          <button class="filter" data-filter="app">App</button>
+          <button class="filter" data-filter="tool">Tool</button>
+        </div>
+        <div class="projects-grid" id="projects-grid"></div>
+      </div>
+    </section>
+
+    <section id="experience" class="section alt reveal">
+      <div class="container">
+        <h2 class="section-title">Experience &amp; Education</h2>
+        <ol class="timeline">
+          <li><span class="date">2024 – Present</span><h3>Your Role · Company</h3><p>Describe what you worked on and the impact you made.</p></li>
+          <li><span class="date">2022 – 2024</span><h3>Previous Role · Company</h3><p>Key responsibilities and achievements.</p></li>
+          <li><span class="date">2018 – 2022</span><h3>Degree · University</h3><p>Relevant coursework, honors, or activities.</p></li>
+        </ol>
+      </div>
+    </section>
+
+    <section id="contact" class="section reveal">
+      <div class="container contact">
+        <h2 class="section-title">Get In Touch</h2>
+        <p>Have a project in mind or just want to say hello? My inbox is always open.</p>
+        <form class="contact-form" id="contact-form">
+          <input type="text" name="name" placeholder="Your name" required />
+          <input type="email" name="email" placeholder="Your email" required />
+          <textarea name="message" rows="5" placeholder="Your message" required></textarea>
+          <button type="submit" class="btn btn-primary">Send Message</button>
+        </form>
+        <div class="socials">
+          <a href="https://github.com/nikhildiwakar-bit" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://www.linkedin.com/" target="_blank" rel="noopener">LinkedIn</a>
+          <a href="mailto:you@example.com">Email</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>© <span id="year"></span> Nikhil Diwakar. Built with HTML, CSS &amp; JavaScript.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
