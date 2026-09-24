@@ -31,9 +31,10 @@ dono par yahi ek app lagegi.
 Demo mein Back/Home/volume jaise remote buttons sirf message dikhate hain; yeh asli TV par hi chalte hain.
 
 ## Step 1: APK download karein
-1. GitHub par repo → **Actions** → **Build Office TV app** → sabse upar wala green run kholein.
-2. Neeche **Artifacts** mein **OfficeTV-apk** download karein (zip milega; usme `OfficeTV.apk` hai).
-3. `OfficeTV.apk` ko pen drive mein copy karein.
+Direct link (login nahi chahiye):
+**https://github.com/nikhildiwakar-bit/Portfolio/releases/download/tv-app-latest/OfficeTV.apk**
+
+Yeh link TV ke browser mein seedha khol kar bhi download kar sakte hain, ya PC se download karke pen drive mein copy karein.
 
 ## Step 2: TV par install karein (dono TVs par)
 1. Pen drive TV mein lagayein aur TV ka **File Manager** kholein.

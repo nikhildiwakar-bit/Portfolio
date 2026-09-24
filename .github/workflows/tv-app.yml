@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -36,3 +36,15 @@ jobs:
         with:
           name: OfficeTV-apk
           path: OfficeTV.apk
+
+      # Fixed public link: .../releases/download/tv-app-latest/OfficeTV.apk
+      - name: Publish download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete tv-app-latest --yes --cleanup-tag || true
+          gh release create tv-app-latest OfficeTV.apk \
+            --target "${{ github.sha }}" \
+            --title "Office TV app (latest)" \
+            --notes "TV par install karne ke liye OfficeTV.apk download karein. Steps: tv-app/README.md"
