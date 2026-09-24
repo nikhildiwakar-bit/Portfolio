@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#4f46e5">
+<title>Office TV Remote</title>
+<style>
+:root {
+  --bg: #f4f6fb; --card: #ffffff; --text: #111827; --muted: #6b7280; --border: #e5e7eb;
+  --primary: #4f46e5; --primary-soft: #eef2ff; --ok: #15803d; --ok-soft: #dcfce7;
+  --bad: #b91c1c; --bad-soft: #fee2e2; --warn-soft: #fef3c7; --warn: #92400e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1120; --card: #151e33; --text: #e5e7eb; --muted: #94a3b8; --border: #26324d;
+    --primary: #818cf8; --primary-soft: #1e2748; --ok: #4ade80; --ok-soft: #12301f;
+    --bad: #f87171; --bad-soft: #3b1515; --warn-soft: #3a2a0c; --warn: #fbbf24;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+.wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 96px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+h1 { font-size: 1.15rem; margin: 0; }
+.sub { color: var(--muted); font-size: .85rem; }
+.pill { font-size: .8rem; padding: 4px 10px; border-radius: 999px; white-space: nowrap; background: var(--bad-soft); color: var(--bad); }
+.pill.on { background: var(--ok-soft); color: var(--ok); }
+.banner { background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: .88rem; margin-bottom: 12px; display: none; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+.card h2 { font-size: .95rem; margin: 0 0 10px; }
+.row { display: flex; gap: 8px; }
+input[type=text] {
+  flex: 1; min-width: 0; padding: 12px; font: inherit; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+}
+button {
+  font: inherit; border: 1px solid var(--primary); background: var(--primary); color: #fff;
+  border-radius: 10px; padding: 11px 14px; cursor: pointer; touch-action: manipulation;
+}
+button.soft { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
+button:active { transform: scale(.97); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chips button { padding: 6px 12px; font-size: .85rem; border-radius: 999px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.grid button { padding: 14px 6px; font-size: .95rem; }
+.grid.media button { font-size: 1.4rem; padding: 8px 6px; }
+.label { font-size: .8rem; color: var(--muted); margin: 12px 0 6px; }
+.vol { display: flex; align-items: center; gap: 10px; }
+.vol input { flex: 1; accent-color: var(--primary); }
+.file-pick { display: block; border: 2px dashed var(--border); border-radius: 12px; padding: 18px; text-align: center; color: var(--muted); cursor: pointer; }
+.file-pick input { display: none; }
+progress { width: 100%; height: 8px; margin-top: 10px; display: none; accent-color: var(--primary); }
+.list { list-style: none; margin: 10px 0 0; padding: 0; }
+.list li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); font-size: .9rem; }
+.list li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.list button { padding: 6px 10px; font-size: .82rem; }
+.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 10px; }
+.apps button { font-size: .85rem; padding: 10px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.switch input { width: 22px; height: 22px; accent-color: var(--primary); }
+#toast {
+  position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 608px; margin: 0 auto;
+  padding: 12px 14px; border-radius: 12px; font-size: .92rem; background: var(--text); color: var(--bg);
+  opacity: 0; transform: translateY(12px); transition: .2s; pointer-events: none;
+}
+#toast.show { opacity: 1; transform: none; }
+#toast.bad { background: var(--bad); color: #fff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="tvName">📺 Office TV</h1>
+      <div class="sub" id="tvSub">Phone se TV chalayein</div>
+    </div>
+    <span class="pill" id="pill">Connect ho raha…</span>
+  </header>
+
+  <div class="banner" id="banner">
+    TV par abhi ek permission baaki hai. TV par <b>Office TV</b> app kholein aur
+    <b>Accessibility</b> on karein, warna links/files TV par nahi khulenge.
+  </div>
+
+  <section class="card">
+    <h2>🔗 Link / Meeting / Website kholo</h2>
+    <form class="row" id="openForm">
+      <input type="text" id="url" placeholder="https://meet.google.com/... ya koi website" inputmode="url" autocomplete="off">
+      <button>Kholo</button>
+    </form>
+    <div class="chips">
+      <button class="soft" data-url="https://www.youtube.com">YouTube</button>
+      <button class="soft" data-url="https://meet.google.com">Google Meet</button>
+      <button class="soft" data-url="https://zoom.us/join">Zoom</button>
+      <button class="soft" data-url="https://teams.microsoft.com">Teams</button>
+      <button class="soft" data-url="https://www.google.com">Google</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>▶️ YouTube</h2>
+    <form class="row" id="ytForm">
+      <input type="text" id="yt" placeholder="Video ka naam ya YouTube link" autocomplete="off">
+      <button>Chalao</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>📄 PPT / PDF / Photo / Video dikhao</h2>
+    <label class="file-pick">
+      <input type="file" id="file" accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,image/*,video/*,audio/*">
+      <span id="fileLabel">Yahan tap karke file chuniye — TV par apne aap khul jayegi</span>
+    </label>
+    <progress id="prog" max="100" value="0"></progress>
+    <ul class="list" id="files"></ul>
+  </section>
+
+  <section class="card">
+    <h2>🎮 Remote</h2>
+    <div class="label">Slide / Page</div>
+    <div class="grid">
+      <button class="soft" data-key="prev_slide">◀ Peeche</button>
+      <button class="soft" data-key="scroll_up">▲ Upar</button>
+      <button class="soft" data-key="next_slide">Aage ▶</button>
+      <button class="soft" data-key="back">↩ Back</button>
+      <button class="soft" data-key="scroll_down">▼ Neeche</button>
+      <button class="soft" data-key="home">⌂ Home</button>
+    </div>
+    <div class="label">Media</div>
+    <div class="grid media">
+      <button class="soft" data-key="previous">⏮</button>
+      <button class="soft" data-key="play_pause">⏯</button>
+      <button class="soft" data-key="next">⏭</button>
+    </div>
+    <div class="label">Volume</div>
+    <div class="vol">
+      <button class="soft" data-key="mute" aria-label="Mute">🔇</button>
+      <button class="soft" data-key="volume_down" aria-label="Volume kam">−</button>
+      <input type="range" id="vol" min="0" max="100" step="5" value="30" aria-label="Volume">
+      <button class="soft" data-key="volume_up" aria-label="Volume zyada">+</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>📱 TV ki apps</h2>
+    <button class="soft" id="loadApps">Apps dikhao</button>
+    <div class="apps" id="apps"></div>
+  </section>
+
+  <section class="card">
+    <h2>💡 Screen</h2>
+    <div class="switch">
+      <span>Screen hamesha on rakho</span>
+      <input type="checkbox" id="awake" checked>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="soft" data-key="wake">Screen jagao</button>
+      <button class="soft" data-key="recents">Recent apps</button>
+    </div>
+  </section>
+</div>
+<div id="toast" role="status"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function save(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+const qs = new URLSearchParams(location.search);
+let pin = qs.get('pin') || load('officetv-pin') || '';
+if (qs.get('pin')) { save('officetv-pin', pin); history.replaceState(null, '', location.pathname); }
+
+let toastTimer;
+function toast(msg, ok = true) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (ok ? '' : ' bad');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ''; }, 3500);
+}
+
+function askPin() {
+  const p = prompt('TV screen par dikh raha 4 number ka PIN daalein:');
+  if (p) { pin = p.trim(); save('officetv-pin', pin); }
+  return !!p;
+}
+
+async function api(path, body) {
+  const opt = { method: body === undefined ? 'GET' : 'POST', headers: { 'X-Pin': pin } };
+  if (body !== undefined) {
+    opt.headers['Content-Type'] = 'application/json; charset=utf-8';
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opt);
+  if (r.status === 401) {
+    if (askPin()) return api(path, body);
+    throw new Error('PIN chahiye');
+  }
+  return r.json();
+}
+
+async function act(path, body) {
+  try {
+    const r = await api(path, body);
+    toast(r.msg || 'Done', r.ok !== false);
+    if (r.ok === false) refreshStatus();
+    return r;
+  } catch (e) {
+    toast('TV se connect nahi ho paya. Phone aur TV ek hi Wi-Fi par hain?', false);
+  }
+}
+
+async function refreshStatus() {
+  try {
+    const s = await api('/api/status');
+    $('tvName').textContent = '📺 ' + s.name;
+    $('tvSub').textContent = 'Android ' + s.android;
+    $('pill').textContent = 'Connected';
+    $('pill').className = 'pill on';
+    $('banner').style.display = s.needsPermission ? 'block' : 'none';
+    $('awake').checked = s.keepAwake;
+    if (s.maxVolume && document.activeElement !== $('vol')) {
+      $('vol').value = Math.round(s.volume * 100 / s.maxVolume);
+    }
+  } catch (e) {
+    $('pill').textContent = 'Connected nahi';
+    $('pill').className = 'pill';
+  }
+}
+
+async function refreshFiles() {
+  try {
+    const files = await api('/api/files');
+    const ul = $('files');
+    ul.innerHTML = '';
+    files.slice(0, 15).forEach(f => {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.textContent = f.name;
+      const open = document.createElement('button');
+      open.textContent = 'Kholo';
+      open.onclick = () => act('/api/file/open', { name: f.name });
+      const del = document.createElement('button');
+      del.className = 'soft';
+      del.textContent = 'Hatao';
+      del.onclick = async () => { await act('/api/file/delete', { name: f.name }); refreshFiles(); };
+      li.append(name, open, del);
+      ul.append(li);
+    });
+  } catch (e) {}
+}
+
+$('openForm').onsubmit = e => {
+  e.preventDefault();
+  const u = $('url').value.trim();
+  if (u) act('/api/open', { url: u });
+};
+$('ytForm').onsubmit = e => {
+  e.preventDefault();
+  act('/api/youtube', { q: $('yt').value.trim() });
+};
+document.querySelectorAll('[data-url]').forEach(b => b.onclick = () => act('/api/open', { url: b.dataset.url }));
+document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => act('/api/key', { key: b.dataset.key }));
+$('vol').onchange = e => act('/api/volume', { percent: +e.target.value });
+$('awake').onchange = e => act('/api/awake', { on: e.target.checked });
+
+$('loadApps').onclick = async () => {
+  try {
+    const apps = await api('/api/apps');
+    const box = $('apps');
+    box.innerHTML = '';
+    apps.forEach(a => {
+      const b = document.createElement('button');
+      b.className = 'soft';
+      b.textContent = a.label;
+      b.title = a.pkg;
+      b.onclick = () => act('/api/app', { pkg: a.pkg });
+      box.append(b);
+    });
+    if (!apps.length) toast('Koi app nahi mili.', false);
+  } catch (e) { toast('Apps load nahi hui.', false); }
+};
+
+$('file').onchange = () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  const prog = $('prog');
+  prog.style.display = 'block';
+  prog.value = 0;
+  $('fileLabel').textContent = 'Bhej rahe hain: ' + f.name;
+  const fd = new FormData();
+  fd.append('file', f);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload');
+  xhr.setRequestHeader('X-Pin', pin);
+  xhr.upload.onprogress = e => { if (e.lengthComputable) prog.value = e.loaded * 100 / e.total; };
+  xhr.onload = () => {
+    prog.style.display = 'none';
+    $('fileLabel').textContent = 'Yahan tap karke file chuniye — TV par apne aap khul jayegi';
+    $('file').value = '';
+    if (xhr.status === 401) { askPin(); toast('PIN daal kar file dobara chuniye.', false); return; }
+    try { const r = JSON.parse(xhr.responseText); toast(r.msg, r.ok !== false); }
+    catch (e) { toast('Upload fail hua.', false); }
+    refreshFiles();
+  };
+  xhr.onerror = () => { prog.style.display = 'none'; toast('Upload fail hua. Wi-Fi check karein.', false); };
+  xhr.send(fd);
+};
+
+refreshStatus();
+refreshFiles();
+setInterval(refreshStatus, 10000);
+</script>
+</body>
+</html>
