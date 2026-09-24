@@ -11,13 +11,24 @@ Dahua DHI-LPH65-ST420 aur Panasonic LH55AN6ND dono Android par chalte hain, isli
 dono par yahi ek app lagegi.
 
 ## Phone se kya kya kar sakte hain
-- **Link / meeting / website:** Google Meet, Zoom, Teams, koi bhi website
+- **Google apps / link / meeting:** Gmail, Drive, Sheets, Docs, Slides, Meet, Chat, Calendar, Zoom, Teams, koi bhi website
+  (TV par pehli baar browser mein apne Google account se login karein)
 - **YouTube:** video ka naam likhein ya link paste karein
 - **PPT / PDF / photo / video:** phone se file chunein, woh TV par copy hokar khul jaati hai
 - **Remote:** slide aage/peeche, scroll, Back, Home, play/pause, volume
 - **TV ki apps:** list dekh kar koi bhi app kholein
 - **Screen hamesha on:** TV apne aap sleep/band na ho
 - TV restart hone par app apne aap chalu ho jaati hai
+
+## Pehle PC par test karein (TV ke bina)
+1. PC par Python install karein: https://www.python.org/downloads/ ("Add to PATH" tick karein).
+2. Repo download karein: GitHub par **Code → Download ZIP**, aur zip kholein.
+3. `tv-app/pc-demo/start-demo.bat` par double-click karein.
+4. PC ke browser mein remote page khul jayega. Gmail, Drive, Sheets, Meet, Chat, YouTube ya koi link dabayein,
+   ya file chunein. Sab **PC par** khulega, bilkul waise jaise TV par khulega.
+5. Phone se bhi test kar sakte hain: black window mein dikh raha "Phone par kholein" wala link phone mein kholein.
+
+Demo mein Back/Home/volume jaise remote buttons sirf message dikhate hain; yeh asli TV par hi chalte hain.
 
 ## Step 1: APK download karein
 1. GitHub par repo → **Actions** → **Build Office TV app** → sabse upar wala green run kholein.
