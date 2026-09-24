@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TV Control</title>
+<style>
+:root{--bg:#f5f7fb;--card:#fff;--text:#1f2937;--muted:#6b7280;--primary:#4f46e5;--border:#e5e7eb;--ok:#16a34a;--bad:#dc2626}
+@media (prefers-color-scheme:dark){:root{--bg:#0f172a;--card:#16213b;--text:#e5e7eb;--muted:#94a3b8;--primary:#818cf8;--border:#24314f}}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text)}
+.wrap{max-width:760px;margin:auto;padding:16px;display:flex;flex-direction:column;height:100vh}
+h1{font-size:1.3rem;margin:4px 0 12px}
+.tvs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.tv{background:var(--card);border:1px solid var(--border);border-radius:999px;padding:4px 12px;font-size:.85rem}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--bad);margin-right:6px}.dot.on{background:var(--ok)}
+.quick{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.quick button{font-size:.8rem}
+#log{flex:1;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}
+.msg{margin:8px 0;padding:8px 12px;border-radius:10px;max-width:85%;white-space:pre-wrap}
+.me{background:var(--primary);color:#fff;margin-left:auto}.bot{background:var(--bg)}
+form{display:flex;gap:8px;margin-top:10px}
+input[type=text]{flex:1;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--text);font:inherit}
+button{padding:10px 14px;border-radius:10px;border:1px solid var(--primary);background:var(--primary);color:#fff;cursor:pointer;font:inherit}
+button.ghost{background:transparent;color:var(--primary)}
+.row{display:flex;gap:8px;margin-top:8px;align-items:center;font-size:.85rem;color:var(--muted);flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📺 TV Control with Claude</h1>
+  <div class="tvs">{% for k, t in tvs.items() %}<span class="tv"><span class="dot" id="dot-{{k}}"></span>{{ t.name }} <small>({{k}})</small></span>{% endfor %}</div>
+  <div class="quick">
+    <button class="ghost" data-q="Dono TVs ka status batao">Status</button>
+    <button class="ghost" data-q="Dahua par YouTube kholo">Dahua: YouTube</button>
+    <button class="ghost" data-q="Panasonic par YouTube kholo">Panasonic: YouTube</button>
+    <button class="ghost" data-q="Dono TVs par Home screen par jao">Home</button>
+    <button class="ghost" data-q="Dono TVs ka volume 30 karo">Volume 30</button>
+  </div>
+  <div id="log"><div class="msg bot">Namaste! Likhiye kya dikhana hai, jaise: "Dahua par yeh meeting join karo: https://meet.google.com/..." ya "Panasonic par upload ki hui PDF kholo".</div></div>
+  <form id="f"><input type="text" id="t" placeholder="TV ko command likhiye…" autocomplete="off"><button>Bhejo</button></form>
+  <div class="row">
+    <input type="file" id="file"><button class="ghost" id="up" type="button">File upload</button>
+    <button class="ghost" id="reset" type="button">Nayi baat</button>
+  </div>
+</div>
+<script>
+const log=document.getElementById('log'),t=document.getElementById('t');
+function add(text,cls){const d=document.createElement('div');d.className='msg '+cls;d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
+async function send(q){add(q,'me');const w=add('…','bot');
+  try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:q})});
+  w.textContent=(await r.json()).reply||'(koi jawab nahi)'}catch(e){w.textContent='Server se connect nahi ho paya.'}}
+document.getElementById('f').onsubmit=e=>{e.preventDefault();const q=t.value.trim();if(q){t.value='';send(q)}};
+document.querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>send(b.dataset.q));
+document.getElementById('reset').onclick=async()=>{await fetch('/api/reset',{method:'POST'});log.innerHTML='';add('Nayi baat shuru.','bot')};
+document.getElementById('up').onclick=async()=>{const f=document.getElementById('file').files[0];if(!f)return;
+  const fd=new FormData();fd.append('file',f);add('Upload ho raha hai: '+f.name,'bot');
+  const r=await(await fetch('/api/upload',{method:'POST',body:fd})).json();
+  add(r.filename?('Upload ho gaya: '+r.filename+'. Ab likhiye kis TV par kholna hai.'):'Upload fail hua.','bot')};
+async function status(){try{const s=await(await fetch('/api/status')).json();for(const k in s){const d=document.getElementById('dot-'+k);if(d)d.classList.toggle('on',s[k])}}catch(e){}}
+status();setInterval(status,15000);
+</script>
+</body>
+</html>

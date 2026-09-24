@@ -1,0 +1,14 @@
+{
+  "tvs": {
+    "dahua": {
+      "name": "Dahua Interactive Panel (DHI-LPH65-ST420)",
+      "ip": "192.168.1.50"
+    },
+    "panasonic": {
+      "name": "Panasonic LH55AN6ND",
+      "ip": "192.168.1.51"
+    }
+  },
+  "keep_awake": true,
+  "watchdog_seconds": 60
+}

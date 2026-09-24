@@ -1,0 +1,2 @@
+anthropic>=1.8
+flask>=3.0
