@@ -6,6 +6,10 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -29,7 +33,9 @@ import com.google.zxing.qrcode.QRCodeWriter;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 
 /** TV screen: shows the QR code / link for phones and the one-time permission buttons. */
 public class MainActivity extends Activity {
@@ -48,25 +54,54 @@ public class MainActivity extends Activity {
         }
     };
 
+    static volatile android.content.Context appContext;
+
     private ImageView qr;
-    private TextView link, pin, server, a11y, overlay;
+    private TextView link, others, pin, server, a11y, overlay;
     private Button overlayBtn;
     private String lastQr;
 
+    /** Interfaces that belong to the TV's own hotspot / screen-share, not the office network. */
+    private static boolean isHotspot(String name) {
+        return name.startsWith("ap") || name.startsWith("p2p") || name.startsWith("swlan")
+                || name.startsWith("softap") || name.startsWith("wlan1") || name.startsWith("rndis");
+    }
+
+    /** IPv4 of the network the TV actually uses for internet (the office Wi-Fi/LAN). */
     static String ip() {
-        String fallback = null;
+        if (appContext != null && Build.VERSION.SDK_INT >= 23) {
+            try {
+                ConnectivityManager cm = (ConnectivityManager) appContext.getSystemService(CONNECTIVITY_SERVICE);
+                Network n = cm.getActiveNetwork();
+                LinkProperties lp = n == null ? null : cm.getLinkProperties(n);
+                if (lp != null) {
+                    for (LinkAddress la : lp.getLinkAddresses()) {
+                        InetAddress a = la.getAddress();
+                        if (a instanceof Inet4Address && !a.isLoopbackAddress()) return a.getHostAddress();
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        List<String> all = allIps();
+        return all.isEmpty() ? null : all.get(0);
+    }
+
+    /** Every IPv4 on the TV, office-network interfaces first, hotspot ones last. */
+    static List<String> allIps() {
+        List<String> main = new ArrayList<>(), hotspot = new ArrayList<>();
         try {
             for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
                 if (!ni.isUp() || ni.isLoopback()) continue;
                 for (InetAddress a : Collections.list(ni.getInetAddresses())) {
                     if (!(a instanceof Inet4Address) || a.isLoopbackAddress()) continue;
-                    if (a.isSiteLocalAddress()) return a.getHostAddress();
-                    if (fallback == null) fallback = a.getHostAddress();
+                    (isHotspot(ni.getName()) ? hotspot : main).add(a.getHostAddress());
                 }
             }
         } catch (Exception ignored) {
         }
-        return fallback;
+        main.addAll(hotspot);
+        return main;
     }
 
     static String address() {
@@ -77,6 +112,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        appContext = getApplicationContext();
         ControlService.start(this);
 
         LinearLayout col = new LinearLayout(this);
@@ -96,6 +132,8 @@ public class MainActivity extends Activity {
         pin = text("", 24, FG, false);
         server = text("", 20, MUTED, false);
         col.addView(link);
+        others = text("", 17, MUTED, false);
+        col.addView(others);
         col.addView(pin);
         col.addView(server);
 
@@ -154,6 +192,16 @@ public class MainActivity extends Activity {
         String addr = address();
         String p = Prefs.pin(this);
         link.setText(addr);
+        List<String> ips = allIps();
+        String me = ip();
+        StringBuilder sb = new StringBuilder();
+        for (String a : ips) {
+            if (a.equals(me)) continue;
+            sb.append(sb.length() == 0 ? "Na khule to yeh try karein: " : "  ·  ")
+              .append("http://").append(a).append(":").append(WebServer.PORT);
+        }
+        others.setText(sb);
+        others.setVisibility(sb.length() == 0 ? View.GONE : View.VISIBLE);
         pin.setText("PIN: " + p);
         server.setText(ControlService.running() ? "● Server chal raha hai" : "● Server shuru ho raha hai…");
         server.setTextColor(ControlService.running() ? OK : WARN);

@@ -43,6 +43,7 @@ public class ControlService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        MainActivity.appContext = getApplicationContext();
         startForeground(1, notification());
 
         // Upload temp files go to the app cache.
