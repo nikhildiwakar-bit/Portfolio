@@ -54,29 +54,60 @@ final class Actions {
         wl.acquire(5000);
     }
 
-    private static JSONObject launch(Context c, Intent i, String what, String notFound) {
+    /** True when the only apps that claim an intent are Android TV "no app" stubs. */
+    static boolean onlyStubs(Context c, Intent i) {
+        try {
+            List<ResolveInfo> list = c.getPackageManager().queryIntentActivities(i, 0);
+            if (list == null || list.isEmpty()) return false; // unknown (package visibility): just try it
+            for (ResolveInfo ri : list) {
+                String pkg = ri.activityInfo == null ? "" : ri.activityInfo.packageName;
+                if (!pkg.contains("stub")) return false;
+            }
+            return true;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Opens i in another app; if none can, opens it in Office TV's own viewer so the TV never shows an error. */
+    private static JSONObject launch(Context c, Intent i, String what, Intent fallback, String notFound) {
         wake(c);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        boolean own = false;
         try {
+            if (onlyStubs(c, i)) throw new ActivityNotFoundException();
             c.startActivity(i);
         } catch (ActivityNotFoundException e) {
-            return result(false, notFound);
+            if (fallback == null) return result(false, notFound);
+            try {
+                c.startActivity(fallback);
+                own = true;
+            } catch (RuntimeException e2) {
+                return result(false, notFound);
+            }
         } catch (SecurityException e) {
             return result(false, "Android ne rok diya: " + e.getMessage());
+        } catch (RuntimeException e) {
+            CrashLog.note(c, "startActivity: " + e);
+            return result(false, "TV par kholte waqt error: " + e.getMessage());
         }
         if (!canOpenFromBackground(c)) {
             return result(false, "Command bhej diya, par shayad TV par nahi khulega. TV par Office TV app kholkar "
                     + "'Accessibility' ya 'Display over other apps' permission on karein.");
         }
-        return result(true, what + " TV par khul gaya.");
+        return result(true, own ? what + " Office TV ke andar khol diya." : what + " TV par khul gaya.");
     }
 
     static JSONObject openUrl(Context c, String url) {
         url = url == null ? "" : url.trim();
         if (url.isEmpty()) return result(false, "Link khaali hai.");
         if (!url.matches("(?i)^[a-z][a-z0-9+.-]*:.*")) url = "https://" + url;
-        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-        return launch(c, i, "Link", "Is link ko kholne wali app (browser) TV par nahi mili.");
+        Uri uri = Uri.parse(url);
+        Intent i = new Intent(Intent.ACTION_VIEW, uri);
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.US);
+        Intent fb = scheme.equals("http") || scheme.equals("https")
+                ? ViewerActivity.intent(c, ViewerActivity.MODE_WEB, uri, null, null) : null;
+        return launch(c, i, "Link", fb, "Is link ko kholne wali app TV par nahi mili.");
     }
 
     static JSONObject youtube(Context c, String q) {
@@ -93,9 +124,12 @@ final class Actions {
     static JSONObject openFile(Context c, File f) {
         if (!f.isFile()) return result(false, "File nahi mili.");
         Intent i = new Intent(Intent.ACTION_VIEW);
-        i.setDataAndType(FilesProvider.uriFor(c, f), FilesProvider.mime(f.getName()));
+        String mime = FilesProvider.mime(f.getName());
+        i.setDataAndType(FilesProvider.uriFor(c, f), mime);
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        return launch(c, i, f.getName(), "TV par is file ko kholne wali app nahi hai. PDF/PPT ke liye "
+        Intent fb = ViewerActivity.intent(c, ViewerActivity.modeFor(mime), Uri.fromFile(f), mime, f.getName());
+        fb.putExtra(ViewerActivity.EXTRA_PATH, f.getAbsolutePath());
+        return launch(c, i, f.getName(), fb, "TV par is file ko kholne wali app nahi hai. PDF/PPT ke liye "
                 + "WPS Office jaisi app TV par install karein.");
     }
 
@@ -129,7 +163,7 @@ final class Actions {
         Intent i = pm.getLaunchIntentForPackage(pkg);
         if (i == null) i = pm.getLeanbackLaunchIntentForPackage(pkg);
         if (i == null) return result(false, "Yeh app TV par nahi mili.");
-        return launch(c, i, "App", "Yeh app TV par nahi mili.");
+        return launch(c, i, "App", null, "Yeh app TV par nahi mili.");
     }
 
     private static void mediaKey(AudioManager am, int code) {
@@ -160,6 +194,17 @@ final class Actions {
                 return result(true, "Mute");
             case "wake": wake(c); return result(true, "Screen on");
             default: break;
+        }
+
+        // Office TV's own viewer is in front: drive it directly (works without Accessibility).
+        ViewerActivity v = ViewerActivity.front();
+        if (v != null) {
+            switch (name) {
+                case "next_slide": case "scroll_down": v.next(); return result(true, "Aage");
+                case "prev_slide": case "scroll_up": v.prev(); return result(true, "Peeche");
+                case "back": v.close(); return result(true, "Back");
+                default: break;
+            }
         }
 
         RemoteA11yService a = RemoteA11yService.instance;
@@ -200,6 +245,9 @@ final class Actions {
         o.put("volume", am.getStreamVolume(AudioManager.STREAM_MUSIC));
         o.put("maxVolume", am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
         o.put("keepAwake", Prefs.keepAwake(c));
+        o.put("appVersion", BuildConfig.VERSION_NAME);
+        o.put("flavor", BuildConfig.FLAVOR);
+        o.put("port", ControlService.port());
         return o;
     }
 

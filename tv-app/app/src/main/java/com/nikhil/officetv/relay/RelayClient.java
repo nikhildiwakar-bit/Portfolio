@@ -603,32 +603,29 @@ public final class RelayClient {
         JSONObject app = (JSONObject) item;
         String label = app.optString("label", "");
         List<Object> one = new ArrayList<>(1);
-        while (true) {
-            label = cut(label, label.length() / 2);
+        for (int n = label.length() / 2; ; n /= 2) {
             JSONObject small = copy(app);
-            small.put("label", label);
+            small.put("label", cut(label, n));
             one.clear();
             one.add(small);
             if (partLength(re, now, ok, msg, base, one) < MAX_ENVELOPE) return small;
-            if (label.isEmpty()) return null;
+            if (n == 0) return null;
         }
     }
 
     /** Generic oversized ack: drop data, then trim msg until the envelope fits. */
     private static JSONObject shrink(String re, long now, boolean ok, String msg) throws JSONException {
-        String m = msg;
-        while (true) {
-            JSONObject o = ack(re, now, ok, m, new JSONObject(), 0, 1);
-            if (envLength(o) < MAX_ENVELOPE || m.isEmpty()) return o;
-            m = cut(m, m.length() * 3 / 4);
+        for (int n = msg.length(); ; n = n * 3 / 4) {
+            JSONObject o = ack(re, now, ok, cut(msg, n), new JSONObject(), 0, 1);
+            if (envLength(o) < MAX_ENVELOPE || n == 0) return o;
         }
     }
 
+    /** First n chars of s plus an ellipsis (s itself if it is not longer than n). */
     private static String cut(String s, int n) {
-        if (n <= 0) return "";
         if (n >= s.length()) return s;
-        if (Character.isHighSurrogate(s.charAt(n - 1))) n--;
-        return s.substring(0, n) + "\u2026";
+        if (n > 0 && Character.isHighSurrogate(s.charAt(n - 1))) n--;
+        return n <= 0 ? "" : s.substring(0, n) + "\u2026";
     }
 
     private static JSONObject copy(JSONObject o) throws JSONException {
@@ -713,7 +710,8 @@ public final class RelayClient {
                     continue;
                 }
                 if (code == 429) {
-                    throw new IOException(relayUrl.getHost() + " ki limit poori ho gayi (HTTP 429). Thodi der baad try karein.");
+                    throw new IOException(relayUrl.getHost()
+                            + " ki limit poori ho gayi (HTTP 429). Thodi der baad try karein.");
                 }
                 if (code == 404) throw new IOException("File relay par nahi mili (shayad purani ho kar hat gayi).");
                 if (code != 200) throw new IOException("File download nahi hui (HTTP " + code + ").");

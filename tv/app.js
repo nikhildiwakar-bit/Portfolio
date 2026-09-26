@@ -1,8 +1,10 @@
 // Office TV Remote: controller page. The relay protocol itself lives in otv.js.
+// The ?v= query keeps app.js and otv.js from mixing versions in a browser cache; bump it together with the
+// one in index.html whenever either file changes.
 import {
     ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, MAX_FILE_BYTES, TvLink, cleanName, displayCode, normalizeCode,
     normalizeRelay, parsePairFragment,
-} from './otv.js';
+} from './otv.js?v=1';
 
 const $ = id => document.getElementById(id);
 const STORE_KEY = 'officetv.tvs';
@@ -163,7 +165,8 @@ function hideToast() {
 }
 
 function fmtMB(bytes) {
-    return (bytes / 1e6).toFixed(bytes < 1e7 ? 1 : 0) + ' MB';
+    // Rounded up, so a file just over the limit never reads as "15 MB".
+    return (Math.ceil(bytes / 1e5) / 10).toFixed(1) + ' MB';
 }
 
 function tooBigText(size) {
@@ -177,6 +180,9 @@ function errText(e) {
         case 'timeout':
             return 'TV se jawab nahi aaya. TV on hai aur internet se juda hai? TV par Office TV app ek baar kholein.';
         case 'rate_limit':
+            if (e.limit === 'burst') {
+                return 'Thodi der mein bahut saari commands chali gayi. 1 minute ruk kar dobara try karein.';
+            }
             return 'Aaj ki free limit poori ho gayi. Commands free ntfy.sh se jaate hain, jo poore office ko roz '
                 + 'seemit messages deta hai. Kuch der baad try karein, ya TV wale Wi-Fi par TV ka Same Wi-Fi page kholein.';
         case 'network':
@@ -566,7 +572,7 @@ function setPairError(text) {
 }
 
 function looseCode(raw) {
-    return String(raw || '').toUpperCase().replace(/[\s\-‐-―]+/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+    return String(raw || '').toUpperCase().replace(/[\s\-\u2010-\u2015]+/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
 }
 
 /** Explains what is wrong with a typed code, or returns '' when it is valid. */
@@ -737,18 +743,18 @@ async function sendFile(file) {
     $('drop').classList.add('busy');
     $('progWrap').hidden = false;
     setProgress(0);
-    const res = [];
+    const frac = list.map(() => 0);
+    const multi = list.length > 1;
+    $('progName').textContent = (multi ? list.length + ' TV ko bhej rahe hain: ' : 'Bhej rahe hain: ') + file.name;
+    let res;
     try {
-        for (let i = 0; i < list.length; i++) {
-            const tv = list[i];
-            $('progName').textContent = (list.length > 1 ? tvName(tv) + ' (' + (i + 1) + '/' + list.length + '): ' : 'Bhej rahe hain: ') + file.name;
-            try {
-                const ack = await linkFor(tv).sendFile(file, { onProgress: f => setProgress((i + f) / list.length) });
-                res.push({ tv, ack });
-            } catch (err) {
-                res.push({ tv, err });
-            }
-        }
+        // Each TV has its own key, so each gets its own encrypted upload; run them side by side.
+        res = await Promise.all(list.map((tv, i) => linkFor(tv).sendFile(file, {
+            onProgress: f => {
+                frac[i] = f;
+                setProgress(frac.reduce((a, b) => a + b, 0) / list.length);
+            },
+        }).then(ack => ({ tv, ack }), err => ({ tv, err }))));
     } finally {
         state.fileBusy = false;
         $('drop').classList.remove('busy');

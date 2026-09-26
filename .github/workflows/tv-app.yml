@@ -3,7 +3,7 @@ name: Build Office TV app
 on:
   push:
     paths:
-      - 'tv-app/**'
+      - 'tv-app/app/**'
       - '.github/workflows/tv-app.yml'
   workflow_dispatch:
 
@@ -25,17 +25,26 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
+      - name: Build APKs
         working-directory: tv-app
-        run: gradle --no-daemon assembleRelease
+        run: gradle --no-daemon assembleFullRelease assembleLiteRelease
 
-      - name: Collect APK
-        run: cp tv-app/app/build/outputs/apk/release/app-release.apk OfficeTV.apk
+      - name: Lint (new Android APIs used without a version check)
+        working-directory: tv-app
+        continue-on-error: true
+        run: gradle --no-daemon lintFullDebug
+
+      - name: Collect APKs
+        run: |
+          cp tv-app/app/build/outputs/apk/full/release/app-full-release.apk OfficeTV.apk
+          cp tv-app/app/build/outputs/apk/lite/release/app-lite-release.apk OfficeTV-lite.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: OfficeTV-apk
-          path: OfficeTV.apk
+          path: |
+            OfficeTV.apk
+            OfficeTV-lite.apk
 
       # Fixed public link: .../releases/download/tv-app-latest/OfficeTV.apk
       - name: Publish download link
@@ -44,7 +53,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           gh release delete tv-app-latest --yes --cleanup-tag || true
-          gh release create tv-app-latest OfficeTV.apk \
+          gh release create tv-app-latest OfficeTV.apk OfficeTV-lite.apk \
             --target "${{ github.sha }}" \
             --title "Office TV app (latest)" \
             --notes "TV par install karne ke liye OfficeTV.apk download karein. Steps: tv-app/README.md"

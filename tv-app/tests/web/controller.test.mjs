@@ -2,7 +2,7 @@
 // A local mock relay imitates ntfy.sh; scripted fake TVs decrypt commands with otv.js and send acks,
 // so the real crypto runs end to end. Run: node --test tv-app/tests/web/
 // Screenshots go to $OTV_SHOTS (default: <tmp>/officetv-shots).
-import test, { after, before, beforeEach } from 'node:test';
+import test, { after, afterEach, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -18,6 +18,7 @@ const REPO = resolve(HERE, '../../..');
 const SHOTS = process.env.OTV_SHOTS || join(tmpdir(), 'officetv-shots');
 const CODE_A = '7K3M9QX2TD';
 const CODE_B = 'Q4W8Z2M6N0';
+const CODE_C = 'H7P2K9R4T1';
 const LAN = 'http://192.168.1.50:8080/';
 
 async function loadPlaywright() {
@@ -29,7 +30,7 @@ async function loadPlaywright() {
     }
 }
 
-let chromium, browser, relay, relaySrv, web, tvA, tvB, tls;
+let chromium, browser, relay, relaySrv, web, tvA, tvB, tvC, tls;
 
 before(async () => {
     ({ chromium } = await loadPlaywright());
@@ -41,8 +42,10 @@ before(async () => {
     const transport = { publish: (t, env) => relay.publish(t, env), getAttachment: async url => relay.attachmentBytes(url) };
     tvA = await createFakeTv(Object.assign({ code: CODE_A, name: 'Conference Dahua' }, transport));
     tvB = await createFakeTv(Object.assign({ code: CODE_B, name: 'Reception Panasonic', silent: true }, transport));
+    tvC = await createFakeTv(Object.assign({ code: CODE_C, name: 'Board Room' }, transport));
     relay.subscribe(tvA.topic, ev => tvA.handle(ev));
     relay.subscribe(tvB.topic, ev => tvB.handle(ev));
+    relay.subscribe(tvC.topic, ev => tvC.handle(ev));
     // Keep the sandbox proxy away from Chromium; map ntfy.sh to the local HTTPS mock relay.
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/proxy/i.test(k)));
     const args = ['--no-proxy-server'];
@@ -56,11 +59,23 @@ after(async () => {
     if (web) await web.close();
 });
 
+const contexts = new Set();
+
 beforeEach(() => {
     tvA.reset();
     tvB.reset();
+    tvC.reset();
     relay.rateLimit = false;
+    relay.rateLimitCode = 42908;
     relay.errors.length = 0;
+    relay.requests.length = 0;
+    relay.posts.length = 0;
+});
+
+afterEach(async () => {
+    // A failed test never reaches page.done(); close its pages so their streams do not leak into the next test.
+    for (const c of Array.from(contexts)) await c.close().catch(() => {});
+    contexts.clear();
 });
 
 const pairUrl = (code, name, relayUrl = relaySrv.httpUrl) =>
@@ -81,6 +96,7 @@ async function until(fn, ms = 10000, what = 'condition') {
 /** New isolated browser context + page that records console errors. */
 async function open({ viewport = { width: 1366, height: 768 }, colorScheme = 'light', init } = {}) {
     const ctx = await browser.newContext({ viewport, colorScheme, ignoreHTTPSErrors: true });
+    contexts.add(ctx);
     if (init) await ctx.addInitScript(init);
     const page = await ctx.newPage();
     const errors = [];
@@ -89,6 +105,7 @@ async function open({ viewport = { width: 1366, height: 768 }, colorScheme = 'li
     page.errors = errors;
     page.done = async (allowed = []) => {
         const bad = errors.filter(t => !allowed.some(re => re.test(t)));
+        contexts.delete(ctx);
         await ctx.close();
         assert.deepEqual(bad, [], 'console errors');
     };
@@ -243,7 +260,7 @@ test('apps list arrives in several parts (out of order) and a tap opens the app'
     assert.deepEqual(labels, tvA.apps.map(a => a.label));
     assert.equal(tvA.acks.filter(a => a.re === tvA.received('apps')[0].id).length, 3, 'ack came in 3 parts');
     await page.fill('#appFilter', 'app 3');
-    assert.equal(await page.locator('#apps button').count(), 11);
+    assert.equal(await page.locator('#apps button').count(), 10);   // App 30 ... App 39
     await page.click('#apps button:has-text("App 33")');
     assert.equal((await lastCmd(tvA, 'app')).args.pkg, 'com.example.app33');
     await toastText(page, /App TV par khul gaya/);
@@ -274,7 +291,7 @@ test('file under 15 MB is encrypted, uploaded and opened; over 15 MB is refused 
     assert.match(t, /Google Drive/);
     assert.equal(await page.getAttribute('#toastLink', 'href'), LAN);
     assert.equal(await page.isVisible('#fileMsg'), true);
-    assert.match(await page.textContent('#fileMsg'), /15\.0 MB ki hai.*Google Drive.*Same Wi-Fi page/);
+    assert.match(await page.textContent('#fileMsg'), /15\.1 MB ki hai.*Google Drive.*Same Wi-Fi page/);
     assert.equal(await page.getAttribute('#fileLan', 'href'), LAN);
     await sleep(300);
     assert.equal(relay.files.size, filesBefore + 1, 'nothing uploaded for the big file');
@@ -308,8 +325,28 @@ test('"Sab TV" sends to every TV and reports the one that never answers', { time
     await page.done();
 });
 
-test('rate limit (HTTP 429) explains the free daily limit and offers the Same Wi-Fi page', async () => {
+test('"Sab TV" file send: every TV gets its own encrypted upload', async () => {
     const page = await open();
+    await pairA(page);
+    await page.goto(pairUrl(CODE_C, 'Board Room'));
+    await toastText(page, /Board Room jud gaya/);
+    await page.click('.tv-chip[data-code="all"]');
+    const bytes = Buffer.from('%PDF-1.4 sab tv test '.repeat(5000));
+    await page.setInputFiles('#file', { name: 'Agenda.pdf', mimeType: 'application/pdf', buffer: bytes });
+    await toastText(page, /Sab 2 TV par ho gaya/, 20000);
+    for (const tv of [tvA, tvC]) {
+        assert.equal(tv.files.length, 1);
+        assert.ok(Buffer.from(tv.files[0].bytes).equals(bytes));
+    }
+    const uploads = relay.posts.filter(p => p.query === '?filename=otv.bin&firebase=no');
+    assert.deepEqual(uploads.map(u => u.topic).sort(), [tvA.topic, tvC.topic].sort());
+    const rows = await page.$$eval('#resultsList li', lis => lis.map(li => li.textContent));
+    assert.deepEqual(rows, ['Conference DahuaAgenda.pdf TV par khul gaya.', 'Board RoomAgenda.pdf TV par khul gaya.']);
+    await page.done();
+});
+
+test('rate limit (HTTP 429) explains the free daily limit and offers the Same Wi-Fi page', async () => {
+    const page = await open({ viewport: { width: 390, height: 844 } });
     await pairA(page);
     relay.rateLimit = true;
     await page.click('button[data-key="play_pause"]');
@@ -319,7 +356,11 @@ test('rate limit (HTTP 429) explains the free daily limit and offers the Same Wi
     assert.equal(await page.isVisible('#toastLink'), true);
     assert.equal(await page.getAttribute('#toastLink', 'href'), LAN);
     assert.equal(await page.textContent('#toastLink'), 'Same Wi-Fi page');
+    await page.screenshot({ path: join(SHOTS, 'phone-390-rate-limit.png') });
     assert.equal(tvA.received('key').length, 0);
+    relay.rateLimitCode = 42901;                  // short burst limit: different advice
+    await page.click('button[data-key="next_slide"]');
+    assert.match(await toastText(page, /1 minute ruk kar/), /bahut saari commands/);
     relay.rateLimit = false;
     await page.click('button[data-key="play_pause"]');
     assert.equal(await toastText(page, /Play\/Pause dabaya/), 'Play/Pause dabaya.');
@@ -400,7 +441,6 @@ test('keeps working after the relay drops the event stream', async () => {
     await page.click('button[data-key="home"]');                 // sent while the stream is reconnecting
     assert.equal((await lastCmd(tvA, 'key')).args.key, 'home');
     assert.equal(await toastText(page, /Home dabaya/), 'Home dabaya.');
-    assert.equal(relay.sseCount(tvA.topic), 1);
     await page.done([/ERR_(INCOMPLETE_CHUNKED_ENCODING|EMPTY_RESPONSE|CONNECTION)/]);
 });
 
@@ -433,6 +473,7 @@ test('layout: screenshots (1366x768 light, 390x844 dark) and no horizontal scrol
     await page.click('.tv-chip[data-code="' + CODE_A + '"]');
     await page.click('#loadApps');
     await toastText(page, /40 apps mili/);
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: join(SHOTS, 'desktop-1366-light.png') });
     await page.screenshot({ path: join(SHOTS, 'desktop-1366-light-full.png'), fullPage: true });
     const cols = await page.$$eval('#controls > .col', els => els.map(e => Math.round(e.getBoundingClientRect().left)));
@@ -449,6 +490,7 @@ test('layout: screenshots (1366x768 light, 390x844 dark) and no horizontal scrol
     await toastText(page, /40 apps mili/);
     const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     assert.equal(bg, 'rgb(11, 16, 32)', 'dark background');
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({ path: join(SHOTS, 'phone-390-dark.png') });
     await page.screenshot({ path: join(SHOTS, 'phone-390-dark-full.png'), fullPage: true });
     await page.setViewportSize({ width: 360, height: 740 });

@@ -64,6 +64,8 @@ function makeRelay({ clockSkewS = 0, openDelayMs = 5 } = {}) {
         relay.log.push('post:' + u.search);
         if (relay.mode === 'network') throw new TypeError('Failed to fetch');
         if (relay.mode === 429) return new Response('{"code":42901,"http":429,"error":"limit reached"}', { status: 429 });
+        if (relay.mode === 'daily') return new Response('{"code":42908,"http":429,"error":"limit reached: daily message quota reached"}', { status: 429 });
+        if (relay.mode === 413) return new Response('{"code":41301,"http":413,"error":"attachment too large"}', { status: 413 });
         if (relay.mode === 500) return new Response('oops', { status: 500 });
         const topic = u.pathname.slice(1);
         relay.posts.push({ url, opts });
@@ -192,7 +194,9 @@ test('partial multi-part ack resolves at timeout with partial=true', async () =>
 test('relay errors map to rate_limit / network / relay', async () => {
     const { relay, link } = await setup();
     relay.mode = 429;
-    await assert.rejects(link.send('ping', {}), e => e.code === 'rate_limit' && e.status === 429);
+    await assert.rejects(link.send('ping', {}), e => e.code === 'rate_limit' && e.status === 429 && e.limit === 'burst' && e.relayCode === 42901);
+    relay.mode = 'daily';
+    await assert.rejects(link.send('ping', {}), e => e.code === 'rate_limit' && e.limit === 'daily');
     relay.mode = 'network';
     await assert.rejects(link.send('ping', {}), e => e.code === 'network');
     relay.mode = 500;
@@ -272,6 +276,8 @@ test('sendFile refuses files over the limit without touching the relay', async (
     assert.equal(relay.posts.length, 0);
     relay.mode = 429;
     await assert.rejects(link.sendFile(new File([new Uint8Array(10)], 'a.pdf')), e => e.code === 'rate_limit');
+    relay.mode = 413;
+    await assert.rejects(link.sendFile(new File([new Uint8Array(10)], 'a.pdf')), e => e.code === 'too_big' && e.size === 10);
     link.close();
 });
 

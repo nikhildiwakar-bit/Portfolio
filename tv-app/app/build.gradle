@@ -10,8 +10,8 @@ android {
         applicationId 'com.nikhil.officetv'
         minSdk 21
         targetSdk 33
-        versionCode 2
-        versionName '1.1'
+        versionCode 3
+        versionName '1.2'
     }
 
     // One shared key so every new build installs as an update over the old one.
@@ -34,13 +34,29 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig true
+    }
+
+    flavorDimensions 'edition'
+    productFlavors {
+        full {
+            dimension 'edition'
+        }
+        // Same app without the Accessibility service, for TVs where Play Protect blocks it.
+        lite {
+            dimension 'edition'
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
     lint {
-        abortOnError false
+        checkOnly 'NewApi'
+        abortOnError true
         checkReleaseBuilds false
     }
 }

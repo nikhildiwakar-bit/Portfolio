@@ -44,7 +44,7 @@ async function sha256(text) {
 export function normalizeCode(input) {
     if (typeof input !== 'string') return null;
     const s = input.toUpperCase()
-        .replace(/[\s\-‐-―]+/g, '')
+        .replace(/[\s\-\u2010-\u2015]+/g, '')
         .replace(/O/g, '0')
         .replace(/[IL]/g, '1');
     if (s.length !== 10) return null;
@@ -219,6 +219,21 @@ export function pairLink(code, name, relay) {
 }
 
 // ---------- acks ----------
+
+// ntfy 429 codes: 42901 = too many requests right now; 42905/42908 = daily attachment/message quota.
+const BURST_CODES = [42901, 42903];
+const DAILY_CODES = [42902, 42905, 42908, 42910];
+
+function rateLimitInfo(body) {
+    let code = 0;
+    try { code = Number(JSON.parse(body).code) || 0; } catch (e) { /* not JSON */ }
+    const limit = BURST_CODES.indexOf(code) >= 0 ? 'burst' : DAILY_CODES.indexOf(code) >= 0 ? 'daily' : 'unknown';
+    return { status: 429, relayCode: code, limit };
+}
+
+async function readText(res) {
+    try { return await res.text(); } catch (e) { return ''; }
+}
 
 function linkError(code, message, extra) {
     const e = new Error(message || code);
@@ -460,7 +475,11 @@ export class TvLink {
 
     // --- commands ---
 
-    /** Sends one command and resolves with its ack {ok, msg, data}. Rejects with err.code set. */
+    /**
+     * Sends one command and resolves with its ack {ok, msg, data} (plus partial: true if some parts of a
+     * multi-part ack never came). Rejects with err.code 'timeout' | 'rate_limit' | 'network' | 'relay' | 'closed';
+     * rate_limit errors also carry err.limit 'burst' | 'daily' | 'unknown'.
+     */
     async send(cmd, args, { timeoutMs = 15000 } = {}) {
         await this.init();
         if (this._closed) throw linkError('closed', 'link closed');
@@ -501,7 +520,7 @@ export class TvLink {
             return;
         }
         if (res.status === 429) {
-            this._fail(p, 'rate_limit', 'relay limit reached', { status: 429 });
+            this._fail(p, 'rate_limit', 'relay limit reached', rateLimitInfo(await readText(res)));
             return;
         }
         if (!res.ok) {
@@ -545,6 +564,8 @@ export class TvLink {
     }
 
     _upload(url, data, onFrac) {
+        // 413: the relay refused the size (its limit may be lower than ours).
+        const tooBig = () => linkError('too_big', 'relay refused the file size', { size: data.length - 16, max: MAX_FILE_BYTES, status: 413 });
         const viaFetch = async () => {
             let res;
             try {
@@ -552,7 +573,8 @@ export class TvLink {
             } catch (e) {
                 throw linkError('network', 'upload failed: ' + (e && e.message));
             }
-            if (res.status === 429) throw linkError('rate_limit', 'relay limit reached', { status: 429 });
+            if (res.status === 429) throw linkError('rate_limit', 'relay limit reached', rateLimitInfo(await readText(res)));
+            if (res.status === 413) throw tooBig();
             if (!res.ok) throw linkError('relay', 'relay HTTP ' + res.status, { status: res.status });
             onFrac(1);
             try { return await res.json(); } catch (e) { throw linkError('relay', 'bad relay reply'); }
@@ -563,7 +585,8 @@ export class TvLink {
             x.open('POST', url);
             x.upload.onprogress = e => { if (e.lengthComputable && e.total) onFrac(e.loaded / e.total); };
             x.onload = () => {
-                if (x.status === 429) return reject(linkError('rate_limit', 'relay limit reached', { status: 429 }));
+                if (x.status === 429) return reject(linkError('rate_limit', 'relay limit reached', rateLimitInfo(x.responseText)));
+                if (x.status === 413) return reject(tooBig());
                 if (x.status < 200 || x.status >= 300) return reject(linkError('relay', 'relay HTTP ' + x.status, { status: x.status }));
                 onFrac(1);
                 try { resolve(JSON.parse(x.responseText)); } catch (e) { reject(linkError('relay', 'bad relay reply')); }

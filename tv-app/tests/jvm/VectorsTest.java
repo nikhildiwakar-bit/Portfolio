@@ -288,6 +288,18 @@ public final class VectorsTest {
             for (int k = 0; k < arr.length(); k++) pk.add(arr.getJSONObject(k).getString("pkg"));
         }
         T.ok(fits && pk.contains("com.big") && pk.contains("com.small"), "an 8000-char label is shortened and kept");
+        JSONArray hugePkg = new JSONArray().put(new JSONObject().put("label", "X").put("pkg", "p".repeat(6000)))
+                .put(new JSONObject().put("label", "Small").put("pkg", "com.small"));
+        List<String> hpk = RelayClient.buildAcks(rc, "h2", new JSONObject().put("ok", true).put("msg", "")
+                .put("data", new JSONObject().put("apps", hugePkg)), now);
+        JSONArray kept = new JSONObject(rc.open(hpk.get(0))).getJSONObject("data").getJSONArray("apps");
+        T.ok(hpk.size() == 1 && kept.length() == 1 && "com.small".equals(kept.getJSONObject(0).getString("pkg")),
+                "an app whose pkg alone cannot fit is dropped (no endless loop)");
+        String surrogates = "\uD83D\uDCFA".repeat(3000);
+        List<String> sl = RelayClient.buildAcks(rc, "s", new JSONObject().put("ok", true).put("msg", surrogates), now);
+        String cutMsg = new JSONObject(rc.open(sl.get(0))).getString("msg");
+        T.ok(sl.get(0).length() < RelayClient.MAX_ENVELOPE && cutMsg.endsWith("\u2026")
+                && !Character.isHighSurrogate(cutMsg.charAt(cutMsg.length() - 2)), "msg of emoji is cut on a code point boundary");
 
         // Oversized non-apps ack: data dropped, msg cut, ok kept.
         for (boolean ok : new boolean[] {true, false}) {

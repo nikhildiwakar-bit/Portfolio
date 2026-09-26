@@ -9,6 +9,7 @@ export function createRelay() {
     const subs = new Map();   // topic -> Set<fn(event)>
     const relay = {
         rateLimit: false,
+        rateLimitCode: 42908, // 42908 = daily message quota, 42901 = too many requests right now
         requests: [],         // {method, path, tls, host, contentType}
         posts: [],            // {topic, query, headers, size, text}
         files: new Map(),     // id -> Uint8Array
@@ -133,7 +134,10 @@ export function createRelay() {
                 const text = filename ? null : body.toString('utf8');
                 relay.posts.push({ topic, query: u.search, headers: req.headers, size: body.length, text });
                 if (relay.rateLimit) {
-                    return json(res, 429, { code: 42908, http: 429, error: 'limit reached: daily message quota reached' });
+                    return json(res, 429, {
+                        code: relay.rateLimitCode, http: 429,
+                        error: relay.rateLimitCode === 42901 ? 'limit reached: too many requests' : 'limit reached: daily message quota reached',
+                    });
                 }
                 if (filename || body.length > MESSAGE_LIMIT) {
                     if (!filename) relay.errors.push('message over ' + MESSAGE_LIMIT + ' bytes became an attachment');
