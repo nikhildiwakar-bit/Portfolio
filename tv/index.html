@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#4f46e5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1020" media="(prefers-color-scheme: dark)">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Laptop, Chromebook ya phone se office TV chalayein. IP address ki zaroorat nahi.">
+<title>Office TV Remote</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Crect x='7' y='10' width='18' height='12' rx='2' fill='none' stroke='white' stroke-width='2.2'/%3E%3Cpath d='M12 26h8' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f3f5f9; --surface: #ffffff; --surface-2: #f6f7fb; --text: #0f172a; --muted: #566074;
+  --border: #e1e5ee; --border-strong: #c9d0dd;
+  --primary: #4f46e5; --primary-strong: #4338ca; --primary-soft: #eef0ff; --on-primary: #ffffff;
+  --ok: #15803d; --ok-soft: #e6f5eb; --bad: #b91c1c; --bad-soft: #fdecec;
+  --warn: #7a4a00; --warn-soft: #fff5de; --warn-border: #f1d08a;
+  --unknown: #94a3b8; --focus: #2563eb;
+  --toast-bg: #111827; --toast-text: #f9fafb; --toast-bad: #b42318;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 6px 20px rgba(15, 23, 42, .05);
+  --radius: 16px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1020; --surface: #131a2c; --surface-2: #1a2238; --text: #e7eaf3; --muted: #9ba5ba;
+    --border: #273150; --border-strong: #37436a;
+    --primary: #8f97ff; --primary-strong: #b3b8ff; --primary-soft: #222a4d; --on-primary: #0b1020;
+    --ok: #4ade80; --ok-soft: #10301f; --bad: #fca5a5; --bad-soft: #3a1719;
+    --warn: #fcd34d; --warn-soft: #30250b; --warn-border: #5b4513;
+    --unknown: #6b7890; --focus: #93c5fd;
+    --toast-bg: #e7eaf3; --toast-text: #0b1020; --toast-bad: #b42318;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+[hidden] { display: none !important; }
+a { color: var(--primary-strong); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.wrap { max-width: 1160px; margin: 0 auto; padding: 18px 16px 120px; }
+@media (min-width: 720px) { .wrap { padding: 28px 28px 120px; } }
+
+/* header */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.logo { width: 42px; height: 42px; border-radius: 12px; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; flex: none; }
+.logo .ic { width: 24px; height: 24px; }
+h1 { font-size: 1.28rem; line-height: 1.2; margin: 0; letter-spacing: -.01em; }
+.sub { margin: 2px 0 0; color: var(--muted); font-size: .88rem; }
+.help-link { font-size: .9rem; white-space: nowrap; color: var(--muted); text-decoration: none; padding: 8px 4px; }
+.help-link:hover { color: var(--primary-strong); text-decoration: underline; }
+
+/* buttons */
+button, .btn {
+  font: inherit; font-weight: 550; border-radius: 10px; border: 1px solid transparent; padding: 9px 14px;
+  min-height: 44px; cursor: pointer; touch-action: manipulation; display: inline-flex; align-items: center;
+  justify-content: center; gap: 7px; text-decoration: none; color: var(--text); background: var(--surface-2);
+  transition: background-color .12s, border-color .12s, color .12s, transform .06s; position: relative;
+}
+button:active:not(:disabled) { transform: scale(.97); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: var(--on-primary); }
+.btn-primary:hover:not(:disabled) { background: var(--primary-strong); }
+.btn-soft { background: var(--primary-soft); color: var(--primary-strong); }
+.btn-soft:hover:not(:disabled) { border-color: var(--primary); }
+.btn-ghost { background: transparent; border-color: var(--border-strong); }
+.btn-ghost:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-strong); }
+.btn-danger { background: transparent; border-color: var(--border-strong); color: var(--bad); }
+.btn-danger-solid { background: #b42318; color: #fff; }
+.btn-sm { min-height: 36px; padding: 5px 11px; font-size: .88rem; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+button[aria-busy="true"] { cursor: progress; }
+button[aria-busy="true"]::after {
+  content: ""; position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; opacity: .8;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* TV picker */
+.picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 20px 0 12px; }
+.tv-chip {
+  min-height: 40px; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--surface); font-weight: 550; max-width: 100%;
+}
+.tv-chip:hover { border-color: var(--primary); }
+.tv-chip[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary-strong); border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.tv-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 24ch; }
+.tv-chip.add { border-style: dashed; color: var(--primary-strong); background: transparent; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--unknown); flex: none; }
+.dot.online { background: var(--ok); }
+.dot.offline { background: var(--bad); }
+
+/* selected TV bar */
+.tvbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow);
+}
+.tvbar .info { flex: 1 1 260px; min-width: 0; }
+.tvbar .title { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 1.02rem; min-width: 0; }
+.tvbar .title span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tvbar .meta { color: var(--muted); font-size: .86rem; margin-top: 2px; overflow-wrap: anywhere; }
+.tvbar .meta.bad { color: var(--bad); }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* banners and notes */
+.banner {
+  display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px 14px; border-radius: 12px;
+  background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn-border); font-size: .92rem;
+}
+.banner .ic { margin-top: 1px; }
+.banner p { margin: 0; }
+.banner.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+.note { margin: 10px 0 0; font-size: .86rem; color: var(--muted); }
+.note.warn { color: var(--warn); }
+.inline-msg { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); font-size: .9rem; }
+.inline-msg p { margin: 0 0 8px; }
+.inline-msg p:last-child { margin: 0; }
+
+/* layout */
+.grid2 { display: grid; gap: 14px; margin-top: 14px; }
+@media (min-width: 920px) { .grid2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+.col { display: grid; gap: 14px; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); min-width: 0; }
+@media (min-width: 720px) { .card { padding: 18px 20px; } }
+.card h2 { display: flex; align-items: center; gap: 9px; font-size: 1.02rem; margin: 0 0 12px; }
+.card h2 .ic { color: var(--primary); }
+.card h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 16px 0 8px; font-weight: 650; }
+.card h2 + h3 { margin-top: 4px; }
+
+/* forms */
+.field { display: grid; gap: 6px; margin-bottom: 12px; }
+.lbl { font-weight: 600; font-size: .92rem; }
+.lbl .opt { font-weight: 400; color: var(--muted); }
+input[type=text], input[type=search] {
+  width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; font: inherit; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 10px;
+}
+input[type=text]:hover, input[type=search]:hover { border-color: var(--primary); }
+input::placeholder { color: var(--muted); opacity: .85; }
+input[aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
+input.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; font-size: 1.05rem; }
+input.code::placeholder { text-transform: none; letter-spacing: .08em; }
+.row { display: flex; gap: 8px; }
+.row > input { flex: 1 1 auto; }
+.row > button { flex: none; }
+.help { margin: 0; color: var(--muted); font-size: .85rem; }
+.help.good { color: var(--ok); }
+.err { margin: 0; color: var(--bad); font-size: .9rem; font-weight: 550; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { min-height: 38px; padding: 6px 14px; border-radius: 999px; font-size: .92rem; font-weight: 500; background: var(--surface-2); border: 1px solid var(--border); }
+.chip:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-strong); }
+
+/* pairing */
+.pair { max-width: 620px; margin: 18px auto 0; }
+.pair.with-tvs { margin: 14px 0 0; max-width: none; }
+.steps { margin: 0 0 16px; padding-left: 20px; color: var(--muted); font-size: .92rem; }
+.steps li { margin: 3px 0; }
+.pair-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+
+/* remote */
+.keys { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.key { flex-direction: column; gap: 4px; min-height: 66px; padding: 10px 4px; font-size: .86rem; font-weight: 500; background: var(--surface-2); border-color: var(--border); }
+.key:hover:not(:disabled) { border-color: var(--primary); }
+.key .ic { width: 22px; height: 22px; color: var(--primary-strong); }
+.key.accent { background: var(--primary-soft); color: var(--primary-strong); }
+.vol { display: flex; align-items: center; gap: 8px; }
+.vol input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: var(--primary); height: 32px; }
+.vol output { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: .9rem; }
+.icon-btn { width: 44px; padding: 0; flex: none; }
+
+/* file */
+.drop {
+  position: relative; display: grid; justify-items: center; gap: 4px; text-align: center; padding: 22px 14px;
+  border: 2px dashed var(--border-strong); border-radius: 12px; background: var(--surface-2); color: var(--muted); cursor: pointer;
+}
+.drop:hover, .drop.drag { border-color: var(--primary); color: var(--text); }
+.drop:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+.drop .ic { width: 28px; height: 28px; color: var(--primary); }
+.drop strong { color: var(--text); font-weight: 600; }
+.drop input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.drop.busy { pointer-events: none; opacity: .7; }
+.progress-wrap { margin-top: 12px; }
+.progress-label { display: flex; justify-content: space-between; gap: 10px; font-size: .88rem; margin-bottom: 6px; }
+.progress-label span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bar { height: 8px; border-radius: 99px; background: var(--border); overflow: hidden; }
+.bar > span { display: block; height: 100%; width: 0; background: var(--primary); transition: width .15s; }
+
+/* apps */
+.apps-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.apps-tools input { flex: 1 1 180px; }
+.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 12px; max-height: 340px; overflow: auto; padding: 2px; }
+.apps button { display: block; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: .9rem; font-weight: 500; background: var(--surface-2); border-color: var(--border); }
+.apps button:hover { border-color: var(--primary); }
+
+/* screen */
+.switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 2px 0 6px; }
+.switch label { font-weight: 550; cursor: pointer; }
+.switch .help { font-weight: 400; }
+.toggle {
+  -webkit-appearance: none; appearance: none; margin: 0; width: 48px; height: 28px; border-radius: 99px; flex: none;
+  background: var(--border-strong); position: relative; cursor: pointer; transition: background-color .15s;
+}
+.toggle::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3); transition: transform .15s;
+}
+.toggle:checked { background: var(--primary); }
+.toggle:checked::after { transform: translateX(20px); }
+.toggle:disabled { opacity: .5; }
+
+/* results */
+.results { margin-top: 12px; }
+.results .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.results h2 { margin: 0; }
+.results ul { list-style: none; margin: 0; padding: 0; }
+.results li { display: flex; gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--border); font-size: .92rem; }
+.results li .dot { position: relative; top: -1px; }
+.results li b { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.results li span.msg { min-width: 0; overflow-wrap: anywhere; }
+.results li.bad span.msg { color: var(--bad); }
+
+/* help */
+.helpbox { margin-top: 14px; }
+.helpbox details { border-top: 1px solid var(--border); padding: 10px 0; }
+.helpbox details:first-of-type { border-top: 0; }
+.helpbox summary { cursor: pointer; font-weight: 600; }
+.helpbox details p { margin: 6px 0 0; color: var(--muted); font-size: .92rem; }
+.foot { margin-top: 18px; text-align: center; color: var(--muted); font-size: .82rem; }
+
+/* toast */
+.toast {
+  position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 40;
+  width: min(580px, calc(100% - 32px)); transform: translate(-50%, 16px); opacity: 0; pointer-events: none;
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px 12px 12px 16px; border-radius: 12px;
+  background: var(--toast-bg); color: var(--toast-text); box-shadow: 0 10px 30px rgba(0, 0, 0, .25);
+  transition: opacity .18s, transform .18s; font-size: .94rem;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.toast.bad { background: var(--toast-bad); color: #fff; }
+.toast .txt { flex: 1 1 auto; min-width: 0; padding-top: 1px; overflow-wrap: anywhere; }
+.toast .t-actions { display: flex; gap: 6px; flex: none; align-items: center; }
+.toast .t-actions a, .toast .t-actions button {
+  min-height: 32px; padding: 4px 10px; font-size: .85rem; border-radius: 8px; color: inherit;
+  background: transparent; border: 1px solid currentColor; text-decoration: none; display: inline-flex; align-items: center;
+}
+.toast .t-actions .x { border-color: transparent; width: 32px; padding: 0; justify-content: center; }
+@media (max-width: 480px) { .toast { flex-wrap: wrap; } .toast .t-actions { margin-left: auto; } }
+
+/* dialog */
+dialog {
+  border: 1px solid var(--border); border-radius: 16px; padding: 20px; background: var(--surface); color: var(--text);
+  width: min(440px, calc(100% - 32px)); box-shadow: 0 24px 60px rgba(0, 0, 0, .3);
+}
+dialog::backdrop { background: rgba(15, 23, 42, .5); }
+dialog h2 { margin: 0 0 10px; font-size: 1.1rem; }
+dialog p { margin: 0 0 14px; color: var(--muted); }
+.dlg-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4"/><path d="M10 9.5v5l4.5-2.5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 17v-6M9.5 13.5 12 11l2.5 2.5"/></symbol>
+  <symbol id="i-remote" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17.5h4"/></symbol>
+  <symbol id="i-apps" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9v11h13V9"/></symbol>
+  <symbol id="i-recents" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M7 4h10"/></symbol>
+  <symbol id="i-playpause" viewBox="0 0 24 24"><path d="M4 5v14l9-7z"/><path d="M16 5v14M20 5v14"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M19 19 9 12l10-7z"/><path d="M5 5v14"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 5l10 7-10 7z"/><path d="M19 5v14"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M22 9l-6 6M16 9l6 6"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 4v6h-6"/><path d="M20.4 14.5A8.5 8.5 0 1 1 18.5 6L21 9"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0M2 9a15 15 0 0 1 20 0M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.5h.01"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-all" viewBox="0 0 24 24"><rect x="2" y="3" width="13" height="9" rx="1.5"/><rect x="9" y="12" width="13" height="9" rx="1.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+</svg>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"><svg class="ic"><use href="#i-tv"/></svg></div>
+      <div>
+        <h1>Office TV Remote</h1>
+        <p class="sub">Laptop ya phone se office TV chalayein. IP address ki zaroorat nahi.</p>
+      </div>
+    </div>
+    <a class="help-link" href="#help">Madad</a>
+  </header>
+
+  <div class="banner bad" id="fatal" role="alert" hidden>
+    <svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg>
+    <p id="fatalText"></p>
+  </div>
+
+  <nav class="picker" id="picker" aria-label="TV chunein" hidden></nav>
+
+  <section class="tvbar" id="tvBar" aria-label="Chuna hua TV" hidden>
+    <div class="info">
+      <div class="title"><span class="dot" id="barDot" aria-hidden="true"></span><span id="barName"></span></div>
+      <div class="meta" id="barMeta"></div>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn-ghost btn-sm" id="refreshBtn"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg><span>Refresh</span></button>
+      <button type="button" class="btn-ghost btn-sm" id="renameBtn"><svg class="ic" aria-hidden="true"><use href="#i-edit"/></svg>Naam badlo</button>
+      <a class="btn btn-ghost btn-sm" id="barLan" target="_blank" rel="noopener" hidden><svg class="ic" aria-hidden="true"><use href="#i-wifi"/></svg>Same Wi-Fi page</a>
+      <button type="button" class="btn-danger btn-sm" id="removeBtn"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>Hatao</button>
+    </div>
+  </section>
+
+  <div class="banner" id="permBanner" role="status" hidden>
+    <svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg>
+    <p id="permText"></p>
+  </div>
+  <p class="note warn" id="storageNote" hidden>
+    Is browser mein TV yaad nahi rakhe ja sakte (shayad private window hai). Page band karne par TV dobara jodna padega.
+  </p>
+
+  <section class="card pair" id="pairCard" aria-labelledby="pairTitle" hidden>
+    <h2 id="pairTitle"><svg class="ic" aria-hidden="true"><use href="#i-tv"/></svg>TV jodein</h2>
+    <ol class="steps">
+      <li>TV par <b>Office TV</b> app kholein.</li>
+      <li>Screen par dikh raha <b>TV code</b> neeche likhein (jaise 7K3M9-QX2TD).</li>
+      <li>Phone ho to TV par dikh raha QR scan kar lein, TV apne aap jud jayega.</li>
+    </ol>
+    <form id="pairForm" novalidate>
+      <div class="field">
+        <label class="lbl" for="pairName">TV ka naam <span class="opt">(optional)</span></label>
+        <input type="text" id="pairName" maxlength="40" autocomplete="off" placeholder="Jaise: Conference room">
+      </div>
+      <div class="field">
+        <label class="lbl" for="pairCode">TV code</label>
+        <input type="text" id="pairCode" class="code" autocomplete="off" autocapitalize="characters" autocorrect="off"
+               spellcheck="false" inputmode="text" placeholder="7K3M9-QX2TD" aria-describedby="pairHelp pairErr">
+        <p class="help" id="pairHelp">10 akshar. Chhote ya bade akshar, space aur dash sab chalenge.</p>
+        <p class="err" id="pairErr" role="alert"></p>
+      </div>
+      <div class="pair-actions">
+        <button class="btn-primary" id="pairSubmit">TV jodein</button>
+        <button type="button" class="btn-ghost" id="pairCancel" hidden>Band karein</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card results" id="results" aria-labelledby="resultsTitle" hidden>
+    <div class="head">
+      <h2 id="resultsTitle">Sab TV ka result</h2>
+      <button type="button" class="btn-ghost btn-sm" id="resultsClose">Band karein</button>
+    </div>
+    <ul id="resultsList"></ul>
+  </section>
+
+  <main class="grid2" id="controls" hidden>
+    <div class="col">
+      <section class="card" aria-labelledby="hLink">
+        <h2 id="hLink"><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg>Link / Meeting / Website kholo</h2>
+        <form class="row" id="openForm">
+          <label class="sr-only" for="url">Link ya website</label>
+          <input type="text" id="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"
+                 placeholder="meet.google.com/abc-defg-hij ya koi website">
+          <button class="btn-primary">Kholo</button>
+        </form>
+        <p class="help" style="margin-top:6px">https:// likhna zaroori nahi. Meet code (abc-defg-hij) bhi chalega.</p>
+        <h3>Jaldi kholo</h3>
+        <div class="chips">
+          <button type="button" class="chip" data-url="https://www.youtube.com">YouTube</button>
+          <button type="button" class="chip" data-url="https://meet.google.com">Google Meet</button>
+          <button type="button" class="chip" data-url="https://zoom.us/join">Zoom</button>
+          <button type="button" class="chip" data-url="https://teams.microsoft.com">Teams</button>
+          <button type="button" class="chip" data-url="https://www.google.com">Google</button>
+        </div>
+        <h3>Google apps</h3>
+        <div class="chips">
+          <button type="button" class="chip" data-url="https://mail.google.com">Gmail</button>
+          <button type="button" class="chip" data-url="https://drive.google.com">Drive</button>
+          <button type="button" class="chip" data-url="https://docs.google.com/spreadsheets">Sheets</button>
+          <button type="button" class="chip" data-url="https://docs.google.com/document">Docs</button>
+          <button type="button" class="chip" data-url="https://docs.google.com/presentation">Slides</button>
+          <button type="button" class="chip" data-url="https://chat.google.com">Chat</button>
+          <button type="button" class="chip" data-url="https://calendar.google.com">Calendar</button>
+        </div>
+        <p class="note">Pehli baar TV par browser mein apne Google account se login karna hoga.</p>
+      </section>
+
+      <section class="card" aria-labelledby="hYt">
+        <h2 id="hYt"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>YouTube</h2>
+        <form class="row" id="ytForm">
+          <label class="sr-only" for="yt">Video ka naam ya YouTube link</label>
+          <input type="text" id="yt" autocomplete="off" placeholder="Video ka naam ya YouTube link">
+          <button class="btn-primary">Chalao</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="hFile">
+        <h2 id="hFile"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>PPT / PDF / Photo / Video dikhao</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept=".pdf,.ppt,.pptx,.pps,.ppsx,.doc,.docx,.xls,.xlsx,.odp,.odt,.ods,.txt,image/*,video/*,audio/*" aria-describedby="fileHint">
+          <svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>
+          <strong id="fileLabel">File chunein ya yahan chhodein</strong>
+          <span id="fileHint">TV par apne aap khul jayegi. 15 MB tak.</span>
+        </label>
+        <div class="progress-wrap" id="progWrap" hidden>
+          <div class="progress-label"><span id="progName"></span><span id="progPct">0%</span></div>
+          <div class="bar" role="progressbar" id="progBar" aria-label="File bhejne ki progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+        </div>
+        <div class="inline-msg" id="fileMsg" role="alert" hidden></div>
+        <p class="note">Badi file (15 MB se zyada)? Use Google Drive par daal kar link upar bhejein, ya TV wale Wi-Fi par TV ka page kholein.</p>
+        <div class="actions" style="margin-top:10px">
+          <a class="btn btn-ghost btn-sm" id="fileLan" target="_blank" rel="noopener" hidden><svg class="ic" aria-hidden="true"><use href="#i-wifi"/></svg>TV ka Same Wi-Fi page kholein</a>
+        </div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card" aria-labelledby="hRemote">
+        <h2 id="hRemote"><svg class="ic" aria-hidden="true"><use href="#i-remote"/></svg>Remote</h2>
+        <h3>Slide / Page</h3>
+        <div class="keys">
+          <button type="button" class="key accent" data-key="prev_slide"><svg class="ic" aria-hidden="true"><use href="#i-left"/></svg>Pichhli slide</button>
+          <button type="button" class="key" data-key="scroll_up"><svg class="ic" aria-hidden="true"><use href="#i-up"/></svg>Upar</button>
+          <button type="button" class="key accent" data-key="next_slide"><svg class="ic" aria-hidden="true"><use href="#i-right"/></svg>Agli slide</button>
+          <button type="button" class="key" data-key="back"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>Back</button>
+          <button type="button" class="key" data-key="scroll_down"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Neeche</button>
+          <button type="button" class="key" data-key="home"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg>Home</button>
+        </div>
+        <p class="note" id="kbdHint">Laptop par keyboard ke &larr; &rarr; arrow keys se bhi slide badal sakte hain.</p>
+        <p class="note warn" id="a11yNote" hidden>Back, Home aur slide buttons ke liye TV par Office TV app kholein aur Accessibility on karein.</p>
+        <h3>Media</h3>
+        <div class="keys">
+          <button type="button" class="key" data-key="previous"><svg class="ic" aria-hidden="true"><use href="#i-prev"/></svg>Pichhla</button>
+          <button type="button" class="key" data-key="play_pause"><svg class="ic" aria-hidden="true"><use href="#i-playpause"/></svg>Play / Pause</button>
+          <button type="button" class="key" data-key="next"><svg class="ic" aria-hidden="true"><use href="#i-next"/></svg>Agla</button>
+        </div>
+        <h3>Volume</h3>
+        <div class="vol">
+          <button type="button" class="icon-btn" data-key="mute" aria-label="Mute"><svg class="ic" aria-hidden="true"><use href="#i-mute"/></svg></button>
+          <button type="button" class="icon-btn" data-key="volume_down" aria-label="Volume kam"><svg class="ic" aria-hidden="true"><use href="#i-minus"/></svg></button>
+          <input type="range" id="vol" min="0" max="100" step="5" value="40" aria-label="Volume">
+          <button type="button" class="icon-btn" data-key="volume_up" aria-label="Volume zyada"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button>
+          <output id="volOut" for="vol">40%</output>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="hScreen">
+        <h2 id="hScreen"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg>Screen</h2>
+        <div class="switch">
+          <label for="awake">Screen hamesha on rakho<br><span class="help">TV apne aap sleep nahi hoga.</span></label>
+          <input type="checkbox" class="toggle" id="awake" role="switch" checked>
+        </div>
+        <div class="actions" style="margin-top:8px">
+          <button type="button" class="btn-soft" data-key="wake"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg>Screen jagao</button>
+          <button type="button" class="btn-soft" data-key="recents"><svg class="ic" aria-hidden="true"><use href="#i-recents"/></svg>Recent apps</button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="hApps">
+        <h2 id="hApps"><svg class="ic" aria-hidden="true"><use href="#i-apps"/></svg>TV ki apps</h2>
+        <div class="apps-tools">
+          <button type="button" class="btn-soft" id="loadApps">Apps dikhao</button>
+          <label class="sr-only" for="appFilter">App dhoondhein</label>
+          <input type="search" id="appFilter" placeholder="App dhoondhein" autocomplete="off" hidden>
+        </div>
+        <p class="note" id="appsNote" hidden>Apps dekhne ke liye upar ek TV chunein.</p>
+        <div class="apps" id="apps" role="group" aria-label="TV ki apps"></div>
+      </section>
+    </div>
+  </main>
+
+  <section class="card helpbox" id="help" aria-labelledby="hHelp">
+    <h2 id="hHelp">Madad</h2>
+    <details>
+      <summary>TV code kahan milega?</summary>
+      <p>TV par Office TV app kholein. Screen par 10 akshar ka TV code aur QR dikhta hai. Phone se QR scan karein to TV apne aap jud jata hai.</p>
+    </details>
+    <details>
+      <summary>TV se jawab nahi aa raha?</summary>
+      <p>TV on karein aur dekhein ki TV internet se juda hai. TV par Office TV app ek baar kholein. Laptop ka date/time sahi hona chahiye. Phir upar Refresh dabayein.</p>
+    </details>
+    <details>
+      <summary>Laptop aur TV alag Wi-Fi par hain?</summary>
+      <p>Koi baat nahi. Yeh page internet se TV tak command bhejta hai, isliye IP address ya same Wi-Fi ki zaroorat nahi.</p>
+    </details>
+    <details>
+      <summary>"Limit poori ho gayi" aaya?</summary>
+      <p>Commands free ntfy.sh relay se jaate hain, jo poore office ko roz gine-chune messages deta hai. Kuch der baad dobara try karein, ya TV wale Wi-Fi par TV ka "Same Wi-Fi page" kholein.</p>
+    </details>
+    <details>
+      <summary>Kya yeh safe hai?</summary>
+      <p>Har command TV code se encrypt hoti hai. Code ke bina koi TV nahi chala sakta. Code sirf office ke logon ko dein. TV app mein "Naya code banao" dabane se purana code band ho jata hai.</p>
+    </details>
+  </section>
+  <p class="foot">Office TV Remote</p>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true">
+  <div class="txt" id="toastText"></div>
+  <div class="t-actions">
+    <a id="toastLink" target="_blank" rel="noopener" hidden></a>
+    <button type="button" class="x" id="toastClose" aria-label="Message band karein"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+</div>
+
+<dialog id="renameDlg" aria-labelledby="renameTitle">
+  <form method="dialog" id="renameForm">
+    <h2 id="renameTitle">TV ka naam badlein</h2>
+    <p>Naya naam TV par bhi dikhega.</p>
+    <label class="lbl" for="renameInput">Naya naam</label>
+    <input type="text" id="renameInput" maxlength="40" autocomplete="off" style="margin-top:6px">
+    <p class="err" id="renameErr" role="alert" style="margin-top:6px"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn-ghost" id="renameCancel">Rehne dein</button>
+      <button class="btn-primary" id="renameOk" value="ok">Save karein</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="removeDlg" aria-labelledby="removeTitle">
+  <form method="dialog">
+    <h2 id="removeTitle">TV hatayein?</h2>
+    <p id="removeText"></p>
+    <div class="dlg-actions">
+      <button type="button" class="btn-ghost" id="removeCancel">Rehne dein</button>
+      <button class="btn-danger-solid" id="removeOk" value="ok">Haan, hatao</button>
+    </div>
+  </form>
+</dialog>
+
+<noscript><p style="text-align:center;padding:16px">Yeh page chalane ke liye browser mein JavaScript on karein.</p></noscript>
+<script nomodule>
+  document.getElementById('fatal').hidden = false;
+  document.getElementById('fatalText').textContent = 'Yeh browser bahut purana hai. Chrome ya Edge ka naya version use karein.';
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
