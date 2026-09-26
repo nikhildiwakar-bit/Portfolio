@@ -1,0 +1,39 @@
+{
+  "code": "7K3M9QX2TD",
+  "displayCode": "7K3M9-QX2TD",
+  "topic": "otv72da22ce6d1dec26464d0fab1b004291",
+  "keyHex": "9fee570d00300cb506012c4d6ec0a3d37a116f4058164e4fb19f1943202d1584",
+  "message": {
+    "ivHex": "000102030405060708090a0b",
+    "plaintext": "{\"v\":1,\"dir\":\"c2t\",\"id\":\"abc123\",\"ts\":1760000000000,\"cmd\":\"open\",\"args\":{\"url\":\"https://docs.google.com/spreadsheets\"}}",
+    "envelope": "otv1.AAECAwQFBgcICQoL.UdQWZc3y07wG7axAVsmess976n6aD2KxrHqhDaCOfE6KAXDJa6X1vZMfH6NzyG_z8rfSmKIuoRmim5G9Lo81EprwAoAkv_sIwY8S1ng8qiwLuo1s-qtNMr6Eo-3zAL8V7DtCMk6dfqDOlP-_1thSWhdHKlxWW-qT6PfpINALkOx-A42N2HT8"
+  },
+  "file": {
+    "ivHex": "6465666768696a6b6c6d6e6f",
+    "aad": "otv72da22ce6d1dec26464d0fab1b004291:file",
+    "plaintextHex": "255044462d312e342074696e7920746573742066696c65",
+    "ciphertextB64u": "vTw5yvC1KE63dzW04xrbonJsY4kkkfYo94sb46Gxciz9ws5osX2B"
+  },
+  "normalize": [
+    {
+      "input": "7k3m9-qx2td",
+      "output": "7K3M9QX2TD"
+    },
+    {
+      "input": " 7K3M9 QX2TD ",
+      "output": "7K3M9QX2TD"
+    },
+    {
+      "input": "oiL3M-9QX2T",
+      "output": "0113M9QX2T"
+    },
+    {
+      "input": "7K3M9QX2T",
+      "output": null
+    },
+    {
+      "input": "7K3M9QX2TU",
+      "output": null
+    }
+  ]
+}
