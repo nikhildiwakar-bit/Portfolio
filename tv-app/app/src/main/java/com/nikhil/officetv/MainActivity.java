@@ -44,6 +44,14 @@ import java.util.Locale;
 public class MainActivity extends Activity {
     static final String SITE = "nikhildiwakar-bit.github.io/Portfolio/tv";
     private static final long TICK_MS = 5000;
+
+    /** The visible home screen, so services can ask it to update at once (e.g. Accessibility just connected). */
+    private static volatile java.lang.ref.WeakReference<MainActivity> visible = new java.lang.ref.WeakReference<>(null);
+
+    static void refreshNow() {
+        MainActivity a = visible.get();
+        if (a != null) a.handler.post(a::refresh);
+    }
     /** A failed connection is shown as "Connecting" for this long first (short outages are normal). */
     private static final long OFFLINE_GRACE_MS = 8000;
 
@@ -302,6 +310,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        visible = new java.lang.ref.WeakReference<>(this);
         ControlService.start(this);
         RelayManager.start(this);
         RelayManager.setListener(relayChanged);
@@ -313,6 +322,7 @@ public class MainActivity extends Activity {
     protected void onPause() {
         handler.removeCallbacks(tick);
         RelayManager.setListener(null);
+        if (visible.get() == this) visible = new java.lang.ref.WeakReference<>(null);
         super.onPause();
     }
 

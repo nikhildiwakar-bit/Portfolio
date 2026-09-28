@@ -16,6 +16,7 @@ public class RemoteA11yService extends AccessibilityService {
     protected void onServiceConnected() {
         instance = this;
         DebugHooks.event("a11y=connected");
+        MainActivity.refreshNow();
         // Android binds this service at boot, sometimes before BOOT_COMPLETED: a good moment to get ready.
         ControlService.start(this);
     }
@@ -29,6 +30,7 @@ public class RemoteA11yService extends AccessibilityService {
     @Override
     public boolean onUnbind(Intent intent) {
         instance = null;
+        MainActivity.refreshNow();
         return super.onUnbind(intent);
     }
 
