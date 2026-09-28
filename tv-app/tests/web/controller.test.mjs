@@ -267,7 +267,7 @@ test('apps list arrives in several parts (out of order) and a tap opens the app'
     await page.done();
 });
 
-test('file under 15 MB is encrypted, uploaded and opened; over 15 MB is refused with help', async () => {
+test('file under 20 MB is encrypted, uploaded and opened; over 20 MB is refused with help', async () => {
     const page = await open();
     await pairA(page);
     const bytes = Buffer.alloc(2 * 1024 * 1024);
@@ -278,23 +278,25 @@ test('file under 15 MB is encrypted, uploaded and opened; over 15 MB is refused 
     assert.equal(tvA.files.length, 1);
     assert.equal(tvA.files[0].name, 'Sales.pptx');
     assert.ok(Buffer.from(tvA.files[0].bytes).equals(bytes), 'TV decrypted exactly the bytes we picked');
-    const upload = relay.posts.find(p => p.query === '?filename=otv.bin&firebase=no');
-    assert.equal(upload.size, bytes.length + 16, 'relay only saw ciphertext + tag');
-    assert.equal(relay.files.size, filesBefore + 1);
+    const uploads = relay.posts.filter(p => p.query === '?filename=otv.bin&firebase=no');
+    assert.equal(uploads.length, 2, 'a 2 MiB file goes as two encrypted parts (ntfy.sh caps attachments at 2 MB)');
+    assert.equal(uploads.reduce((n, u) => n + u.size, 0), bytes.length + 32, 'relay only saw ciphertext + tags');
+    assert.ok(uploads.every(u => u.size <= 2 * 1024 * 1024), 'every part fits the 2 MB relay limit');
+    assert.equal(relay.files.size, filesBefore + 2);
     const stored = Array.from(relay.files.values()).pop();
     assert.ok(!Buffer.from(stored).subarray(0, 64).equals(bytes.subarray(0, 64)), 'stored attachment is not plaintext');
     assert.equal(await page.getAttribute('#progBar', 'aria-valuenow'), '100');
 
-    const big = Buffer.alloc(15 * 1000 * 1000 + 1, 1);
+    const big = Buffer.alloc(20 * 1000 * 1000 + 1, 1);
     await page.setInputFiles('#file', { name: 'Launch video.mp4', mimeType: 'video/mp4', buffer: big });
-    const t = await toastText(page, /only files up to 15 MB/);
+    const t = await toastText(page, /only files up to 20 MB/);
     assert.match(t, /Google Drive/);
     assert.equal(await page.getAttribute('#toastLink', 'href'), LAN);
     assert.equal(await page.isVisible('#fileMsg'), true);
-    assert.match(await page.textContent('#fileMsg'), /This file is 15\.1 MB.*Google Drive.*Same Wi-Fi page/);
+    assert.match(await page.textContent('#fileMsg'), /This file is 20\.1 MB.*Google Drive.*Same Wi-Fi page/);
     assert.equal(await page.getAttribute('#fileLan', 'href'), LAN);
     await sleep(300);
-    assert.equal(relay.files.size, filesBefore + 1, 'nothing uploaded for the big file');
+    assert.equal(relay.files.size, filesBefore + 2, 'nothing uploaded for the big file');
     assert.equal(tvA.received('file').length, 1);
     assert.deepEqual(tvA.errors, []);
     await page.done();

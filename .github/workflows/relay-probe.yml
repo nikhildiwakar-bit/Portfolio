@@ -1,7 +1,5 @@
 name: Relay probe
 on:
-  push:
-    paths: ['.github/workflows/relay-probe.yml']
   workflow_dispatch:
 permissions:
   contents: read

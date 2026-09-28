@@ -216,7 +216,7 @@ function hideToast() {
 }
 
 function fmtMB(bytes) {
-    // Rounded up, so a file just over the limit never reads as "15 MB".
+    // Rounded up, so a file just over the limit never reads as "20 MB".
     return (Math.ceil(bytes / 1e5) / 10).toFixed(1) + ' MB';
 }
 
@@ -786,7 +786,7 @@ async function sendFile(file) {
     $('fileMsg').hidden = true;
     if (file.size > MAX_FILE_BYTES) {
         showFileMsg(tooBigText(file.size));
-        toast('This file is ' + fmtMB(file.size) + '; only files up to 15 MB can be sent. Use a Google Drive link or the Same Wi-Fi page.',
+        toast('This file is ' + fmtMB(file.size) + '; only files up to 20 MB can be sent. Use a Google Drive link or the Same Wi-Fi page.',
             'bad', { link: lanLink(list[0]) });
         return;
     }

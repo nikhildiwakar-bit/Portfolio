@@ -76,13 +76,21 @@ export async function createFakeTv({
             }
             case 'file': {
                 if (!getAttachment) return [result(false, 'The file could not be downloaded.')];
-                const enc = await getAttachment(a.url);
-                if (!enc) return [result(false, 'The file could not be downloaded.')];
-                const bytes = await otv.openFile(key, topic, a.iv, enc);
-                if (!bytes) {
-                    tv.errors.push('file did not decrypt');
-                    return [result(false, 'The file is damaged.')];
+                const parts = Array.isArray(a.chunks) ? a.chunks : [{ url: a.url, iv: a.iv }];
+                const pieces = [];
+                for (const c of parts) {
+                    const enc = await getAttachment(c.url);
+                    if (!enc) return [result(false, 'The file could not be downloaded.')];
+                    const dec = await otv.openFile(key, topic, c.iv, enc);
+                    if (!dec) {
+                        tv.errors.push('file did not decrypt');
+                        return [result(false, 'The file is damaged.')];
+                    }
+                    pieces.push(dec);
                 }
+                const bytes = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0));
+                let off = 0;
+                for (const p of pieces) { bytes.set(p, off); off += p.length; }
                 if (bytes.length !== a.size) tv.errors.push('file size mismatch ' + bytes.length + ' != ' + a.size);
                 tv.files.push({ name: a.name, bytes });
                 return [result(true, 'Opened ' + a.name + ' on the TV.')];

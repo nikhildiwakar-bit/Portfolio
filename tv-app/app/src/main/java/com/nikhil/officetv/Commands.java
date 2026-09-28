@@ -77,7 +77,16 @@ final class Commands implements RelayClient.Handler {
         if (client == null) return Actions.result(false, "The TV is not connected to the internet right now.");
         byte[] bytes;
         try {
-            bytes = client.fetchFile(args);
+            JSONArray chunks = args.optJSONArray("chunks");
+            if (chunks == null) {
+                bytes = client.fetchFile(args);
+            } else {
+                // Big files arrive as several encrypted parts (the relay limits each attachment to 2 MB).
+                if (chunks.length() == 0 || chunks.length() > 12) return Actions.result(false, "The file is too large to send over the internet (20 MB max).");
+                java.io.ByteArrayOutputStream all = new java.io.ByteArrayOutputStream();
+                for (int i = 0; i < chunks.length(); i++) all.write(client.fetchFile(chunks.getJSONObject(i)));
+                bytes = all.toByteArray();
+            }
         } catch (IOException e) {
             return Actions.result(false, "The file did not reach the TV (network issue or expired link). Please send it again.");
         } catch (java.security.GeneralSecurityException e) {

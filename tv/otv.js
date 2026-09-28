@@ -4,8 +4,10 @@
 export const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 export const CONTROLLER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/';
 export const DEFAULT_RELAY = 'https://ntfy.sh';
-/** Largest file sendFile() accepts (plaintext). ntfy.sh caps attachments at about 15 MB. */
-export const MAX_FILE_BYTES = 15 * 1000 * 1000;
+/** Largest file sendFile() accepts (plaintext). Sent in 1.9 MB encrypted parts (ntfy.sh caps each attachment at 2 MB). */
+export const MAX_FILE_BYTES = 20 * 1000 * 1000;
+/** ntfy.sh accepts attachments up to 2 MB, so bigger files are sent as several encrypted parts. */
+export const CHUNK_BYTES = 1900 * 1000;
 export const MAX_ENVELOPE_BYTES = 3900;
 
 const enc = new TextEncoder();
@@ -550,15 +552,22 @@ export class TvLink {
         };
         progress(0);
         const bytes = await readBytes(file);
-        const sealed = await sealFile(this.key, this.topic, bytes);
-        progress(0.03);
-        const res = await this._upload(this.url + '?filename=otv.bin&firebase=no', sealed.data,
-            f => progress(0.03 + f * 0.87));
-        const url = res && res.attachment && res.attachment.url;
-        if (typeof url !== 'string' || !url) throw linkError('relay', 'relay returned no attachment url');
-        progress(0.92);
         const name = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 120) || 'file';
-        const ack = await this.send('file', { url, name, iv: sealed.iv, size }, { timeoutMs });
+        const count = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES));
+        const chunks = [];
+        for (let i = 0; i < count; i++) {
+            const part = bytes.subarray(i * CHUNK_BYTES, Math.min(bytes.length, (i + 1) * CHUNK_BYTES));
+            const sealed = await sealFile(this.key, this.topic, part);
+            const base = 0.02 + 0.9 * i / count;
+            const res = await this._upload(this.url + '?filename=otv.bin&firebase=no', sealed.data,
+                f => progress(base + f * 0.9 / count));
+            const url = res && res.attachment && res.attachment.url;
+            if (typeof url !== 'string' || !url) throw linkError('relay', 'relay returned no attachment url');
+            chunks.push({ url, iv: sealed.iv, size: part.length });
+        }
+        progress(0.93);
+        const args = count === 1 ? { url: chunks[0].url, name, iv: chunks[0].iv, size } : { name, size, chunks };
+        const ack = await this.send('file', args, { timeoutMs });
         progress(1);
         return ack;
     }
