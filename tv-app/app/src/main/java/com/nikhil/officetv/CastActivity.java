@@ -280,6 +280,12 @@ public class CastActivity extends Activity {
         w.setOverScrollMode(View.OVER_SCROLL_NEVER);
         w.setVerticalScrollBarEnabled(false);
         w.setHorizontalScrollBarEnabled(false);
+        w.setScrollbarFadingEnabled(true);
+        if (Build.VERSION.SDK_INT >= 26) {
+            // Keep the page's renderer at foreground priority even if Android is short of memory, so video
+            // decoding is never throttled; the page is the only thing on screen.
+            w.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
         WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);

@@ -5,7 +5,7 @@
 // Relay use is kept small (the free relay has a daily limit per office network): one 'ping' per saved TV
 // when the page loads (no polling), then per sharing session: 'cast' start + ack + offer + answer.
 import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=3';
-import { CastSender, captureScreen, senderSupport } from './cast.js?v=2';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=3';
 
 const $ = id => document.getElementById(id);
 const STORE_KEY = 'officetv.tvs';

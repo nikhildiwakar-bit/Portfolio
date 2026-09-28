@@ -5,7 +5,7 @@ import * as otv from '../../../tv/otv.js';
 import {
     CastChannel, CastSender, MAX_BITRATE, MAX_FPS, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, captureScreen, decodeSignal,
     displayMediaOptions, encodeSignal, parseReceiverFragment, preferCodec, preferH264, receiverUrl, senderSupport, signalMessages,
-    tuneSender, validSession,
+    tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS,
 } from '../../../tv/cast.js';
 
 const CODE = '7K3M9QX2TD';
@@ -262,13 +262,23 @@ test('preferH264 only reorders when this browser can send H.264, and never throw
     assert.equal(preferH264({}, {}), false);
 });
 
-test('tuneSender caps the encoder at 6 Mbps and 30 fps', async () => {
+test('tuneSender caps the encoder at 8 Mbps and 30 fps', async () => {
     let params = { transactionId: 't1', encodings: [{ active: true }] };
     const sender = { getParameters: () => JSON.parse(JSON.stringify(params)), setParameters: async p => { params = p; } };
     assert.equal(await tuneSender(sender), true);
     assert.equal(params.encodings[0].maxBitrate, MAX_BITRATE);
     assert.equal(params.encodings[0].maxFramerate, MAX_FPS);
-    assert.equal(MAX_BITRATE, 6000000);
+    assert.equal(MAX_BITRATE, 8000000);
+    assert.equal(params.degradationPreference, 'maintain-framerate');
+    assert.equal(params.encodings[0].priority, 'high');
+    assert.equal(params.encodings[0].networkPriority, 'high');
+    // A browser that rejects the newer fields still gets the caps.
+    let p2 = { encodings: [{}] };
+    const picky = { getParameters: () => JSON.parse(JSON.stringify(p2)),
+        setParameters: async p => { if (p.degradationPreference || p.encodings[0].networkPriority) throw new Error('InvalidModificationError'); p2 = p; } };
+    assert.equal(await tuneSender(picky), true);
+    assert.equal(p2.encodings[0].maxBitrate, 8000000);
+    assert.equal(p2.degradationPreference, undefined);
     assert.equal(await tuneSender({ getParameters: () => ({ encodings: [] }), setParameters: async () => {} }), false);
     assert.equal(await tuneSender(null), false);
 });
@@ -363,10 +373,10 @@ test('sender: cast start, offer, answer, sharing; stop says bye on the data chan
     sender.start(stream);
     await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
     const pc = FakePC.last;
-    assert.equal(stream.getVideoTracks()[0].contentHint, 'detail');
+    assert.equal(stream.getVideoTracks()[0].contentHint, 'motion');
     const [vt, at] = pc.transceivers;
     assert.equal(vt.init.direction, 'sendonly');
-    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 6000000, maxFramerate: 30 }]);
+    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 8000000, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]);
     assert.equal(at.init.sendEncodings, undefined);
     assert.equal(sender.state, 'connecting');
     pc.dc._open();
@@ -472,4 +482,73 @@ test('sender: TV not answering times out; cancelling while the TV opens the rece
     await untilTrue(() => tv.received('cast').length === 2);
     assert.deepEqual(tv.received('cast').map(c => c.args.action), ['start', 'stop']);
     link.close();
+});
+
+// ---------- latency tuning ----------
+
+test('receiverCodecOrder: H.264 pm=1 constrained baseline first, then other H.264, VP8, VP9, the rest', () => {
+    const list = [
+        { mimeType: 'video/VP9', sdpFmtpLine: 'profile-id=0' },
+        { mimeType: 'video/AV1' },
+        { mimeType: 'video/H264', sdpFmtpLine: 'level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f' },
+        { mimeType: 'video/H264', sdpFmtpLine: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f' },
+        { mimeType: 'video/VP8' },
+        { mimeType: 'video/H264', sdpFmtpLine: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f' },
+        { mimeType: 'video/rtx' },
+    ];
+    const out = receiverCodecOrder(list).map(c => c.mimeType + ' ' + (c.sdpFmtpLine || ''));
+    assert.deepEqual(out, [
+        'video/H264 ' + list[5].sdpFmtpLine, 'video/H264 ' + list[3].sdpFmtpLine, 'video/H264 ' + list[2].sdpFmtpLine,
+        'video/VP8 ', 'video/VP9 profile-id=0', 'video/AV1 ', 'video/rtx ',
+    ]);
+    assert.deepEqual(receiverCodecOrder(null), []);
+});
+
+test('preferReceiveCodecs sets the order on video transceivers only, and never throws', () => {
+    const mk = kind => ({ receiver: { track: { kind } }, prefs: null, setCodecPreferences(c) { this.prefs = c; } });
+    const v = mk('video'), a = mk('audio');
+    const pc = { getTransceivers: () => [a, v] };
+    const w = { RTCRtpReceiver: { getCapabilities: () => ({ codecs: [{ mimeType: 'video/VP8' }, { mimeType: 'video/H264', sdpFmtpLine: 'packetization-mode=1' }] }) } };
+    assert.equal(preferReceiveCodecs(pc, w), true);
+    assert.equal(v.prefs[0].mimeType, 'video/H264');
+    assert.equal(a.prefs, null);
+    assert.equal(preferReceiveCodecs({ getTransceivers: () => [{ receiver: { track: { kind: 'video' } }, setCodecPreferences() { throw new Error('x'); } }] }, w), false);
+    assert.equal(preferReceiveCodecs(pc, {}), false);
+    assert.equal(preferReceiveCodecs(null, w), false);
+});
+
+test('lowLatencyReceiver sets jitterBufferTarget / playoutDelayHint to 0 when supported', () => {
+    const modern = { jitterBufferTarget: null, playoutDelayHint: null };
+    assert.equal(lowLatencyReceiver(modern), 'jitterBufferTarget');
+    assert.equal(modern.jitterBufferTarget, 0);
+    assert.equal(modern.playoutDelayHint, 0);
+    const legacy = { playoutDelayHint: null };
+    assert.equal(lowLatencyReceiver(legacy), 'playoutDelayHint');
+    assert.equal(legacy.playoutDelayHint, 0);
+    assert.equal('jitterBufferTarget' in legacy, false);
+    assert.equal(lowLatencyReceiver({}), '');
+    assert.equal(lowLatencyReceiver(null), '');
+    const ro = {};
+    Object.defineProperty(ro, 'jitterBufferTarget', { get: () => null, set: () => { throw new Error('ro'); } });
+    assert.equal(lowLatencyReceiver(ro), '');
+});
+
+test('iceGathered finishes early on host + srflx, or after ICE_WAIT_MS (1.5 s)', async () => {
+    assert.equal(ICE_WAIT_MS, 1500);
+    const pc = new EventTarget();
+    pc.iceGatheringState = 'gathering';
+    const t0 = Date.now();
+    const p = iceGathered(pc);
+    const cand = (type, line) => { const e = new Event('icecandidate'); e.candidate = { type, candidate: line || '' }; pc.dispatchEvent(e); };
+    cand('host');
+    cand(undefined, 'candidate:1 1 udp 1 1.2.3.4 5 typ srflx raddr 0.0.0.0 rport 0');
+    assert.equal(await p, true);
+    assert.ok(Date.now() - t0 < 200);
+    const pc2 = new EventTarget();
+    pc2.iceGatheringState = 'gathering';
+    const t1 = Date.now();
+    const p2 = iceGathered(pc2, 120);
+    const e = new Event('icecandidate'); e.candidate = { type: 'host' }; pc2.dispatchEvent(e);
+    assert.equal(await p2, false);
+    assert.ok(Date.now() - t1 >= 100);
 });

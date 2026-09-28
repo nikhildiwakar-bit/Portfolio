@@ -22,10 +22,10 @@ video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contai
 </style>
 </head>
 <body>
-<video id="video" autoplay playsinline></video>
+<video id="video" autoplay playsinline disablepictureinpicture disableremoteplayback></video>
 <div id="status" role="status"><span id="statusText">Getting ready…</span><small id="statusSub"></small></div>
 <div id="note" class="pill" role="status" hidden></div>
 <div id="sound" class="pill" hidden>Sound is off. Press OK on the remote to turn it on.</div>
-<script type="module" src="receive.js?v=2"></script>
+<script type="module" src="receive.js?v=3"></script>
 </body>
 </html>

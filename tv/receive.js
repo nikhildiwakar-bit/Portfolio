@@ -1,7 +1,7 @@
 // Screen sharing receiver. The Office TV app opens this page full screen in its own WebView with
 // #s=<session>&code=<pairing code>[&relay=<url>]. The fragment never leaves the device; it is removed
 // from the address bar right away. See PROTOCOL.md section 8.
-import { CastReceiver, parseReceiverFragment } from './cast.js?v=2';
+import { CastReceiver, parseReceiverFragment } from './cast.js?v=3';
 
 const $ = id => document.getElementById(id);
 const video = $('video');
@@ -35,8 +35,27 @@ function finish(reason) {
     }, reason === 'stopped' ? 800 : 3000);
 }
 
+const T0 = (performance && performance.now) ? performance.now() : 0;
+const since = () => Math.round(performance.now() - T0) + 'ms';
+
+// No picture-in-picture, no controls, no remote-playback UI: the video is only ever painted full screen.
+try { video.disablePictureInPicture = true; } catch (e) { /* optional */ }
+try { video.disableRemotePlayback = true; } catch (e) { /* optional */ }
+video.controls = false;
+
+/** Diagnostics only (no buffering): logs when the first frame is painted. */
+function watchFirstFrame() {
+    if (typeof video.requestVideoFrameCallback === 'function') {
+        video.requestVideoFrameCallback((t, meta) => {
+            console.info('[otv] rx page +' + since() + ' first-frame ' + (meta && meta.width) + 'x' + (meta && meta.height));
+        });
+    } else {
+        video.addEventListener('playing', () => console.info('[otv] rx page +' + since() + ' playing'), { once: true });
+    }
+}
+
 async function play(stream) {
-    if (video.srcObject !== stream) video.srcObject = stream;
+    if (video.srcObject !== stream) { video.srcObject = stream; watchFirstFrame(); }
     video.muted = false;
     try {
         await video.play();

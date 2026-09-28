@@ -82,8 +82,8 @@ test('first visit: one click connects and shares; the TV plays it; Stop sharing 
         const p = s.videoSender.getParameters();
         return { hint: s.stream.getVideoTracks()[0].contentHint, enc: p.encodings[0], stats: await s.videoStats() };
     });
-    assert.equal(q.hint, 'detail');
-    assert.equal(q.enc.maxBitrate, 6000000);
+    assert.equal(q.hint, 'motion');
+    assert.equal(q.enc.maxBitrate, 8000000);
     assert.equal(q.enc.maxFramerate, 30);
     console.log('# video: ' + JSON.stringify(q.stats) + ', display source: ' + await sender.evaluate(() => window.__gdm.source));
 

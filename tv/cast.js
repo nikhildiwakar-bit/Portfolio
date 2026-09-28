@@ -9,9 +9,21 @@ export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 /** Max characters of signal payload per relay message; keeps each envelope well under 3,900 bytes. */
 export const SIGNAL_CHUNK = 2400;
 export const MAX_SIGNAL_PARTS = 8;
-/** Video budget: up to 1080p at 30 fps and 6 Mbps, plenty for sharp text and smooth video on office Wi-Fi. */
-export const MAX_BITRATE = 6000000;
+/** Video budget: up to 1080p at 30 fps and 8 Mbps, plenty for sharp text and smooth video on office Wi-Fi. */
+export const MAX_BITRATE = 8000000;
 export const MAX_FPS = 30;
+/** Keep the frame rate (smooth scrolling) and let the encoder lower the resolution when bandwidth runs short. */
+export const DEGRADATION = 'maintain-framerate';
+/** ICE gathering wait: stop at 1.5 s, or as soon as a host and a server-reflexive (STUN) address are known. */
+export const ICE_WAIT_MS = 1500;
+const now = () => (globalThis.performance && typeof performance.now === 'function' ? performance.now() : Date.now());
+/** Connect timing log for comparing builds: console lines like "[otv] tx +123ms offer-sent". */
+export function timingLog(tag) {
+    const t0 = now();
+    return (step, extra) => {
+        try { console.info('[otv] ' + tag + ' +' + Math.round(now() - t0) + 'ms ' + step + (extra ? ' ' + extra : '')); } catch (e) { /* ignore */ }
+    };
+}
 const FRESH_S = 300;
 
 function castError(code, message) {
@@ -104,22 +116,91 @@ export function preferH264(transceiver, w = globalThis) {
     }
 }
 
-/** Caps the video encoder at MAX_BITRATE / MAX_FPS (again after connecting, for browsers that ignore sendEncodings). */
+/** The sendEncodings entry for the screen: bitrate/frame-rate caps, full resolution, high priority (DSCP where the OS allows). */
+export function videoEncoding() {
+    return { maxBitrate: MAX_BITRATE, maxFramerate: MAX_FPS, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' };
+}
+
+/**
+ * Applies the encoder settings (again after connecting, for browsers that ignore sendEncodings): MAX_BITRATE,
+ * MAX_FPS, high priority and degradationPreference 'maintain-framerate'. A browser that rejects a field (older
+ * Chrome threw on degradationPreference / networkPriority) gets the plain caps instead.
+ */
 export async function tuneSender(sender) {
     if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') return false;
-    try {
+    const apply = async full => {
         const p = sender.getParameters();
         if (!p || !Array.isArray(p.encodings) || !p.encodings.length) return false;
-        let changed = false;
         for (const e of p.encodings) {
-            if (e.maxBitrate !== MAX_BITRATE) { e.maxBitrate = MAX_BITRATE; changed = true; }
-            if (e.maxFramerate !== MAX_FPS) { e.maxFramerate = MAX_FPS; changed = true; }
+            e.maxBitrate = MAX_BITRATE;
+            e.maxFramerate = MAX_FPS;
+            if (full) { e.priority = 'high'; e.networkPriority = 'high'; }
         }
-        if (changed) await sender.setParameters(p);
+        if (full) p.degradationPreference = DEGRADATION;
+        await sender.setParameters(p);
         return true;
+    };
+    try {
+        return await apply(true);
     } catch (e) {
-        return false; // the browser keeps its own limits
+        try { return await apply(false); } catch (e2) { return false; } // the browser keeps its own limits
     }
+}
+
+/** Codecs for the TV's answer: H.264 (packetization-mode=1, constrained baseline first), then VP8, VP9, the rest. */
+export function receiverCodecOrder(codecs) {
+    const list = Array.isArray(codecs) ? codecs : [];
+    const mt = c => String(c && c.mimeType).toLowerCase();
+    const fmtp = c => (c && c.sdpFmtpLine) || '';
+    const rank = c => {
+        const m = mt(c);
+        if (m === 'video/h264') {
+            const pm1 = /packetization-mode=1/.test(fmtp(c)) ? 0 : 2;
+            const cb = /profile-level-id=42e0/i.test(fmtp(c)) ? 0 : 1; // constrained baseline
+            return pm1 + cb;
+        }
+        if (m === 'video/vp8') return 4;
+        if (m === 'video/vp9') return 5;
+        return 6;
+    };
+    return list.map((c, i) => [rank(c), i, c]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map(x => x[2]);
+}
+
+/** TV side: prefers hardware-decodable H.264 in the answer. False when unsupported (the offer's order stays). */
+export function preferReceiveCodecs(pc, w = globalThis) {
+    try {
+        const R = w.RTCRtpReceiver;
+        if (!pc || typeof pc.getTransceivers !== 'function' || !R || typeof R.getCapabilities !== 'function') return false;
+        const caps = R.getCapabilities('video');
+        if (!caps || !Array.isArray(caps.codecs) || !caps.codecs.length) return false;
+        const order = receiverCodecOrder(caps.codecs);
+        let done = false;
+        for (const tr of pc.getTransceivers()) {
+            const kind = tr && tr.receiver && tr.receiver.track && tr.receiver.track.kind;
+            if (kind !== 'video' || typeof tr.setCodecPreferences !== 'function') continue;
+            try { tr.setCodecPreferences(order); done = true; } catch (e) { /* keep the offer's order */ }
+        }
+        return done;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * TV side: play frames as soon as they are decodable. jitterBufferTarget = 0 (Chrome 114+) and the older
+ * playoutDelayHint = 0 on both video and audio receivers, so WebRTC's A/V sync keeps them together.
+ * Returns which knob was set: 'jitterBufferTarget' | 'playoutDelayHint' | ''.
+ */
+export function lowLatencyReceiver(receiver) {
+    if (!receiver) return '';
+    let used = '';
+    try {
+        if ('jitterBufferTarget' in receiver) { receiver.jitterBufferTarget = 0; used = 'jitterBufferTarget'; }
+    } catch (e) { /* optional */ }
+    try {
+        if ('playoutDelayHint' in receiver) { receiver.playoutDelayHint = 0; if (!used) used = 'playoutDelayHint'; }
+    } catch (e) { /* optional */ }
+    return used;
 }
 
 /** Adds the shared screen as send-only tracks with the video limits. Returns the video RTCRtpSender. */
@@ -129,7 +210,7 @@ function addMedia(pc, stream, w) {
         let tr = null;
         if (typeof pc.addTransceiver === 'function') {
             const init = { direction: 'sendonly', streams: [stream] };
-            if (track.kind === 'video') init.sendEncodings = [{ maxBitrate: MAX_BITRATE, maxFramerate: MAX_FPS }];
+            if (track.kind === 'video') init.sendEncodings = [videoEncoding()];
             try { tr = pc.addTransceiver(track, init); } catch (e) { tr = null; }
         }
         const sender = tr ? tr.sender : pc.addTrack(track, stream);
@@ -393,15 +474,26 @@ export class CastChannel {
 
 // ---------- WebRTC helpers ----------
 
-/** Resolves when ICE gathering is complete (or after ms), so one description carries every candidate. */
-export function iceGathered(pc, ms = 4000) {
+/**
+ * Resolves when ICE gathering is complete, when both a host and a server-reflexive/relay candidate are known
+ * (the ones that matter on one network; the description then carries every candidate gathered so far), or
+ * after ms. true = complete or early, false = timed out.
+ */
+export function iceGathered(pc, ms = ICE_WAIT_MS) {
     if (pc.iceGatheringState === 'complete') return Promise.resolve(true);
     return new Promise(resolve => {
         const t = setTimeout(() => { cleanup(); resolve(false); }, ms);
+        const seen = new Set();
         const check = () => {
             if (pc.iceGatheringState === 'complete') { cleanup(); resolve(true); }
         };
-        const onCand = e => { if (!e.candidate) { cleanup(); resolve(true); } };
+        const onCand = e => {
+            if (!e.candidate) { cleanup(); resolve(true); return; }
+            const c = e.candidate;
+            const type = c.type || (/ typ (\w+)/.exec(c.candidate || '') || [])[1] || '';
+            seen.add(type === 'relay' ? 'srflx' : type);
+            if (seen.has('host') && seen.has('srflx')) { cleanup(); resolve(true); }
+        };
         function cleanup() {
             clearTimeout(t);
             pc.removeEventListener('icegatheringstatechange', check);
@@ -482,21 +574,31 @@ export class CastSender {
     async _start(stream) {
         for (const t of stream.getTracks()) t.addEventListener('ended', () => this.stop('ended'));
         const video = stream.getVideoTracks()[0];
-        // 'detail' keeps text and thin lines sharp (slides, documents, spreadsheets): when bandwidth runs short
-        // the browser lowers the frame rate, not the resolution. Video in a shared tab still plays at up to
-        // 30 fps because the 6 Mbps budget is plenty on office Wi-Fi.
+        // 'motion' (with degradationPreference 'maintain-framerate') keeps scrolling and video smooth: when
+        // bandwidth runs short the encoder lowers the resolution for a moment, not the frame rate. At 8 Mbps
+        // on office Wi-Fi text stays sharp at full 1080p.
         if (video && 'contentHint' in video) {
-            try { video.contentHint = 'detail'; } catch (e) { /* optional */ }
+            try { video.contentHint = 'motion'; } catch (e) { /* optional */ }
         }
+        const log = timingLog('tx');
+        this._log = log;
         this.session = newId(16);
         const ch = new CastChannel({ link: this.link, session: this.session, out: 'c2r' });
         this.channel = ch;
         ch.onsignal = (cast, data) => this._onSignal(cast, data);
-        await ch.init();
-        if (!this.active) return;
-        if (!await ch.waitOpen(8000)) throw castError('network', 'The relay could not be reached.');
-        if (!this.active) return;
-        this._set('waiting');
+        // Everything at once: the TV opens its receiver (it gets 'cast start' first), this page connects to
+        // the relay and the browser gathers its network addresses.
+        const session = this.session;
+        const ack = this.link.send('cast', { action: 'start', session }, { timeoutMs: this._ackTimeoutMs }).then(a => {
+            log('tv-ack', a && a.ok ? 'ok' : 'refused');
+            if (a.ok) {
+                this._tvStarted = true;
+                // Cancelled while the TV was opening the receiver: close it again.
+                if (!this.active) this.link.send('cast', { action: 'stop', session }).catch(() => {});
+            }
+            return a;
+        });
+        ack.catch(() => {}); // handled below; avoids an unhandled rejection if the relay fails first
         const pc = new this._PC({ iceServers: ICE_SERVERS });
         this.pc = pc;
         this.videoSender = addMedia(pc, stream, this._w);
@@ -507,20 +609,18 @@ export class CastSender {
         dc.addEventListener('message', e => { if (this.dc === dc && e.data === 'bye') this.stop('tv'); });
         pc.addEventListener('connectionstatechange', () => this._onConn());
         pc.addEventListener('iceconnectionstatechange', () => this._onConn());
-        // Ask the TV to open the receiver while this browser gathers its network addresses.
-        const session = this.session;
-        const ack = this.link.send('cast', { action: 'start', session }, { timeoutMs: this._ackTimeoutMs }).then(a => {
-            if (a.ok) {
-                this._tvStarted = true;
-                // Cancelled while the TV was opening the receiver: close it again.
-                if (!this.active) this.link.send('cast', { action: 'stop', session }).catch(() => {});
-            }
-            return a;
-        });
         const offer = (async () => {
             await pc.setLocalDescription(await pc.createOffer());
             await iceGathered(pc);
+            log('ice-gathered');
         })();
+        offer.catch(() => {});
+        await ch.init();
+        if (!this.active) return;
+        if (!await ch.waitOpen(8000)) throw castError('network', 'The relay could not be reached.');
+        log('relay-open');
+        if (!this.active) return;
+        this._set('waiting');
         const [a] = await Promise.all([ack, offer]);
         if (!this.active) return;
         if (!a.ok) throw castError('tv', a.msg || 'The TV could not open the screen receiver.');
@@ -528,9 +628,11 @@ export class CastSender {
         this._set('connecting', { data: this.tvData });
         const answer = this._expect(this._answerTimeoutMs, 'no_answer', 'The TV did not connect.');
         await ch.send('offer', await encodeSignal(pc.localDescription, { compress: false }));
+        log('offer-sent');
         const desc = await decodeSignal(await answer);
         if (!this.active) return;
         if (!desc || desc.type !== 'answer') throw castError('bad_answer', 'The TV sent an invalid answer.');
+        log('answer');
         await pc.setRemoteDescription(desc);
         tuneSender(this.videoSender);
         // The laptop and the TV cannot reach each other (different networks, no TURN): say so in good time.
@@ -573,6 +675,7 @@ export class CastSender {
             clearTimeout(this._dropTimer);
             if (this.state === 'connecting' || this.state === 'reconnecting') {
                 clearTimeout(this._restartTimer);
+                if (this._log) this._log(this.state === 'connecting' ? 'connected' : 'reconnected');
                 this._set('sharing');
                 tuneSender(this.videoSender);
             }
@@ -696,8 +799,12 @@ export class CastSender {
 export class CastReceiver {
     constructor({
         code, relay, session, RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES,
-        offerTimeoutMs = 90000, graceMs = 25000, onstate, ontrack, onend,
+        offerTimeoutMs = 90000, graceMs = 25000, onstate, ontrack, onend, window: w,
     } = {}) {
+        this._w = w || globalThis;
+        this._log = () => {};
+        this.lowLatency = '';
+        this.codecPrefs = false;
         this.code = code;
         this.relay = relay;
         this.session = session;
@@ -726,6 +833,7 @@ export class CastReceiver {
     }
 
     async start() {
+        this._log = timingLog('rx');
         this._set('waiting');
         // since=5m: the laptop may publish the offer before this page finished loading; ntfy replays it.
         const ch = new CastChannel({
@@ -752,9 +860,11 @@ export class CastReceiver {
         if (!desc || desc.type !== 'offer') throw castError('bad_offer', 'invalid offer');
         this._lastOffer = data;
         this._set('connecting');
+        this._log('offer');
         const pc = new this._PC({ iceServers: ICE_SERVERS });
         this.pc = pc;
         pc.addEventListener('track', e => {
+            this.lowLatency = lowLatencyReceiver(e.receiver) || this.lowLatency || '';
             const stream = (e.streams && e.streams[0]) || null;
             if (stream && typeof this.ontrack === 'function') this.ontrack(stream, e.track);
         });
@@ -767,10 +877,17 @@ export class CastReceiver {
         pc.addEventListener('connectionstatechange', () => this._onConn());
         pc.addEventListener('iceconnectionstatechange', () => this._onConn());
         await pc.setRemoteDescription(desc);
+        // Receivers exist now: no jitter buffer, and hardware-decodable H.264 first in the answer.
+        if (typeof pc.getReceivers === 'function') {
+            for (const r of pc.getReceivers()) this.lowLatency = lowLatencyReceiver(r) || this.lowLatency || '';
+        }
+        this.codecPrefs = preferReceiveCodecs(pc, this._w);
         await pc.setLocalDescription(await pc.createAnswer());
         await iceGathered(pc);
+        this._log('ice-gathered');
         if (this.state === 'ended') return;
         await this.channel.send('answer', await encodeSignal(pc.localDescription));
+        this._log('answer-sent', 'lowLatency=' + (this.lowLatency || 'none') + ' h264First=' + this.codecPrefs);
     }
 
     /** The laptop's one reconnect: a new offer with ICE restart on the same connection. */
@@ -800,6 +917,7 @@ export class CastReceiver {
         if (s === 'connected' || s === 'completed') {
             clearTimeout(this._graceTimer);
             this._graceTimer = null;
+            if (this.state !== 'playing' && this._log) this._log('connected');
             this._set('playing');
         } else if (s === 'closed') {
             this.end('disconnected');
