@@ -98,6 +98,11 @@ export async function createFakeTv({
             case 'screen':
                 return [a.action === 'stop' ? result(true, 'Live Screen stopped.')
                     : result(true, 'Tap “Start now” on the TV to share its screen.', Object.assign({}, tv.status))];
+            case 'cast':
+                if (a.action === 'stop') return [result(true, 'Screen sharing stopped on the TV.')];
+                if (!/^[a-z0-9]{12,32}$/.test(String(a.session || ''))) return [result(false, 'Invalid screen sharing session.')];
+                if (typeof tv.oncast === 'function') tv.oncast(a.session);
+                return [result(true, 'The TV is ready to show your screen.')];
             default: return [result(false, 'Unknown: ' + m.cmd)];
         }
     }

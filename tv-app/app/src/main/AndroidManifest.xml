@@ -65,6 +65,14 @@
             android:exported="false"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
+        <activity
+            android:name=".CastActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|smallestScreenSize|uiMode"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
         <service
             android:name=".ServiceJob"
             android:exported="false"

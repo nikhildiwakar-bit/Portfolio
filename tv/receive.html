@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self' https:; media-src 'self' blob: mediastream:; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<title>Office TV Screen Receiver</title>
+<style>
+html, body { margin: 0; height: 100%; background: #000; color: #e8eef0; overflow: hidden;
+  font: 500 clamp(18px, 2.2vw, 34px)/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+#status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: .6em; text-align: center; padding: 0 8vw; }
+#status[hidden] { display: none; }
+#status small { color: #9fb0b5; font-size: .7em; font-weight: 400; }
+#sound { position: fixed; left: 50%; bottom: 5vh; transform: translateX(-50%); background: rgba(0,0,0,.7);
+  padding: .4em 1em; border-radius: .6em; font-size: .7em; }
+#sound[hidden] { display: none; }
+</style>
+</head>
+<body>
+<video id="video" autoplay playsinline></video>
+<div id="status" role="status"><span id="statusText">Getting ready…</span><small id="statusSub"></small></div>
+<div id="sound" hidden>Sound is off. Press OK on the remote to turn it on.</div>
+<script type="module" src="receive.js?v=1"></script>
+</body>
+</html>

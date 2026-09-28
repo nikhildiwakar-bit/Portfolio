@@ -148,6 +148,9 @@ button[aria-busy="true"]::after {
 }
 .banner .ic { margin-top: 1px; }
 .banner p { margin: 0; min-width: 0; }
+.banner.cast { align-items: center; flex-wrap: wrap; background: var(--surface-solid); color: inherit; border-color: var(--border-strong); }
+.banner.cast p { flex: 1 1 240px; }
+.banner.cast.sharing { border-color: var(--ok, #0d7f78); }
 .banner.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
 .tip {
   display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; padding: 10px 12px; border-radius: var(--radius-sm);
@@ -362,6 +365,7 @@ dialog p { margin: 0 0 14px; color: var(--muted); }
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 11v5.5M12 7.5h.01"/></symbol>
   <symbol id="i-all" viewBox="0 0 24 24"><rect x="2" y="3" width="13" height="9" rx="1.5"/><rect x="9" y="12" width="13" height="9" rx="1.5"/></symbol>
   <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.7-2.5 2.2-2.5 4M12 17h.01"/></symbol>
+  <symbol id="i-cast" viewBox="0 0 24 24"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8M2 16a5 5 0 0 1 4 4M2 20h.01"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
 </svg>
 
@@ -390,6 +394,7 @@ dialog p { margin: 0 0 14px; color: var(--muted); }
       <div class="meta" id="barMeta"></div>
     </div>
     <div class="actions">
+      <button type="button" class="btn-primary btn-sm" id="castBtn" title="Show this computer's screen on the TV, like Chromecast."><svg class="ic" aria-hidden="true"><use href="#i-cast"/></svg>Share my screen</button>
       <button type="button" class="btn-ghost btn-sm" id="refreshBtn"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg><span>Refresh</span></button>
       <button type="button" class="btn-ghost btn-sm" id="liveBtn" title="Live Screen works when this laptop is on the same Wi-Fi as the TV."><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg>Live Screen</button>
       <button type="button" class="btn-ghost btn-sm" id="renameBtn"><svg class="ic" aria-hidden="true"><use href="#i-edit"/></svg>Rename</button>
@@ -397,6 +402,13 @@ dialog p { margin: 0 0 14px; color: var(--muted); }
       <button type="button" class="btn-danger btn-sm" id="removeBtn"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>Remove</button>
     </div>
   </section>
+
+  <div class="banner cast" id="castPanel" role="status" aria-live="polite" hidden>
+    <svg class="ic" aria-hidden="true"><use href="#i-cast"/></svg>
+    <p><strong id="castState"></strong> <span id="castText"></span></p>
+    <button type="button" class="btn-danger btn-sm" id="castStop">Stop sharing</button>
+    <button type="button" class="btn-ghost btn-sm" id="castClose" hidden>Close</button>
+  </div>
 
   <div class="banner" id="permBanner" role="status" hidden>
     <svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg>
@@ -621,6 +633,6 @@ dialog p { margin: 0 0 14px; color: var(--muted); }
   document.getElementById('fatal').hidden = false;
   document.getElementById('fatalText').textContent = 'This browser is too old. Please use a recent version of Chrome, Edge or Safari.';
 </script>
-<script type="module" src="app.js?v=2"></script>
+<script type="module" src="app.js?v=3"></script>
 </body>
 </html>

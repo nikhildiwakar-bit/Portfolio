@@ -116,6 +116,11 @@ final class Actions {
         return result(false, notFound);
     }
 
+    /** Starts one of Office TV's own activities from the background (same checks as links and files). */
+    static JSONObject openOwn(Context c, String what, Intent i) {
+        return start(c, what, "Could not open " + what + " on the TV.", new boolean[]{true}, i);
+    }
+
     private static Intent browserIntent(Context c, Uri uri, String pkg) {
         Intent i = new Intent(Intent.ACTION_VIEW, uri);
         i.addCategory(Intent.CATEGORY_BROWSABLE);

@@ -1,6 +1,7 @@
 package com.nikhil.officetv;
 
 import android.content.Context;
+import android.content.Intent;
 import android.os.Build;
 
 import com.nikhil.officetv.relay.RelayClient;
@@ -58,6 +59,7 @@ final class Commands implements RelayClient.Handler {
                     JSONObject r = stop ? ScreenCapture.requestStop(ctx) : ScreenCapture.requestStart(ctx);
                     return withData(r, status(ctx));
                 }
+                case "cast": return cast(args);
                 default:
                     return Actions.result(false, "This TV app does not support that command. Please update Office TV on the TV.");
             }
@@ -101,6 +103,26 @@ final class Commands implements RelayClient.Handler {
         FilesProvider.trim(ctx);
         JSONObject r = Actions.openFile(ctx, dest);
         r.put("name", dest.getName());
+        return r;
+    }
+
+    /** Share my screen (PROTOCOL.md section 8): opens or closes the full-screen WebRTC receiver. */
+    private JSONObject cast(JSONObject args) {
+        String session = args.optString("session", "");
+        if ("stop".equals(args.optString("action"))) {
+            boolean was = CastActivity.stop(session);
+            return Actions.result(true, was ? "Screen sharing stopped on the TV." : "Screen sharing was not running on the TV.");
+        }
+        if (!CastActivity.validSession(session)) return Actions.result(false, "Invalid screen sharing session. Please reload the page and try again.");
+        String code = Prefs.pairCode(ctx);
+        Intent i = CastActivity.intent(ctx, CastActivity.receiverUrl(session, code, Prefs.relayUrl(ctx)), session);
+        JSONObject r = Actions.openOwn(ctx, "the screen receiver", i);
+        if (r.optBoolean("ok")) {
+            try {
+                r.put("msg", "The TV is ready to show your screen.");
+            } catch (JSONException ignored) {
+            }
+        }
         return r;
     }
 

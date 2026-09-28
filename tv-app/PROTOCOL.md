@@ -92,6 +92,7 @@ in plain English, the same text the LAN API returns.
 | `file` | `{url, name, iv, size}` | – |
 | `rename` | `{name}` (1–40 chars) | status object |
 | `screen` | `{action:"start"\|"stop"}` | `{ok,msg,running?,waiting?}` + status object in `data` (use `data.lanUrls[0]` + `#live` to open the LAN Live Screen view; frames are served only on the LAN at `GET /api/screen.jpg`, never over the relay) |
+| `cast` | `{action:"start"\|"stop", session}` (session: 12–32 chars `[a-z0-9]`) | – (start: `ok` once the receiver was opened; see §8) |
 
 Status object:
 
@@ -143,3 +144,51 @@ bigger files and suggests a Google Drive link or the same-Wi-Fi LAN page instead
 (plus `&relay=<url>` if not the default). The code is in the URL fragment, so it is never sent to
 GitHub's servers. The controller saves `{name, code, relay}` in `localStorage` key `officetv.tvs`
 and removes the fragment from the address bar.
+
+## 8. Share my screen (`cast`, app 2.4+)
+
+Chromecast-like sharing of a laptop screen to the TV with WebRTC. Media flows directly between the
+laptop browser and the TV (peer to peer, ICE server `stun:stun.l.google.com:19302`, no TURN); the relay
+only carries a few encrypted signaling messages. Code: `tv/cast.js` (both sides), `tv/receive.html` +
+`tv/receive.js` (receiver page), `CastActivity.java` (TV).
+
+1. **Laptop** (controller page, "Share my screen" in the selected-TV bar; hidden for All TVs):
+   `getDisplayMedia({video:{frameRate:30}, audio:true})`, then opens a second event stream on the topic,
+   creates the `RTCPeerConnection`, adds the tracks and a data channel `otv`, creates the offer and
+   **waits for ICE gathering to complete** (max 4 s), so one offer carries every candidate (no trickle ICE).
+2. Laptop → TV command `{"cmd":"cast","args":{"action":"start","session":<random 16 chars>}}`.
+3. **TV app** opens `CastActivity` (full screen, keep screen on) whose WebView loads
+   `https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html#s=<session>&code=<pairing code>[&relay=<url>]`
+   and acks `ok`. The URL is fixed in the app (the controller cannot choose it). The fragment is never sent
+   to a server; the page removes it from the address bar at once, and the WebView blocks all navigation,
+   so the pairing code never reaches another site. The only JavaScript interface is `OfficeTvCast.close()`.
+4. Laptop publishes the **offer** as `c2r` signal messages. The receiver subscribes with
+   `/sse?since=5m`, so an offer published before the page finished loading is replayed by ntfy.
+5. Receiver answers (again after ICE gathering completes) with `r2c` signal messages and plays the
+   stream full screen (`object-fit: contain`, black background, sound on; if autoplay with sound is
+   refused it plays muted and unmutes on the first remote key press).
+6. **Stop:** the laptop sends `bye` over the data channel (no relay message) when the user presses
+   "Stop sharing" or ends sharing in the browser's own bar. If the data channel is not open yet, it
+   sends `{"cmd":"cast","args":{"action":"stop","session":…}}` instead. The receiver also ends when the
+   peer connection fails, closes, or stays disconnected for 8 s, and when no offer arrives in 90 s. It
+   then calls `OfficeTvCast.close()`. Back on the TV remote (or the Back button in the controller)
+   closes `CastActivity`, which destroys the WebView and so the peer connection.
+
+Signal message (plaintext, sealed exactly like commands: same key, AAD = topic, envelope < 3,900 bytes):
+
+```json
+{"v":1,"dir":"c2r","id":"…","ts":1760000000000,"session":"k3j9x0a2m1p4q8r2",
+ "cast":"offer","part":0,"parts":1,"data":"z…"}
+```
+
+- `dir`: `c2r` (controller → receiver) or `r2c` (receiver → controller). The TV app (`c2t` only) and
+  TvLink (`t2c` only) ignore these directions.
+- `cast`: `offer` | `answer` | `bye`. `data` for offer/answer is the session description
+  `{"type","sdp"}` as `"z" + base64url(deflate-raw(JSON))` (CompressionStream), or `"j" + JSON` when the
+  browser cannot compress. Split into `parts` of at most 2,400 characters (max 8 parts); a typical
+  compressed offer with all candidates fits in one message.
+- The receiving side accepts only its opposite direction, its own `session`, `|ts/1000 − event.time| ≤ 300`,
+  and each `id` once.
+
+Relay cost of one sharing session: 4 messages (command, ack, offer, answer), plus 2 if stopped before
+the connection was up.

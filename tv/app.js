@@ -5,6 +5,7 @@ import {
     ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, MAX_FILE_BYTES, TvLink, cleanName, displayCode, normalizeCode,
     normalizeRelay, parsePairFragment,
 } from './otv.js?v=2';
+import { CastSender, senderSupport } from './cast.js?v=1';
 
 const $ = id => document.getElementById(id);
 const STORE_KEY = 'officetv.tvs';
@@ -362,6 +363,7 @@ function renderBar() {
         meta.textContent = 'Every command goes to all TVs. ' + parts.join(', ') + '.';
         $('refreshBtn').lastElementChild.textContent = 'Refresh all';
         $('renameBtn').hidden = true;
+        $('castBtn').hidden = true;
         $('liveBtn').hidden = true;
         $('removeBtn').hidden = true;
         $('barLan').hidden = true;
@@ -375,6 +377,7 @@ function renderBar() {
     $('barName').textContent = tvName(tv);
     $('refreshBtn').lastElementChild.textContent = 'Refresh';
     $('renameBtn').hidden = false;
+    $('castBtn').hidden = false;
     $('liveBtn').hidden = false;
     $('removeBtn').hidden = false;
     if (state.pinging.has(tv.code) && l.state !== 'online') {
@@ -842,12 +845,101 @@ function closeDialog(d) {
 
 // ---------- wiring ----------
 
+// ---------- Share my screen (PROTOCOL.md section 8) ----------
+
+const CAST_STATE = {
+    starting: 'Starting…',
+    waiting: 'Waiting for the TV…',
+    sharing: 'Sharing',
+    stopped: 'Stopped.',
+    error: 'Error.',
+};
+
+function castErrText(d, tvLabel) {
+    const e = d && d.error;
+    if (e && ['timeout', 'rate_limit', 'network', 'relay'].indexOf(e.code) >= 0) return errText(e);
+    switch (d && d.code) {
+        case 'tv': return e.message;
+        case 'no_answer':
+            return tvLabel + ' did not connect. Make sure the Office TV app on the TV is up to date (version 2.4 or later) and try again.';
+        case 'ice':
+            return e.message + ' The laptop and the TV must be able to reach each other; this usually works when both are on the office network.';
+        case 'declined': return 'The TV ended the session.';
+        default: return 'Screen sharing failed. Please try again.';
+    }
+}
+
+function renderCast(s, d, tvLabel) {
+    const panel = $('castPanel');
+    panel.hidden = false;
+    panel.classList.toggle('bad', s === 'error');
+    panel.classList.toggle('sharing', s === 'sharing');
+    $('castState').textContent = CAST_STATE[s] || '';
+    let text = '';
+    if (s === 'starting') text = 'Choose the screen, window or tab to show on ' + tvLabel + '.';
+    else if (s === 'waiting') text = 'Opening the screen receiver on ' + tvLabel + '. This can take a few seconds.';
+    else if (s === 'sharing') text = 'Your screen is showing on ' + tvLabel + '. Anything you show there is visible on the TV.';
+    else if (s === 'stopped') text = 'Your screen is no longer shown on ' + tvLabel + '.';
+    else if (s === 'error') text = castErrText(d, tvLabel);
+    $('castText').textContent = text;
+    const live = s === 'starting' || s === 'waiting' || s === 'sharing';
+    $('castStop').hidden = !live;
+    $('castClose').hidden = live;
+    $('castBtn').disabled = live;
+}
+
+async function startCast() {
+    const tv = selectedTv();
+    if (!tv) return;
+    if (state.cast && state.cast.active) return;
+    const lack = senderSupport(window);
+    if (lack) {
+        const why = lack === 'display'
+            ? 'This browser cannot share its screen. Use Chrome, Edge or Firefox on a laptop or desktop computer. Phones and tablets cannot share their screen from a web page.'
+            : 'This browser does not support screen sharing (WebRTC). Please use a recent version of Chrome or Edge.';
+        renderCast('error', { code: 'unsupported', error: { message: why } }, tvName(tv));
+        $('castText').textContent = why;
+        return;
+    }
+    const tvLabel = tvName(tv);
+    let stream;
+    // getDisplayMedia must run straight from the click, before any await.
+    const pick = navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
+    renderCast('starting', {}, tvLabel);
+    try {
+        stream = await pick;
+    } catch (e) {
+        const denied = e && (e.name === 'NotAllowedError' || e.name === 'AbortError');
+        if (denied) {
+            $('castPanel').hidden = true;
+            $('castBtn').disabled = false;
+            toast('Screen sharing was cancelled.', 'info');
+        } else {
+            renderCast('error', { code: 'capture', error: e }, tvLabel);
+            $('castText').textContent = 'Could not capture the screen: ' + ((e && e.message) || 'unknown error') + '.';
+        }
+        return;
+    }
+    const sender = new CastSender({ link: linkFor(tv), onstate: (s, d) => { if (state.cast === sender) renderCast(s, d, tvLabel); } });
+    state.cast = sender;
+    window.__otvCastSender = sender; // for tests
+    sender.start(stream);
+}
+
+function stopCast() {
+    if (state.cast) state.cast.stop('user');
+}
+
 function wire() {
     $('pairForm').addEventListener('submit', e => { e.preventDefault(); submitPair(); });
     $('pairCode').addEventListener('input', onCodeInput);
     $('pairCancel').addEventListener('click', closePair);
     $('toastClose').addEventListener('click', hideToast);
     $('resultsClose').addEventListener('click', () => { $('results').hidden = true; });
+    $('castBtn').addEventListener('click', startCast);
+    $('castStop').addEventListener('click', stopCast);
+    $('castClose').addEventListener('click', () => { $('castPanel').hidden = true; });
+    window.addEventListener('pagehide', stopCast);
 
     $('openForm').addEventListener('submit', e => {
         e.preventDefault();

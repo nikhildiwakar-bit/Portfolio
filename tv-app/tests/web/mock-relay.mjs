@@ -15,6 +15,7 @@ export function createRelay() {
         files: new Map(),     // id -> Uint8Array
         errors: [],
         streams: new Set(),
+        cache: new Map(),     // topic -> recent message events (replayed for ?since=)
     };
 
     const newId = () => randomBytes(9).toString('base64url').replace(/[-_]/g, 'x').slice(0, 12);
@@ -26,8 +27,14 @@ export function createRelay() {
         return () => subs.get(topic).delete(fn);
     };
 
-    relay.publish = (topic, message, extra) => {
+    relay.publish = (topic, message, extra, { cache = true } = {}) => {
         const ev = Object.assign({ id: newId(), time: now(), event: 'message', topic, message }, extra);
+        if (cache) {
+            if (!relay.cache.has(topic)) relay.cache.set(topic, []);
+            const list = relay.cache.get(topic);
+            list.push(ev);
+            if (list.length > 200) list.shift();
+        }
         for (const fn of Array.from(subs.get(topic) || [])) {
             try { fn(ev); } catch (e) { relay.errors.push(String(e)); }
         }
@@ -72,7 +79,22 @@ export function createRelay() {
         });
     }
 
-    function stream(req, res, topic, format) {
+    /** Cached events matching ntfy's since=: 'all', a duration like 30s / 5m / 1h, a unix time or a message id. */
+    function sinceEvents(topic, since) {
+        const list = relay.cache.get(topic) || [];
+        if (!since) return [];
+        if (since === 'all') return list.slice();
+        const d = /^(\d+)([smh])$/.exec(since);
+        if (d) {
+            const from = now() - Number(d[1]) * { s: 1, m: 60, h: 3600 }[d[2]];
+            return list.filter(e => e.time >= from);
+        }
+        if (/^\d+$/.test(since)) return list.filter(e => e.time >= Number(since));
+        const i = list.findIndex(e => e.id === since);
+        return i >= 0 ? list.slice(i + 1) : [];
+    }
+
+    function stream(req, res, topic, format, since) {
         cors(res);
         res.writeHead(200, {
             'Content-Type': format === 'sse' ? 'text/event-stream' : 'application/x-ndjson',
@@ -89,6 +111,7 @@ export function createRelay() {
         relay.streams.add(entry);
         const unsub = relay.subscribe(topic, write);
         write({ id: newId(), time: now(), event: 'open', topic });
+        for (const ev of sinceEvents(topic, since)) write(ev);
         const ka = setInterval(() => write({ id: newId(), time: now(), event: 'keepalive', topic }), 25000);
         const done = () => {
             clearInterval(ka);
@@ -124,7 +147,7 @@ export function createRelay() {
                 return;
             }
             if (req.method === 'GET' && parts.length === 2 && TOPIC_RE.test(parts[0]) && (parts[1] === 'sse' || parts[1] === 'json')) {
-                stream(req, res, parts[0], parts[1]);
+                stream(req, res, parts[0], parts[1], u.searchParams.get('since'));
                 return;
             }
             if ((req.method === 'POST' || req.method === 'PUT') && parts.length === 1 && TOPIC_RE.test(parts[0])) {
@@ -155,7 +178,7 @@ export function createRelay() {
                     });
                     return json(res, 200, ev);
                 }
-                return json(res, 200, relay.publish(topic, text));
+                return json(res, 200, relay.publish(topic, text, undefined, { cache: u.searchParams.get('cache') !== 'no' }));
             }
             json(res, 404, { code: 40401, http: 404, error: 'page not found' });
         } catch (e) {
