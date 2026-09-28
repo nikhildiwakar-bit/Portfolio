@@ -49,43 +49,43 @@ export async function createFakeTv({
     async function run(m) {
         const a = m.args && typeof m.args === 'object' ? m.args : {};
         switch (m.cmd) {
-            case 'ping': return [result(true, 'TV online hai.', Object.assign({}, tv.status))];
+            case 'ping': return [result(true, 'The TV is online.', Object.assign({}, tv.status))];
             case 'open':
-                if (!a.url) return [result(false, 'Link khaali hai.')];
-                return [result(true, 'Link TV par khul gaya.')];
-            case 'youtube': return [result(true, 'Link TV par khul gaya.')];
+                if (!a.url) return [result(false, 'The link is empty.')];
+                return [result(true, 'Opened the link on the TV.')];
+            case 'youtube': return [result(true, 'Opened the link on the TV.')];
             case 'key': return [result(true, a.key === 'play_pause' ? 'Play/Pause' : 'Done')];
             case 'volume':
                 tv.status.volume = Math.round(a.percent * tv.status.maxVolume / 100);
                 return [result(true, 'Volume ' + a.percent + '%')];
             case 'awake':
                 tv.status.keepAwake = !!a.on;
-                return [result(true, a.on ? 'Screen hamesha on rahegi.' : 'Screen normal time par band hogi.')];
-            case 'app': return [result(true, 'App TV par khul gaya.')];
+                return [result(true, a.on ? 'The screen will stay on.' : 'The screen will turn off at the usual time.')];
+            case 'app': return [result(true, 'Opened the app on the TV.')];
             case 'rename': {
                 const n = String(a.name || '').trim();
-                if (n.length < 1 || n.length > 40) return [result(false, 'Naam 1 se 40 akshar ka hona chahiye.')];
+                if (n.length < 1 || n.length > 40) return [result(false, 'The name must be 1 to 40 characters.')];
                 tv.status.name = n;
-                return [result(true, 'Naam badal diya.', Object.assign({}, tv.status))];
+                return [result(true, 'Renamed.', Object.assign({}, tv.status))];
             }
             case 'apps': {
                 const parts = [];
                 for (let i = 0; i < apps.length; i += appsPerPart) parts.push(apps.slice(i, i + appsPerPart));
                 if (!parts.length) parts.push([]);
-                return parts.map(list => result(true, apps.length + ' apps mili.', { apps: list }));
+                return parts.map(list => result(true, apps.length + ' apps found.', { apps: list }));
             }
             case 'file': {
-                if (!getAttachment) return [result(false, 'File download nahi hui.')];
+                if (!getAttachment) return [result(false, 'The file could not be downloaded.')];
                 const enc = await getAttachment(a.url);
-                if (!enc) return [result(false, 'File download nahi hui.')];
+                if (!enc) return [result(false, 'The file could not be downloaded.')];
                 const bytes = await otv.openFile(key, topic, a.iv, enc);
                 if (!bytes) {
                     tv.errors.push('file did not decrypt');
-                    return [result(false, 'File kharab hai.')];
+                    return [result(false, 'The file is damaged.')];
                 }
                 if (bytes.length !== a.size) tv.errors.push('file size mismatch ' + bytes.length + ' != ' + a.size);
                 tv.files.push({ name: a.name, bytes });
-                return [result(true, a.name + ' TV par khul gaya.')];
+                return [result(true, 'Opened ' + a.name + ' on the TV.')];
             }
             default: return [result(false, 'Unknown: ' + m.cmd)];
         }

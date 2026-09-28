@@ -105,7 +105,7 @@ test('open() returns null for tampered or foreign input and never throws', async
 
 test('seal() round trip with random IV', async () => {
     const key = await otv.deriveKey(V.code);
-    const msg = { v: 1, dir: 't2c', id: otv.newId(), re: 'abc', ok: true, msg: 'Link TV par khul gaya.', data: { x: 'हिंदी' } };
+    const msg = { v: 1, dir: 't2c', id: otv.newId(), re: 'abc', ok: true, msg: 'Opened the link on the TV.', data: { x: 'हिंदी' } };
     const a = await otv.seal(key, V.topic, msg);
     const b = await otv.seal(key, V.topic, msg);
     assert.notEqual(a, b);

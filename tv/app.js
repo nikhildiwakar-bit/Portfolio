@@ -4,7 +4,7 @@
 import {
     ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, MAX_FILE_BYTES, TvLink, cleanName, displayCode, normalizeCode,
     normalizeRelay, parsePairFragment,
-} from './otv.js?v=1';
+} from './otv.js?v=2';
 
 const $ = id => document.getElementById(id);
 const STORE_KEY = 'officetv.tvs';
@@ -14,14 +14,14 @@ const ADD = '+add';
 const PING_FRESH_MS = 60 * 1000;        // re-selecting a TV within a minute does not ping again
 const VISIBLE_PING_MS = 5 * 60 * 1000;  // coming back to the tab pings only after 5 minutes away
 
-const STATE_TEXT = { online: 'online', offline: 'jawab nahi aaya', unknown: 'status pata nahi' };
+const STATE_TEXT = { online: 'online', offline: 'not answering', unknown: 'status unknown' };
 const KEY_TEXT = {
-    next_slide: 'Agli slide.', prev_slide: 'Pichhli slide.', scroll_down: 'Neeche scroll kiya.',
-    scroll_up: 'Upar scroll kiya.', back: 'Back dabaya.', home: 'Home dabaya.', recents: 'Recent apps khuli.',
-    play_pause: 'Play/Pause dabaya.', next: 'Agla track.', previous: 'Pichhla track.',
-    volume_up: 'Volume badhaya.', volume_down: 'Volume kam kiya.', mute: 'Mute/Unmute kiya.', wake: 'Screen jaga di.',
+    next_slide: 'Next slide.', prev_slide: 'Previous slide.', scroll_down: 'Scrolled down.',
+    scroll_up: 'Scrolled up.', back: 'Pressed Back.', home: 'Pressed Home.', recents: 'Opened recent apps.',
+    play_pause: 'Pressed Play/Pause.', next: 'Next track.', previous: 'Previous track.',
+    volume_up: 'Volume up.', volume_down: 'Volume down.', mute: 'Mute toggled.', wake: 'Screen woken up.',
 };
-// English one-word acks from the TV that read better as the Hinglish text above.
+// Short generic acks from the TV that read better as the fuller text above.
 const GENERIC_KEY_MSGS = ['Done', 'Play/Pause', 'Next', 'Previous', 'Volume +', 'Volume -', 'Mute', 'Screen on'];
 
 // ---------- storage (falls back to memory) ----------
@@ -96,7 +96,7 @@ function linkFor(tv) {
         l = new TvLink({ code: tv.code, name: tv.name, relay: tv.relay });
         l.onchange = scheduleRender;
         state.links.set(tv.code, l);
-        l.init().catch(() => fatal('Is browser mein encryption nahi chal raha. Chrome ya Edge ka naya version use karein.'));
+        l.init().catch(() => fatal('Encryption does not work in this browser. Please use a recent version of Chrome, Edge or Safari.'));
     }
     return l;
 }
@@ -170,30 +170,30 @@ function fmtMB(bytes) {
 }
 
 function tooBigText(size) {
-    return 'Yeh file ' + fmtMB(size) + ' ki hai. Internet se sirf ' + Math.round(MAX_FILE_BYTES / 1e6)
-        + ' MB tak ki file TV par ja sakti hai. Badi file ke liye: use Google Drive par daal kar link upar '
-        + '"Link kholo" box mein bhejein, ya laptop ko TV wale Wi-Fi par rakh kar TV ka Same Wi-Fi page kholein.';
+    return 'This file is ' + fmtMB(size) + '. Files sent over the internet can be up to ' + Math.round(MAX_FILE_BYTES / 1e6)
+        + ' MB. For a larger file, put it on Google Drive and send the link in the "Open a link" box above, '
+        + 'or connect this laptop to the TV\'s Wi-Fi and open the TV\'s Same Wi-Fi page.';
 }
 
 function errText(e) {
     switch (e && e.code) {
         case 'timeout':
-            return 'TV se jawab nahi aaya. TV on hai aur internet se juda hai? TV par Office TV app ek baar kholein.';
+            return 'The TV did not answer. Is it on and connected to the internet? Open the Office TV app on the TV once.';
         case 'rate_limit':
             if (e.limit === 'burst') {
-                return 'Thodi der mein bahut saari commands chali gayi. 1 minute ruk kar dobara try karein.';
+                return 'Too many commands in a short time. Wait 1 minute and try again.';
             }
-            return 'Aaj ki free limit poori ho gayi. Commands free ntfy.sh se jaate hain, jo poore office ko roz '
-                + 'seemit messages deta hai. Kuch der baad try karein, ya TV wale Wi-Fi par TV ka Same Wi-Fi page kholein.';
+            return 'Today\'s free limit has been reached. Commands go through the free ntfy.sh relay, which allows a '
+                + 'limited number of messages per day for the whole office. Try again later, or open the TV\'s Same Wi-Fi page on the TV\'s Wi-Fi.';
         case 'network':
-            return 'Internet check karein. Yeh laptop/phone abhi internet se juda nahi lag raha.';
+            return 'Check your internet connection. This device does not seem to be online.';
         case 'too_big':
             return tooBigText(e.size || 0);
         case 'relay':
-            return 'Relay server se jawab theek nahi aaya' + (e.status ? ' (' + e.status + ')' : '')
-                + '. Thodi der baad dobara try karein.';
+            return 'The relay server returned an unexpected response' + (e.status ? ' (' + e.status + ')' : '')
+                + '. Please try again in a moment.';
         default:
-            return 'Kuch gadbad hui. Dobara try karein.';
+            return 'Something went wrong. Please try again.';
     }
 }
 
@@ -203,9 +203,9 @@ function showError(tv, e) {
 }
 
 function ackText(cmd, args, ack, okText) {
-    if (!ack.ok) return ack.msg || 'TV ne yeh command nahi maani.';
-    if (cmd === 'key' && (!ack.msg || GENERIC_KEY_MSGS.indexOf(ack.msg) >= 0)) return KEY_TEXT[args.key] || 'Ho gaya.';
-    return ack.msg || okText || 'Ho gaya.';
+    if (!ack.ok) return ack.msg || 'The TV did not accept this command.';
+    if (cmd === 'key' && (!ack.msg || GENERIC_KEY_MSGS.indexOf(ack.msg) >= 0)) return KEY_TEXT[args.key] || 'Done.';
+    return ack.msg || okText || 'Done.';
 }
 
 function fatal(text) {
@@ -253,7 +253,7 @@ function makeChip(code) {
     b.className = 'tv-chip' + (code === ADD ? ' add' : '');
     b.dataset.code = code;
     if (code === ADD) {
-        b.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span>TV jodein</span>';
+        b.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span>Add TV</span>';
         b.addEventListener('click', () => (state.pairOpen ? closePair() : openPair()));
     } else if (code === ALL) {
         b.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-all"/></svg><span class="nm"></span>';
@@ -280,7 +280,7 @@ function renderPicker() {
         } else {
             b.setAttribute('aria-pressed', String(state.selected === code));
             if (code === ALL) {
-                b.querySelector('.nm').textContent = 'Sab TV (' + state.tvs.length + ')';
+                b.querySelector('.nm').textContent = 'All TVs (' + state.tvs.length + ')';
             } else {
                 const tv = state.tvs.find(t => t.code === code);
                 const l = state.links.get(code);
@@ -303,13 +303,13 @@ function renderBar() {
         const counts = { online: 0, offline: 0, unknown: 0 };
         for (const tv of state.tvs) counts[(state.links.get(tv.code) || {}).state || 'unknown']++;
         $('barDot').className = 'dot ' + (counts.offline ? 'offline' : counts.unknown ? 'unknown' : 'online');
-        $('barName').textContent = 'Sab TV (' + state.tvs.length + ')';
+        $('barName').textContent = 'All TVs (' + state.tvs.length + ')';
         const parts = [];
         if (counts.online) parts.push(counts.online + ' online');
-        if (counts.offline) parts.push(counts.offline + ' se jawab nahi aaya');
-        if (counts.unknown) parts.push(counts.unknown + ' ka status pata nahi');
-        meta.textContent = 'Har command sab TV par jayegi. ' + parts.join(', ') + '.';
-        $('refreshBtn').lastElementChild.textContent = 'Sab refresh';
+        if (counts.offline) parts.push(counts.offline + ' not answering');
+        if (counts.unknown) parts.push(counts.unknown + ' status unknown');
+        meta.textContent = 'Every command goes to all TVs. ' + parts.join(', ') + '.';
+        $('refreshBtn').lastElementChild.textContent = 'Refresh all';
         $('renameBtn').hidden = true;
         $('removeBtn').hidden = true;
         $('barLan').hidden = true;
@@ -325,19 +325,19 @@ function renderBar() {
     $('renameBtn').hidden = false;
     $('removeBtn').hidden = false;
     if (state.pinging.has(tv.code) && l.state !== 'online') {
-        meta.textContent = 'TV se baat kar rahe hain…';
+        meta.textContent = 'Contacting the TV…';
     } else if (l.state === 'offline') {
-        meta.textContent = 'TV se jawab nahi aaya. TV on hai aur internet se juda hai? TV par Office TV app ek baar kholein.';
+        meta.textContent = 'The TV did not answer. Is it on and connected to the internet? Open the Office TV app on the TV once.';
         meta.classList.add('bad');
     } else if (s) {
         const bits = [];
         if (s.model) bits.push(String(s.model));
         if (s.android) bits.push('Android ' + s.android);
         if (s.appVersion) bits.push('App ' + s.appVersion + (s.flavor === 'lite' ? ' (lite)' : ''));
-        bits.push(l.state === 'online' ? 'Online' : 'Status purana hai');
+        bits.push(l.state === 'online' ? 'Online' : 'Status may be out of date');
         meta.textContent = bits.join(' · ');
     } else {
-        meta.textContent = l.state === 'online' ? 'Online' : 'Status pata nahi. Refresh dabayein.';
+        meta.textContent = l.state === 'online' ? 'Online' : 'Status unknown. Press Refresh.';
     }
     const lan = lanUrl(tv);
     $('barLan').hidden = !lan;
@@ -352,15 +352,15 @@ function renderNotices() {
     } else {
         let text;
         if (state.selected === ALL) {
-            text = 'In TV par ek permission baaki hai: ' + list.map(x => tvName(x.tv)).join(', ')
-                + '. Us TV par Office TV app kholein aur jo permission maange (Accessibility ya "Display over other apps") on karein, '
-                + 'warna links aur files TV par nahi khulenge.';
+            text = 'These TVs still need a permission: ' + list.map(x => tvName(x.tv)).join(', ')
+                + '. On each one, open the Office TV app and turn on the permission it asks for (Accessibility or "Display over other apps"), '
+                + 'otherwise links and files will not open on the TV.';
         } else if (list[0].s.flavor === 'lite') {
-            text = 'TV par ek permission baaki hai. TV par Office TV app kholein aur "Display over other apps" allow karein, '
-                + 'warna links aur files TV par nahi khulenge.';
+            text = 'The TV still needs a permission. Open the Office TV app on the TV and allow "Display over other apps", '
+                + 'otherwise links and files will not open on the TV.';
         } else {
-            text = 'TV par ek permission baaki hai. TV par Office TV app kholein aur Accessibility on karein '
-                + '(Settings > Accessibility > Office TV > On), warna links, files aur remote buttons TV par nahi chalenge.';
+            text = 'The TV still needs a permission. Open the Office TV app on the TV and turn on Accessibility '
+                + '(Settings > Accessibility > Office TV > On), otherwise links, files and remote buttons will not work on the TV.';
         }
         $('permText').textContent = text;
         banner.hidden = false;
@@ -368,6 +368,7 @@ function renderNotices() {
     const tv = selectedTv();
     const s = tv && statusOf(tv);
     $('a11yNote').hidden = !(s && s.accessibility === false && !s.needsPermission && s.flavor !== 'lite');
+    $('chromeTip').hidden = !targets().some(t => { const st = statusOf(t); return !!(st && st.chrome === true); });
     const lan = lanUrl(tv);
     $('fileLan').hidden = !lan;
     if (lan) $('fileLan').href = lan;
@@ -406,13 +407,13 @@ function renderApps() {
         b.type = 'button';
         b.textContent = a.label;
         b.title = a.label + ' (' + a.pkg + ')';
-        b.addEventListener('click', () => act('app', { pkg: a.pkg }, { btn: b, okText: a.label + ' TV par khul gaya.' }));
+        b.addEventListener('click', () => act('app', { pkg: a.pkg }, { btn: b, okText: 'Opened ' + a.label + ' on the TV.' }));
         box.appendChild(b);
     }
     if (!shown.length) {
         const p = document.createElement('p');
         p.className = 'note';
-        p.textContent = q ? 'Is naam ki koi app nahi mili.' : 'TV par koi app nahi mili.';
+        p.textContent = q ? 'No app matches that name.' : 'No apps found on the TV.';
         box.appendChild(p);
     }
 }
@@ -442,13 +443,13 @@ function showResults(title, res, textFor) {
 function summaryToast(res, textFor) {
     const good = res.filter(r => r.ack && r.ack.ok).length;
     if (good === res.length) {
-        toast('Sab ' + res.length + ' TV par ho gaya.', 'ok');
+        toast('Done on all ' + res.length + ' TVs.', 'ok');
         return;
     }
     const bad = res.find(r => !(r.ack && r.ack.ok));
     const why = bad.ack ? textFor(bad.ack) : errText(bad.err);
     const rl = res.find(r => r.err && r.err.code === 'rate_limit');
-    toast(res.length + ' mein se ' + good + ' TV par ho gaya. ' + tvName(bad.tv) + ': ' + why, 'bad',
+    toast('Done on ' + good + ' of ' + res.length + ' TVs. ' + tvName(bad.tv) + ': ' + why, 'bad',
         { link: rl ? lanLink(rl.tv) : null, duration: 12000 });
 }
 
@@ -465,7 +466,7 @@ function setBusy(btn, on) {
 async function act(cmd, args, { btn, timeoutMs, okText, silent } = {}) {
     const list = targets();
     if (!list.length) {
-        toast('Pehle ek TV jodein.', 'bad');
+        toast('Add a TV first.', 'bad');
         openPair();
         return [];
     }
@@ -474,7 +475,7 @@ async function act(cmd, args, { btn, timeoutMs, okText, silent } = {}) {
     try {
         if (state.selected !== ALL) {
             const tv = list[0];
-            const slow = setTimeout(() => toast(prefix(tv) + 'TV ko bhej rahe hain…', 'info', { duration: 0 }), 900);
+            const slow = setTimeout(() => toast(prefix(tv) + 'Sending to the TV…', 'info', { duration: 0 }), 900);
             try {
                 const ack = await linkFor(tv).send(cmd, args, { timeoutMs });
                 clearTimeout(slow);
@@ -487,10 +488,10 @@ async function act(cmd, args, { btn, timeoutMs, okText, silent } = {}) {
                 return [{ tv, err: e }];
             }
         }
-        toast(list.length + ' TV ko bhej rahe hain…', 'info', { duration: 0 });
+        toast('Sending to ' + list.length + ' TVs…', 'info', { duration: 0 });
         const res = await Promise.all(list.map(tv => linkFor(tv).send(cmd, args, { timeoutMs })
             .then(ack => ({ tv, ack }), err => ({ tv, err }))));
-        showResults('Sab TV: ' + actionTitle(cmd, args), res, textFor);
+        showResults('All TVs: ' + actionTitle(cmd, args), res, textFor);
         summaryToast(res, textFor);
         return res;
     } finally {
@@ -501,11 +502,11 @@ async function act(cmd, args, { btn, timeoutMs, okText, silent } = {}) {
 
 function actionTitle(cmd, args) {
     switch (cmd) {
-        case 'open': return 'Link kholo';
+        case 'open': return 'Open link';
         case 'youtube': return 'YouTube';
         case 'key': return (KEY_TEXT[args.key] || args.key).replace(/\.$/, '');
         case 'volume': return 'Volume ' + args.percent + '%';
-        case 'awake': return args.on ? 'Screen hamesha on' : 'Screen normal';
+        case 'awake': return args.on ? 'Keep screen on' : 'Screen normal';
         case 'ping': return 'Refresh';
         default: return cmd;
     }
@@ -578,13 +579,13 @@ function looseCode(raw) {
 /** Explains what is wrong with a typed code, or returns '' when it is valid. */
 function explainCode(raw) {
     const s = looseCode(raw);
-    if (!s) return 'TV code likhein. Yeh TV par Office TV app ki screen par dikhta hai (jaise 7K3M9-QX2TD).';
+    if (!s) return 'Type the TV code. It is shown on the Office TV app screen on the TV (for example 7K3M9-QX2TD).';
     const bad = [];
     for (const ch of s) if (ALPHABET.indexOf(ch) < 0 && bad.indexOf(ch) < 0) bad.push(ch);
-    if (bad.indexOf('U') >= 0) return 'Code mein "U" nahi hota. Shayad woh "V" hai? TV par dobara dekh kar likhein.';
-    if (bad.length) return 'Code mein "' + bad.join(' ') + '" nahi hota. Code mein sirf 0-9 aur A-Z akshar hote hain.';
-    if (s.length < 10) return 'Code 10 akshar ka hota hai (jaise 7K3M9-QX2TD). Abhi ' + s.length + ' likhe hain, ' + (10 - s.length) + ' baaki hain.';
-    if (s.length > 10) return 'Code 10 akshar ka hota hai (jaise 7K3M9-QX2TD). Abhi ' + s.length + ' likhe hain, ' + (s.length - 10) + ' zyada hain.';
+    if (bad.indexOf('U') >= 0) return 'Codes never contain "U". Could it be a "V"? Check the TV and type it again.';
+    if (bad.length) return 'Codes never contain "' + bad.join(' ') + '". A code only has the characters 0-9 and A-Z.';
+    if (s.length < 10) return 'A code has 10 characters (for example 7K3M9-QX2TD). You typed ' + s.length + ', ' + (10 - s.length) + ' missing.';
+    if (s.length > 10) return 'A code has 10 characters (for example 7K3M9-QX2TD). You typed ' + s.length + ', ' + (s.length - 10) + ' too many.';
     return '';
 }
 
@@ -595,20 +596,20 @@ function onCodeInput() {
     setPairError('');
     help.classList.remove('good');
     if (/pair=/i.test(raw)) {
-        help.textContent = parsePairFragment(raw) ? 'Pairing link mil gaya. "TV jodein" dabayein.' : 'Yeh pairing link poora nahi hai.';
+        help.textContent = parsePairFragment(raw) ? 'Pairing link found. Press "Add TV".' : 'This pairing link is incomplete.';
         return;
     }
     const problem = s ? explainCode(raw) : '';
     if (!s) {
-        help.textContent = '10 akshar. Chhote ya bade akshar, space aur dash sab chalenge.';
+        help.textContent = '10 characters. Upper or lower case, spaces and dashes are all fine.';
     } else if (!problem) {
-        help.textContent = 'Code theek hai: ' + displayCode(s);
+        help.textContent = 'Code looks good: ' + displayCode(s);
         help.classList.add('good');
-    } else if (/nahi hota/.test(problem)) {
+    } else if (/never contain/.test(problem)) {
         setPairError(problem);
         help.textContent = '';
     } else {
-        help.textContent = Math.min(s.length, 99) + '/10 akshar';
+        help.textContent = Math.min(s.length, 99) + '/10 characters';
     }
 }
 
@@ -651,15 +652,15 @@ async function pairTv({ code, name, relay }, { focus = false } = {}) {
         const chip = $('picker').querySelector('[data-code="' + code + '"]');
         if (chip) chip.focus();
     }
-    toast((existed ? tvName(tv) + ' pehle se juda hai. ' : 'TV jud gaya. ') + 'TV se baat kar rahe hain…', 'info', { duration: 0 });
+    toast((existed ? tvName(tv) + ' is already added. ' : 'TV added. ') + 'Contacting the TV…', 'info', { duration: 0 });
     const r = await pingTv(tv);
     if (r.ack && r.ack.ok) {
-        toast(tvName(tv) + ' jud gaya. Ab neeche se TV chalayein.', 'ok', { duration: 5000 });
+        toast(tvName(tv) + ' is connected. Use the controls below.', 'ok', { duration: 5000 });
     } else if (r.ack) {
-        toast(prefix(tv) + (r.ack.msg || 'TV ne jawab diya, par kuch gadbad hai.'), 'bad');
+        toast(prefix(tv) + (r.ack.msg || 'The TV answered, but something is wrong.'), 'bad');
     } else if (r.err.code === 'timeout') {
-        toast('TV save ho gaya, par TV se abhi jawab nahi aaya. TV on hai, internet se juda hai aur code sahi hai? '
-            + 'TV par Office TV app ek baar kholein, phir Refresh dabayein.', 'bad', { duration: 12000 });
+        toast('TV saved, but it has not answered yet. Is it on, connected to the internet, and is the code right? '
+            + 'Open the Office TV app on the TV once, then press Refresh.', 'bad', { duration: 12000 });
     } else {
         showError(tv, r.err);
     }
@@ -682,7 +683,7 @@ function handleFragment() {
     if (!frag) return false;
     if (frag.invalid) {
         openPair();
-        setPairError('Pairing link adhoora ya galat hai. TV par dikh raha TV code yahan haath se likhein.');
+        setPairError('The pairing link is incomplete or invalid. Type the TV code shown on the TV here instead.');
     } else {
         pairTv(frag);
     }
@@ -725,18 +726,18 @@ async function sendFile(file) {
     if (!file || state.fileBusy) return;
     const list = targets();
     if (!list.length) {
-        toast('Pehle ek TV jodein.', 'bad');
+        toast('Add a TV first.', 'bad');
         return;
     }
     $('fileMsg').hidden = true;
     if (file.size > MAX_FILE_BYTES) {
         showFileMsg(tooBigText(file.size));
-        toast('File ' + fmtMB(file.size) + ' ki hai, 15 MB tak hi ja sakti hai. Google Drive link ya Same Wi-Fi page use karein.',
+        toast('This file is ' + fmtMB(file.size) + '; only files up to 15 MB can be sent. Use a Google Drive link or the Same Wi-Fi page.',
             'bad', { link: lanLink(list[0]) });
         return;
     }
     if (!file.size) {
-        toast('Yeh file khaali hai (0 KB).', 'bad');
+        toast('This file is empty (0 KB).', 'bad');
         return;
     }
     state.fileBusy = true;
@@ -745,7 +746,7 @@ async function sendFile(file) {
     setProgress(0);
     const frac = list.map(() => 0);
     const multi = list.length > 1;
-    $('progName').textContent = (multi ? list.length + ' TV ko bhej rahe hain: ' : 'Bhej rahe hain: ') + file.name;
+    $('progName').textContent = (multi ? 'Sending to ' + list.length + ' TVs: ' : 'Sending: ') + file.name;
     let res;
     try {
         // Each TV has its own key, so each gets its own encrypted upload; run them side by side.
@@ -761,14 +762,14 @@ async function sendFile(file) {
         setTimeout(() => { if (!state.fileBusy) $('progWrap').hidden = true; }, 1500);
         render();
     }
-    const textFor = ack => ack.msg || (ack.ok ? file.name + ' TV par bhej di.' : 'TV par file nahi khuli.');
+    const textFor = ack => ack.msg || (ack.ok ? 'Sent ' + file.name + ' to the TV.' : 'The file did not open on the TV.');
     if (state.selected !== ALL) {
         const r = res[0];
         if (r.ack) toast(prefix(r.tv) + textFor(r.ack), r.ack.ok ? 'ok' : 'bad');
         else showError(r.tv, r.err);
         if (r.err && r.err.code === 'too_big') showFileMsg(tooBigText(file.size));
     } else {
-        showResults('Sab TV: ' + file.name, res, textFor);
+        showResults('All TVs: ' + file.name, res, textFor);
         summaryToast(res, textFor);
     }
 }
@@ -798,7 +799,7 @@ function wire() {
         e.preventDefault();
         const url = toUrl($('url').value);
         if (!url) {
-            toast('Pehle link ya website likhein.', 'bad');
+            toast('Type a link or website first.', 'bad');
             $('url').focus();
             return;
         }
@@ -849,9 +850,9 @@ function wire() {
             .map(a => ({ label: cleanName(a.label) || a.pkg, pkg: a.pkg }));
         state.apps.set(tv.code, apps);
         renderApps();
-        if (!apps.length) toast(prefix(tv) + 'TV par koi app nahi mili.', 'bad');
-        else if (r.ack.partial) toast(prefix(tv) + 'Kuch hi apps aa paayi (' + apps.length + '). Poori list ke liye dobara dabayein.', 'bad');
-        else toast(prefix(tv) + apps.length + ' apps mili. Kisi par dabayein, woh TV par khul jayegi.', 'ok');
+        if (!apps.length) toast(prefix(tv) + 'No apps found on the TV.', 'bad');
+        else if (r.ack.partial) toast(prefix(tv) + 'Only some apps arrived (' + apps.length + '). Press again for the full list.', 'bad');
+        else toast(prefix(tv) + apps.length + ' apps found. Tap one to open it on the TV.', 'ok');
     });
     $('appFilter').addEventListener('input', renderApps);
 
@@ -882,13 +883,13 @@ function wire() {
         setBusy(btn, true);
         const res = await Promise.all(list.map(pingTv));
         setBusy(btn, false);
-        const textFor = ack => ack.msg || 'TV online hai.';
+        const textFor = ack => ack.msg || 'The TV is online.';
         if (state.selected !== ALL) {
             const r = res[0];
-            if (r.ack) toast(prefix(r.tv) + (r.ack.ok ? 'TV online hai.' : textFor(r.ack)), r.ack.ok ? 'ok' : 'bad');
+            if (r.ack) toast(prefix(r.tv) + (r.ack.ok ? 'The TV is online.' : textFor(r.ack)), r.ack.ok ? 'ok' : 'bad');
             else showError(r.tv, r.err);
         } else {
-            showResults('Sab TV: Refresh', res, ack => (ack.ok ? 'Online hai.' : textFor(ack)));
+            showResults('All TVs: Refresh', res, ack => (ack.ok ? 'Online.' : textFor(ack)));
             summaryToast(res, textFor);
         }
     });
@@ -908,7 +909,7 @@ function wire() {
         const tv = selectedTv();
         const name = cleanName($('renameInput').value);
         if (!name) {
-            $('renameErr').textContent = 'Naam likhein (1 se 40 akshar).';
+            $('renameErr').textContent = 'Type a name (1 to 40 characters).';
             return;
         }
         closeDialog(renameDlg);
@@ -918,7 +919,7 @@ function wire() {
             tv.name = cleanName((r.ack.data && r.ack.data.name) || name) || name;
             saveTvs();
             render();
-            toast('Naam badal diya: ' + tv.name, 'ok');
+            toast('Renamed to ' + tv.name, 'ok');
         }
     });
 
@@ -926,8 +927,8 @@ function wire() {
     $('removeBtn').addEventListener('click', () => {
         const tv = selectedTv();
         if (!tv) return;
-        $('removeText').textContent = '"' + tvName(tv) + '" ko is browser se hatana hai? TV par kuch nahi badlega. '
-            + 'Dobara jodne ke liye TV code chahiye hoga.';
+        $('removeText').textContent = 'Remove "' + tvName(tv) + '" from this browser? Nothing changes on the TV. '
+            + 'You will need the TV code to add it again.';
         openDialog(removeDlg);
     });
     $('removeCancel').addEventListener('click', () => closeDialog(removeDlg));
@@ -945,7 +946,7 @@ function wire() {
         saveTvs();
         state.appsShownFor = undefined;
         select(state.tvs.length ? state.tvs[0].code : null);
-        toast(name + ' hata diya.', 'ok');
+        toast('Removed ' + name + '.', 'ok');
     });
 
     // Arrow keys, PageUp/PageDown (and USB presenter clickers) change slides on the TV.
@@ -972,11 +973,11 @@ function wire() {
 
 function start() {
     if (!window.crypto || !window.crypto.subtle) {
-        fatal('Yeh page sirf https link par chalta hai. Yeh link kholein: ' + CONTROLLER_URL);
+        fatal('This page only works over https. Open this link: ' + CONTROLLER_URL);
         return;
     }
     if (typeof window.EventSource !== 'function' || typeof window.fetch !== 'function') {
-        fatal('Yeh browser purana hai. Chrome ya Edge ka naya version use karein.');
+        fatal('This browser is too old. Please use a recent version of Chrome, Edge or Safari.');
         return;
     }
     state.tvs = loadTvs();

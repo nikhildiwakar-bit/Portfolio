@@ -1,184 +1,328 @@
 <!DOCTYPE html>
-<html lang="hi">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#4f46e5">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a1115" media="(prefers-color-scheme: dark)">
 <title>Office TV Remote</title>
 <style>
 :root {
-  --bg: #f4f6fb; --card: #ffffff; --text: #111827; --muted: #6b7280; --border: #e5e7eb;
-  --primary: #4f46e5; --primary-soft: #eef2ff; --ok: #15803d; --ok-soft: #dcfce7;
-  --bad: #b91c1c; --bad-soft: #fee2e2; --warn-soft: #fef3c7; --warn: #92400e;
+  --bg: #f4f6f8; --bg-glow-1: rgba(20, 184, 166, .16); --bg-glow-2: rgba(14, 116, 144, .10);
+  --surface: rgba(255, 255, 255, .86); --surface-solid: #ffffff; --surface-2: #f1f4f6; --surface-3: #e8edf0;
+  --text: #0c1a1f; --muted: #52636b; --faint: #7b8a91;
+  --border: #dde4e8; --border-strong: #c3ced4;
+  --primary: #0d7f78; --primary-strong: #09625d; --primary-soft: #e3f4f2; --on-grad: #ffffff;
+  --grad: linear-gradient(135deg, #14b8a6 0%, #0e7490 100%);
+  --ok: #15803d; --ok-soft: #e4f5ea; --bad: #b42318; --bad-soft: #fdecea;
+  --warn: #7a4a00; --warn-soft: #fff6df; --warn-border: #efd18d;
+  --info-soft: #e6f3fb; --info-border: #b9dcef; --info: #0b4f73;
+  --focus: #0e7490; --toast-bg: #0c1a1f; --toast-text: #f3f7f8;
+  --shadow: 0 1px 2px rgba(12, 26, 31, .05), 0 8px 28px -8px rgba(12, 26, 31, .10);
+  --radius: 18px; --radius-sm: 12px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0b1120; --card: #151e33; --text: #e5e7eb; --muted: #94a3b8; --border: #26324d;
-    --primary: #818cf8; --primary-soft: #1e2748; --ok: #4ade80; --ok-soft: #12301f;
-    --bad: #f87171; --bad-soft: #3b1515; --warn-soft: #3a2a0c; --warn: #fbbf24;
+    --bg: #0a1115; --bg-glow-1: rgba(20, 184, 166, .14); --bg-glow-2: rgba(56, 189, 248, .07);
+    --surface: rgba(20, 30, 36, .82); --surface-solid: #141e24; --surface-2: #1b272e; --surface-3: #22313a;
+    --text: #e6eef1; --muted: #9aabb3; --faint: #72848c;
+    --border: #25343c; --border-strong: #34474f;
+    --primary: #2dd4bf; --primary-strong: #5eead4; --primary-soft: #11302f; --on-grad: #04211f;
+    --grad: linear-gradient(135deg, #2dd4bf 0%, #0ea5c6 100%);
+    --ok: #4ade80; --ok-soft: #0f2d1d; --bad: #fca5a5; --bad-soft: #3a1716;
+    --warn: #fcd34d; --warn-soft: #2e240b; --warn-border: #5a4613;
+    --info-soft: #0e2633; --info-border: #1d4a60; --info: #9fd8f5;
+    --focus: #5eead4; --toast-bg: #e6eef1; --toast-text: #0a1115;
+    --shadow: 0 10px 30px -10px rgba(0, 0, 0, .6);
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
-.wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 96px; }
-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-h1 { font-size: 1.15rem; margin: 0; }
-.sub { color: var(--muted); font-size: .85rem; }
-.pill { font-size: .8rem; padding: 4px 10px; border-radius: 999px; white-space: nowrap; background: var(--bad-soft); color: var(--bad); }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; background-color: var(--bg); }
+body {
+  margin: 0; min-height: 100vh; color: var(--text); background-color: var(--bg);
+  background-image: radial-gradient(900px 480px at 8% -120px, var(--bg-glow-1), transparent 70%),
+                    radial-gradient(760px 420px at 100% -80px, var(--bg-glow-2), transparent 70%);
+  background-repeat: no-repeat;
+  font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased; overflow-wrap: break-word;
+}
+[hidden] { display: none !important; }
+.ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 18px 16px 110px; }
+@media (min-width: 720px) { .wrap { padding: 30px 32px 110px; } }
+
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.logo {
+  width: 46px; height: 46px; border-radius: 14px; background: var(--grad); color: #fff; display: grid; place-items: center; flex: none;
+  box-shadow: 0 8px 20px -6px rgba(13, 127, 120, .55), inset 0 1px 0 rgba(255, 255, 255, .35);
+}
+.logo .ic { width: 25px; height: 25px; }
+.brand-text { min-width: 0; }
+h1 { font-size: 1.3rem; line-height: 1.2; margin: 0; letter-spacing: -.02em; font-weight: 750; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub { color: var(--muted); font-size: .86rem; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill {
+  display: inline-flex; align-items: center; gap: 7px; font-size: .8rem; font-weight: 600; padding: 6px 12px; border-radius: 999px;
+  white-space: nowrap; background: var(--bad-soft); color: var(--bad); flex: none;
+}
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .pill.on { background: var(--ok-soft); color: var(--ok); }
-.banner { background: var(--warn-soft); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: .88rem; margin-bottom: 12px; display: none; }
-.tip { background: var(--primary-soft); color: var(--text); border-radius: 12px; padding: 10px 12px; font-size: .86rem; margin-bottom: 12px; }
-.tip a { color: var(--primary); font-weight: 600; word-break: break-word; }
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
-.card h2 { font-size: .95rem; margin: 0 0 10px; }
-.row { display: flex; gap: 8px; }
+
+.banner, .tip {
+  display: flex; gap: 10px; align-items: flex-start; border-radius: var(--radius-sm); padding: 12px 14px; font-size: .9rem; margin-bottom: 14px;
+}
+.banner { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn-border); }
+.tip { background: var(--info-soft); color: var(--info); border: 1px solid var(--info-border); }
+.banner p, .tip p { margin: 0; min-width: 0; }
+.banner .ic, .tip .ic { margin-top: 1px; }
+.tip a { color: inherit; font-weight: 650; overflow-wrap: anywhere; }
+
+.grid2 { display: grid; gap: 16px; }
+@media (min-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); align-items: start; gap: 18px; } }
+.col { display: grid; gap: 16px; min-width: 0; }
+.card {
+  background: var(--surface-solid);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 16px; box-shadow: var(--shadow); min-width: 0;
+}
+@media (min-width: 720px) { .card { padding: 22px 24px; } }
+.card h2 { display: flex; align-items: center; gap: 10px; font-size: 1.04rem; margin: 0 0 14px; letter-spacing: -.01em; font-weight: 700; }
+.card h2 .ic { width: 32px; height: 32px; padding: 7px; border-radius: 10px; color: var(--primary-strong); background: var(--primary-soft); }
+.label { font-size: .74rem; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); margin: 18px 0 8px; font-weight: 700; }
+.note { margin: 12px 0 0; font-size: .86rem; color: var(--muted); }
+
+.row { display: flex; gap: 8px; min-width: 0; }
+.row > input { flex: 1 1 auto; }
 input[type=text] {
-  flex: 1; min-width: 0; padding: 12px; font: inherit; border-radius: 10px;
-  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  width: 100%; min-width: 0; min-height: 46px; padding: 10px 14px; font: inherit; color: var(--text);
+  background: var(--surface-solid); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
 }
+input[type=text]:hover { border-color: var(--primary); }
+input[type=text]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 22%, transparent); }
+input::placeholder { color: var(--faint); opacity: 1; }
 button {
-  font: inherit; border: 1px solid var(--primary); background: var(--primary); color: #fff;
-  border-radius: 10px; padding: 11px 14px; cursor: pointer; touch-action: manipulation;
+  font: inherit; font-weight: 600; border-radius: var(--radius-sm); border: 1px solid transparent; padding: 9px 16px; min-height: 44px;
+  cursor: pointer; touch-action: manipulation; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--text); background: var(--surface-2); flex: none; -webkit-tap-highlight-color: transparent;
+  transition: background-color .14s, border-color .14s, color .14s, transform .06s;
 }
-button.soft { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
 button:active { transform: scale(.97); }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.chips button { padding: 6px 12px; font-size: .85rem; border-radius: 999px; }
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.grid button { padding: 14px 6px; font-size: .95rem; }
-.grid.media button { font-size: 1.4rem; padding: 8px 6px; }
-.label { font-size: .8rem; color: var(--muted); margin: 12px 0 6px; }
-.vol { display: flex; align-items: center; gap: 10px; }
-.vol input { flex: 1; accent-color: var(--primary); }
-.file-pick { display: block; border: 2px dashed var(--border); border-radius: 12px; padding: 18px; text-align: center; color: var(--muted); cursor: pointer; }
-.file-pick input { display: none; }
-progress { width: 100%; height: 8px; margin-top: 10px; display: none; accent-color: var(--primary); }
-.list { list-style: none; margin: 10px 0 0; padding: 0; }
-.list li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); font-size: .9rem; }
-.list li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.list button { padding: 6px 10px; font-size: .82rem; }
-.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 10px; }
-.apps button { font-size: .85rem; padding: 10px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.switch input { width: 22px; height: 22px; accent-color: var(--primary); }
-#toast {
-  position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 608px; margin: 0 auto;
-  padding: 12px 14px; border-radius: 12px; font-size: .92rem; background: var(--text); color: var(--bg);
-  opacity: 0; transform: translateY(12px); transition: .2s; pointer-events: none;
+button:hover { border-color: var(--primary); }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+button.primary { background: var(--grad); color: var(--on-grad); border-color: transparent; box-shadow: 0 6px 16px -6px rgba(13, 127, 120, .6); }
+button.primary:hover { filter: brightness(1.06); }
+button.soft { background: var(--primary-soft); color: var(--primary-strong); }
+button.sm { min-height: 36px; padding: 5px 12px; font-size: .86rem; border-radius: 10px; }
+button.danger { color: var(--bad); background: var(--surface-solid); border-color: var(--border-strong); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { min-height: 38px; padding: 6px 15px; border-radius: 999px; font-size: .9rem; font-weight: 550; background: var(--surface-solid); border: 1px solid var(--border); }
+.chip:hover { color: var(--primary-strong); background: var(--primary-soft); }
+
+.keys { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.key { flex-direction: column; gap: 5px; min-height: 70px; padding: 10px 6px; font-size: .85rem; font-weight: 550; border-color: var(--border); text-align: center; line-height: 1.25; }
+.key .ic { width: 22px; height: 22px; color: var(--primary-strong); }
+.key.accent { background: var(--primary-soft); color: var(--primary-strong); }
+.vol { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.vol input { flex: 1 1 auto; min-width: 0; accent-color: var(--primary); height: 32px; }
+.icon-btn { width: 44px; padding: 0; border-color: var(--border); }
+
+.file-pick {
+  position: relative; display: grid; justify-items: center; gap: 4px; text-align: center; padding: 26px 16px;
+  border: 2px dashed var(--border-strong); border-radius: 14px; background: var(--surface-2); color: var(--muted); cursor: pointer;
 }
-#toast.show { opacity: 1; transform: none; }
-#toast.bad { background: var(--bad); color: #fff; }
+.file-pick:hover { border-color: var(--primary); background: var(--primary-soft); }
+.file-pick:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+.file-pick .ic { width: 30px; height: 30px; color: var(--primary); }
+.file-pick strong { color: var(--text); font-weight: 650; overflow-wrap: anywhere; }
+.file-pick span { font-size: .88rem; }
+.file-pick input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.bar { height: 8px; border-radius: 99px; background: var(--surface-3); overflow: hidden; margin-top: 12px; }
+.bar > span { display: block; height: 100%; width: 0; background: var(--grad); transition: width .15s; }
+.list { list-style: none; margin: 12px 0 0; padding: 0; }
+.list:empty { display: none; }
+.list li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--border); font-size: .9rem; min-width: 0; }
+.list li span { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 12px; max-height: 340px; overflow: auto; padding: 2px; }
+.apps:empty { display: none; }
+.apps button { display: block; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; font-weight: 550; border-color: var(--border); min-width: 0; }
+
+.switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.switch label { font-weight: 600; cursor: pointer; min-width: 0; }
+.switch small { display: block; font-weight: 400; color: var(--muted); font-size: .85rem; }
+.toggle {
+  -webkit-appearance: none; appearance: none; margin: 0; width: 50px; height: 30px; border-radius: 99px; flex: none;
+  background: var(--border-strong); position: relative; cursor: pointer; transition: background-color .15s;
+}
+.toggle::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3); transition: transform .15s; }
+.toggle:checked { background: var(--primary); }
+.toggle:checked::after { transform: translateX(20px); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+#toast {
+  position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); width: min(580px, calc(100% - 32px)); z-index: 40;
+  padding: 12px 16px; border-radius: 14px; font-size: .94rem; background: var(--toast-bg); color: var(--toast-text);
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, .45); overflow-wrap: anywhere;
+  opacity: 0; transform: translate(-50%, 16px); transition: opacity .18s, transform .18s; pointer-events: none;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.bad { background: #b42318; color: #fff; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4"/><path d="M10 9.5v5l4.5-2.5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 17v-6M9.5 13.5 12 11l2.5 2.5"/></symbol>
+  <symbol id="i-remote" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17.5h4"/></symbol>
+  <symbol id="i-apps" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9v11h13V9"/></symbol>
+  <symbol id="i-recents" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M7 4h10"/></symbol>
+  <symbol id="i-playpause" viewBox="0 0 24 24"><path d="M4 5v14l9-7z"/><path d="M16 5v14M20 5v14"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M19 19 9 12l10-7z"/><path d="M5 5v14"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 5l10 7-10 7z"/><path d="M19 5v14"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M22 9l-6 6M16 9l6 6"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 11v5.5M12 7.5h.01"/></symbol>
+</svg>
+
 <div class="wrap">
   <header>
-    <div>
-      <h1 id="tvName">📺 Office TV</h1>
-      <div class="sub" id="tvSub">Phone se TV chalayein</div>
+    <div class="brand">
+      <div class="logo" aria-hidden="true"><svg class="ic"><use href="#i-tv"/></svg></div>
+      <div class="brand-text">
+        <h1 id="tvName">Office TV</h1>
+        <div class="sub" id="tvSub">Control this TV from your phone</div>
+      </div>
     </div>
-    <span class="pill" id="pill">Connect ho raha…</span>
+    <span class="pill" id="pill" role="status">Connecting…</span>
   </header>
 
-  <div class="banner" id="banner">
-    TV par abhi ek permission baaki hai. TV par <b>Office TV</b> app kholein aur
-    <b>Accessibility</b> on karein, warna links/files TV par nahi khulenge.
+  <div class="banner" id="banner" hidden>
+    <svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg>
+    <p>The TV still needs a permission. Open the <b>Office TV</b> app on the TV and turn on
+    <b>Accessibility</b>, otherwise links and files will not open on the TV.</p>
   </div>
 
   <div class="tip">
-    Yeh page sirf same Wi-Fi par chalta hai. Bina IP address ke, kahin se bhi chalane ke liye
+    <svg class="ic" aria-hidden="true"><use href="#i-info"/></svg>
+    <p>This page only works on the same Wi-Fi as the TV. To control the TV from anywhere without an IP address, open
     <a href="https://nikhildiwakar-bit.github.io/Portfolio/tv/" target="_blank" rel="noopener">nikhildiwakar-bit.github.io/Portfolio/tv</a>
-    kholein aur TV screen par dikh raha <b>TV code</b> daalein.
+    and enter the <b>TV code</b> shown on the TV screen.</p>
   </div>
 
-  <section class="card">
-    <h2>🔗 Link / Meeting / Website kholo</h2>
-    <form class="row" id="openForm">
-      <input type="text" id="url" placeholder="https://meet.google.com/... ya koi website" inputmode="url" autocomplete="off">
-      <button>Kholo</button>
-    </form>
-    <div class="chips">
-      <button class="soft" data-url="https://www.youtube.com">YouTube</button>
-      <button class="soft" data-url="https://meet.google.com">Google Meet</button>
-      <button class="soft" data-url="https://zoom.us/join">Zoom</button>
-      <button class="soft" data-url="https://teams.microsoft.com">Teams</button>
-      <button class="soft" data-url="https://www.google.com">Google</button>
-    </div>
-    <div class="label">Google apps (pehli baar TV par Google account se login karna hoga)</div>
-    <div class="chips">
-      <button class="soft" data-url="https://mail.google.com">Gmail</button>
-      <button class="soft" data-url="https://drive.google.com">Drive</button>
-      <button class="soft" data-url="https://docs.google.com/spreadsheets">Sheets</button>
-      <button class="soft" data-url="https://docs.google.com/document">Docs</button>
-      <button class="soft" data-url="https://docs.google.com/presentation">Slides</button>
-      <button class="soft" data-url="https://chat.google.com">Chat</button>
-      <button class="soft" data-url="https://calendar.google.com">Calendar</button>
-    </div>
-  </section>
+  <div class="grid2">
+    <div class="col">
+      <section class="card">
+        <h2><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg>Open a link, meeting or website</h2>
+        <form class="row" id="openForm">
+          <input type="text" id="url" placeholder="meet.google.com/abc-defg-hij or any website" inputmode="url" autocomplete="off" aria-label="Link or website">
+          <button class="primary">Open</button>
+        </form>
+        <div class="label">Quick open</div>
+        <div class="chips">
+          <button class="chip" data-url="https://www.youtube.com">YouTube</button>
+          <button class="chip" data-url="https://meet.google.com">Google Meet</button>
+          <button class="chip" data-url="https://zoom.us/join">Zoom</button>
+          <button class="chip" data-url="https://teams.microsoft.com">Teams</button>
+          <button class="chip" data-url="https://www.google.com">Google</button>
+        </div>
+        <div class="label">Google apps</div>
+        <div class="chips">
+          <button class="chip" data-url="https://mail.google.com">Gmail</button>
+          <button class="chip" data-url="https://drive.google.com">Drive</button>
+          <button class="chip" data-url="https://docs.google.com/spreadsheets">Sheets</button>
+          <button class="chip" data-url="https://docs.google.com/document">Docs</button>
+          <button class="chip" data-url="https://docs.google.com/presentation">Slides</button>
+          <button class="chip" data-url="https://chat.google.com">Chat</button>
+          <button class="chip" data-url="https://calendar.google.com">Calendar</button>
+        </div>
+        <p class="note">The first time, sign in to your Google account in the browser on the TV.</p>
+        <div class="tip" id="chromeTip" style="margin:12px 0 0" hidden>
+          <svg class="ic" aria-hidden="true"><use href="#i-info"/></svg>
+          <p>Tip: turn on Desktop site in Chrome on the TV for the full computer view of Gmail, Drive and Sheets (Chrome ⋮ → Settings → Site settings → Desktop site).</p>
+        </div>
+      </section>
 
-  <section class="card">
-    <h2>▶️ YouTube</h2>
-    <form class="row" id="ytForm">
-      <input type="text" id="yt" placeholder="Video ka naam ya YouTube link" autocomplete="off">
-      <button>Chalao</button>
-    </form>
-  </section>
+      <section class="card">
+        <h2><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>YouTube</h2>
+        <form class="row" id="ytForm">
+          <input type="text" id="yt" placeholder="Search videos or paste a YouTube link" autocomplete="off" aria-label="Video name or YouTube link">
+          <button class="primary">Play</button>
+        </form>
+      </section>
 
-  <section class="card">
-    <h2>📄 PPT / PDF / Photo / Video dikhao</h2>
-    <label class="file-pick">
-      <input type="file" id="file" accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,image/*,video/*,audio/*">
-      <span id="fileLabel">Yahan tap karke file chuniye — TV par apne aap khul jayegi</span>
-    </label>
-    <progress id="prog" max="100" value="0"></progress>
-    <ul class="list" id="files"></ul>
-  </section>
+      <section class="card">
+        <h2><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>Show a presentation, PDF, photo or video</h2>
+        <label class="file-pick">
+          <input type="file" id="file" accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,image/*,video/*,audio/*">
+          <svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>
+          <strong id="fileLabel">Tap to choose a file</strong>
+          <span>It opens on the TV automatically.</span>
+        </label>
+        <div class="bar" id="prog" hidden><span></span></div>
+        <ul class="list" id="files"></ul>
+      </section>
+    </div>
 
-  <section class="card">
-    <h2>🎮 Remote</h2>
-    <div class="label">Slide / Page</div>
-    <div class="grid">
-      <button class="soft" data-key="prev_slide">◀ Peeche</button>
-      <button class="soft" data-key="scroll_up">▲ Upar</button>
-      <button class="soft" data-key="next_slide">Aage ▶</button>
-      <button class="soft" data-key="back">↩ Back</button>
-      <button class="soft" data-key="scroll_down">▼ Neeche</button>
-      <button class="soft" data-key="home">⌂ Home</button>
-    </div>
-    <div class="label">Media</div>
-    <div class="grid media">
-      <button class="soft" data-key="previous">⏮</button>
-      <button class="soft" data-key="play_pause">⏯</button>
-      <button class="soft" data-key="next">⏭</button>
-    </div>
-    <div class="label">Volume</div>
-    <div class="vol">
-      <button class="soft" data-key="mute" aria-label="Mute">🔇</button>
-      <button class="soft" data-key="volume_down" aria-label="Volume kam">−</button>
-      <input type="range" id="vol" min="0" max="100" step="5" value="30" aria-label="Volume">
-      <button class="soft" data-key="volume_up" aria-label="Volume zyada">+</button>
-    </div>
-  </section>
+    <div class="col">
+      <section class="card">
+        <h2><svg class="ic" aria-hidden="true"><use href="#i-remote"/></svg>Remote</h2>
+        <div class="label" style="margin-top:4px">Slides and pages</div>
+        <div class="keys">
+          <button class="key accent" data-key="prev_slide"><svg class="ic" aria-hidden="true"><use href="#i-left"/></svg>Previous slide</button>
+          <button class="key" data-key="scroll_up"><svg class="ic" aria-hidden="true"><use href="#i-up"/></svg>Scroll up</button>
+          <button class="key accent" data-key="next_slide"><svg class="ic" aria-hidden="true"><use href="#i-right"/></svg>Next slide</button>
+          <button class="key" data-key="back"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>Back</button>
+          <button class="key" data-key="scroll_down"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Scroll down</button>
+          <button class="key" data-key="home"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg>Home</button>
+        </div>
+        <div class="label">Media</div>
+        <div class="keys">
+          <button class="key" data-key="previous"><svg class="ic" aria-hidden="true"><use href="#i-prev"/></svg>Previous</button>
+          <button class="key" data-key="play_pause"><svg class="ic" aria-hidden="true"><use href="#i-playpause"/></svg>Play / Pause</button>
+          <button class="key" data-key="next"><svg class="ic" aria-hidden="true"><use href="#i-next"/></svg>Next</button>
+        </div>
+        <div class="label">Volume</div>
+        <div class="vol">
+          <button class="icon-btn" data-key="mute" aria-label="Mute"><svg class="ic" aria-hidden="true"><use href="#i-mute"/></svg></button>
+          <button class="icon-btn" data-key="volume_down" aria-label="Volume down"><svg class="ic" aria-hidden="true"><use href="#i-minus"/></svg></button>
+          <input type="range" id="vol" min="0" max="100" step="5" value="30" aria-label="Volume">
+          <button class="icon-btn" data-key="volume_up" aria-label="Volume up"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button>
+        </div>
+      </section>
 
-  <section class="card">
-    <h2>📱 TV ki apps</h2>
-    <button class="soft" id="loadApps">Apps dikhao</button>
-    <div class="apps" id="apps"></div>
-  </section>
+      <section class="card">
+        <h2><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg>Screen</h2>
+        <div class="switch">
+          <label for="awake">Keep the screen on<small>The TV will not go to sleep on its own.</small></label>
+          <input type="checkbox" class="toggle" id="awake" role="switch" checked>
+        </div>
+        <div class="actions">
+          <button class="soft" data-key="wake"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg>Wake screen</button>
+          <button class="soft" data-key="recents"><svg class="ic" aria-hidden="true"><use href="#i-recents"/></svg>Recent apps</button>
+        </div>
+      </section>
 
-  <section class="card">
-    <h2>💡 Screen</h2>
-    <div class="switch">
-      <span>Screen hamesha on rakho</span>
-      <input type="checkbox" id="awake" checked>
+      <section class="card">
+        <h2><svg class="ic" aria-hidden="true"><use href="#i-apps"/></svg>TV apps</h2>
+        <button class="soft" id="loadApps">Show apps</button>
+        <div class="apps" id="apps"></div>
+      </section>
     </div>
-    <div class="row" style="margin-top:10px">
-      <button class="soft" data-key="wake">Screen jagao</button>
-      <button class="soft" data-key="recents">Recent apps</button>
-    </div>
-  </section>
+  </div>
 </div>
-<div id="toast" role="status"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -195,11 +339,11 @@ function toast(msg, ok = true) {
   t.textContent = msg;
   t.className = 'show' + (ok ? '' : ' bad');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.className = ''; }, 3500);
+  toastTimer = setTimeout(() => { t.className = ''; }, ok ? 3500 : 6000);
 }
 
 function askPin() {
-  const p = prompt('TV screen par dikh raha 4 number ka PIN daalein:');
+  const p = prompt('Enter the 4-digit PIN shown on the TV screen:');
   if (p) { pin = p.trim(); save('officetv-pin', pin); }
   return !!p;
 }
@@ -213,7 +357,7 @@ async function api(path, body) {
   const r = await fetch(path, opt);
   if (r.status === 401) {
     if (askPin()) return api(path, body);
-    throw new Error('PIN chahiye');
+    throw new Error('PIN required');
   }
   return r.json();
 }
@@ -221,28 +365,29 @@ async function api(path, body) {
 async function act(path, body) {
   try {
     const r = await api(path, body);
-    toast(r.msg || 'Done', r.ok !== false);
+    toast(r.msg || 'Done.', r.ok !== false);
     if (r.ok === false) refreshStatus();
     return r;
   } catch (e) {
-    toast('TV se connect nahi ho paya. Phone aur TV ek hi Wi-Fi par hain?', false);
+    toast('Could not reach the TV. Are the phone and the TV on the same Wi-Fi?', false);
   }
 }
 
 async function refreshStatus() {
   try {
     const s = await api('/api/status');
-    $('tvName').textContent = '📺 ' + s.name;
-    $('tvSub').textContent = 'Android ' + s.android;
+    $('tvName').textContent = s.name || 'Office TV';
+    $('tvSub').textContent = [s.model, s.android ? 'Android ' + s.android : ''].filter(Boolean).join(' · ') || 'Office TV';
     $('pill').textContent = 'Connected';
     $('pill').className = 'pill on';
-    $('banner').style.display = s.needsPermission ? 'block' : 'none';
-    $('awake').checked = s.keepAwake;
+    $('banner').hidden = !s.needsPermission;
+    $('chromeTip').hidden = s.chrome !== true;
+    if (document.activeElement !== $('awake')) $('awake').checked = s.keepAwake !== false;
     if (s.maxVolume && document.activeElement !== $('vol')) {
       $('vol').value = Math.round(s.volume * 100 / s.maxVolume);
     }
   } catch (e) {
-    $('pill').textContent = 'Connected nahi';
+    $('pill').textContent = 'Not connected';
     $('pill').className = 'pill';
   }
 }
@@ -251,17 +396,19 @@ async function refreshFiles() {
   try {
     const files = await api('/api/files');
     const ul = $('files');
-    ul.innerHTML = '';
-    files.slice(0, 15).forEach(f => {
+    ul.textContent = '';
+    (Array.isArray(files) ? files : []).slice(0, 15).forEach(f => {
       const li = document.createElement('li');
       const name = document.createElement('span');
       name.textContent = f.name;
+      name.title = f.name;
       const open = document.createElement('button');
-      open.textContent = 'Kholo';
+      open.className = 'soft sm';
+      open.textContent = 'Open';
       open.onclick = () => act('/api/file/open', { name: f.name });
       const del = document.createElement('button');
-      del.className = 'soft';
-      del.textContent = 'Hatao';
+      del.className = 'danger sm';
+      del.textContent = 'Delete';
       del.onclick = async () => { await act('/api/file/delete', { name: f.name }); refreshFiles(); };
       li.append(name, open, del);
       ul.append(li);
@@ -273,6 +420,7 @@ $('openForm').onsubmit = e => {
   e.preventDefault();
   const u = $('url').value.trim();
   if (u) act('/api/open', { url: u });
+  else toast('Type a link or website first.', false);
 };
 $('ytForm').onsubmit = e => {
   e.preventDefault();
@@ -287,42 +435,42 @@ $('loadApps').onclick = async () => {
   try {
     const apps = await api('/api/apps');
     const box = $('apps');
-    box.innerHTML = '';
-    apps.forEach(a => {
+    box.textContent = '';
+    (Array.isArray(apps) ? apps : []).forEach(a => {
       const b = document.createElement('button');
-      b.className = 'soft';
       b.textContent = a.label;
-      b.title = a.pkg;
+      b.title = a.label + ' (' + a.pkg + ')';
       b.onclick = () => act('/api/app', { pkg: a.pkg });
       box.append(b);
     });
-    if (!apps.length) toast('Koi app nahi mili.', false);
-  } catch (e) { toast('Apps load nahi hui.', false); }
+    if (!box.children.length) toast('No apps found on the TV.', false);
+  } catch (e) { toast('Could not load the apps.', false); }
 };
 
+const FILE_LABEL = 'Tap to choose a file';
 $('file').onchange = () => {
   const f = $('file').files[0];
   if (!f) return;
   const prog = $('prog');
-  prog.style.display = 'block';
-  prog.value = 0;
-  $('fileLabel').textContent = 'Bhej rahe hain: ' + f.name;
+  const fill = prog.firstElementChild;
+  prog.hidden = false;
+  fill.style.width = '0%';
+  $('fileLabel').textContent = 'Sending: ' + f.name;
   const fd = new FormData();
   fd.append('file', f);
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/upload');
   xhr.setRequestHeader('X-Pin', pin);
-  xhr.upload.onprogress = e => { if (e.lengthComputable) prog.value = e.loaded * 100 / e.total; };
+  xhr.upload.onprogress = e => { if (e.lengthComputable) fill.style.width = (e.loaded * 100 / e.total) + '%'; };
+  const done = () => { prog.hidden = true; $('fileLabel').textContent = FILE_LABEL; $('file').value = ''; };
   xhr.onload = () => {
-    prog.style.display = 'none';
-    $('fileLabel').textContent = 'Yahan tap karke file chuniye — TV par apne aap khul jayegi';
-    $('file').value = '';
-    if (xhr.status === 401) { askPin(); toast('PIN daal kar file dobara chuniye.', false); return; }
-    try { const r = JSON.parse(xhr.responseText); toast(r.msg, r.ok !== false); }
-    catch (e) { toast('Upload fail hua.', false); }
+    done();
+    if (xhr.status === 401) { askPin(); toast('Enter the PIN, then choose the file again.', false); return; }
+    try { const r = JSON.parse(xhr.responseText); toast(r.msg || 'Done.', r.ok !== false); }
+    catch (e) { toast('The upload failed.', false); }
     refreshFiles();
   };
-  xhr.onerror = () => { prog.style.display = 'none'; toast('Upload fail hua. Wi-Fi check karein.', false); };
+  xhr.onerror = () => { done(); toast('The upload failed. Check the Wi-Fi connection.', false); };
   xhr.send(fd);
 };
 

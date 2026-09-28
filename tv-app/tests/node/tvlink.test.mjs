@@ -102,7 +102,7 @@ test('send(): encrypted POST to <relay>/<topic>?firebase=no, ack resolves, echo 
     const changes = [];
     link.onchange = l => changes.push(l.state);
     const ack = await link.send('open', { url: 'https://docs.google.com/spreadsheets' });
-    assert.deepEqual(ack, { ok: true, msg: 'Link TV par khul gaya.', data: {} });
+    assert.deepEqual(ack, { ok: true, msg: 'Opened the link on the TV.', data: {} });
     assert.equal(relay.posts.length, 1);
     const { url, opts } = relay.posts[0];
     assert.equal(url, RELAY + '/' + link.topic + '?firebase=no');
@@ -254,7 +254,7 @@ test('sendFile encrypts, uploads to ?filename=otv.bin&firebase=no, then sends fi
     const seen = [];
     const ack = await link.sendFile(file, { onProgress: f => seen.push(f) });
     assert.equal(ack.ok, true);
-    assert.equal(ack.msg, 'Sales.pptx TV par khul gaya.');
+    assert.equal(ack.msg, 'Opened Sales.pptx on the TV.');
     assert.equal(relay.posts[0].url, RELAY + '/' + link.topic + '?filename=otv.bin&firebase=no');
     assert.equal(relay.posts[0].opts.body.length, bytes.length + 16);
     assert.deepEqual(tv.files[0].bytes, bytes);
