@@ -208,7 +208,7 @@ test('page text is English only', async () => {
     assert.doesNotMatch(visible, HINGLISH);
     assert.doesNotMatch(visible, /[^\x00-\x7F…·“”‘’→–—]/, 'only English characters');
     // Every string literal in the scripts, including messages not shown in this test.
-    for (const f of ['tv/app.js', 'tv/cast.js', 'tv/otv.js', 'tv/receive.js', 'tv/receive.html', 'tv/index.html']) {
+    for (const f of ['tv/app.js', 'tv/cast.js', 'tv/otv.js', 'tv/stats.js', 'tv/receive.js', 'tv/receive.html', 'tv/index.html']) {
         const src = readFileSync(join(REPO, f), 'utf8').replace(/^\s*\/\/.*$/gm, '');
         const strings = (src.match(/'(?:[^'\\\n]|\\.)*'|>[^<>{}]+</g) || []).join('\n');
         assert.doesNotMatch(strings, HINGLISH, f + ' is English');

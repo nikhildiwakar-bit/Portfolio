@@ -211,7 +211,11 @@ export function receiverPlaying(p) {
         const v = document.getElementById('video');
         const s = v.srcObject;
         if (!s || v.paused || v.videoWidth === 0 || v.readyState < 2 || !window.__otvCast || window.__otvCast.state !== 'playing') return null;
-        return { time: v.currentTime, width: v.videoWidth, height: v.videoHeight, fit: getComputedStyle(v).objectFit,
+        const cs = getComputedStyle(v);
+        const r = v.getBoundingClientRect();
+        return { time: v.currentTime, width: v.videoWidth, height: v.videoHeight, fit: cs.objectFit,
+            render: { imageRendering: cs.imageRendering, transform: cs.transform, filter: cs.filter, position: cs.position },
+            box: { left: r.left, top: r.top, width: r.width, height: r.height },
             hash: location.hash, overlay: document.getElementById('status').hidden, tracks: s.getVideoTracks().length };
     }).catch(() => null), 20000, 'video playing on the receiver');
 }

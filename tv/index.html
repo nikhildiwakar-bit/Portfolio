@@ -209,6 +209,29 @@ body.is-live .stage { display: grid; grid-template-columns: minmax(0, 1fr); alig
 .live-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
 .live .fine { text-align: left; margin-top: 16px; }
 
+/* connection info (while sharing) */
+.conn { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--border); font-size: .88rem; color: var(--muted); min-width: 0; }
+.conn-toggle {
+  font: inherit; font-weight: 650; color: var(--text); background: none; border: 0; min-height: 44px; padding: 0 8px 0 2px; margin-left: -2px;
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; border-radius: 8px;
+}
+.conn-toggle:hover { color: var(--accent-ink); }
+.conn-toggle .ic { width: 16px; height: 16px; transition: transform .15s; }
+.conn-toggle[aria-expanded="true"] .ic { transform: rotate(90deg); }
+.conn-verdict { margin: 0; display: flex; align-items: baseline; gap: 8px; color: var(--text); font-weight: 550; }
+.conn-verdict .dot { position: relative; top: -1px; }
+.conn-verdict .dot.good { background: var(--ok); }
+.conn-verdict .dot.warn { background: var(--warn); }
+.conn-verdict .dot.bad { background: var(--bad); }
+.conn-hint { margin: 4px 0 0 16px; }
+.conn-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 16px; margin: 14px 0 0; }
+.conn-grid div { display: contents; }
+.conn-grid dt { color: var(--muted); }
+.conn-grid dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.conn-hints { margin: 12px 0 0; padding-left: 18px; color: var(--text); }
+.conn-hints li + li { margin-top: 3px; }
+.conn-note { margin: 12px 0 4px; font-size: .8rem; color: var(--faint); }
+
 /* unsupported */
 .card-ic { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; margin-bottom: 18px; background: var(--accent-soft); color: var(--accent-ink); }
 .card-ic .ic { width: 24px; height: 24px; }
@@ -235,6 +258,7 @@ footer .ic { width: 16px; height: 16px; }
   <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19.5h20"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
 </svg>
 
 <div class="wrap">
@@ -365,6 +389,16 @@ footer .ic { width: 16px; height: 16px; }
             <button class="btn btn-stop" type="button" id="stopBtn"><svg class="ic" style="fill:currentColor;stroke:none"><use href="#i-stop"/></svg><span id="stopLabel">Stop sharing</span></button>
           </div>
           <p class="fine">Keep this tab open while you share. Closing it stops sharing.</p>
+          <div class="conn" id="connInfo" hidden>
+            <button class="conn-toggle" type="button" id="connToggle" aria-expanded="false" aria-controls="connDetails"><svg class="ic"><use href="#i-chevron"/></svg>Connection info</button>
+            <p class="conn-verdict"><span class="dot" id="connDot"></span><span id="connText">Measuring…</span></p>
+            <p class="conn-hint" id="connHint" hidden></p>
+            <div id="connDetails" hidden>
+              <dl class="conn-grid" id="connRows"></dl>
+              <ul class="conn-hints" id="connHints" hidden></ul>
+              <p class="conn-note">Updated every 2 seconds. The delay does not include the TV panel's own picture processing.</p>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -385,6 +419,6 @@ footer .ic { width: 16px; height: 16px; }
     <span>End-to-end encrypted. Your screen goes straight from this browser to the TV.</span>
   </footer>
 </div>
-<script type="module" src="app.js?v=5"></script>
+<script type="module" src="app.js?v=6"></script>
 </body>
 </html>

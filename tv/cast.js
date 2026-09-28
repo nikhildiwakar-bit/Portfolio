@@ -3,17 +3,23 @@
 // topic as commands, in c2r (controller -> receiver) and r2c (receiver -> controller) messages that the
 // TV app ignores. Media goes directly between the browsers; the relay never sees it.
 import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, deriveKey, deriveTopic, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=3';
+import {
+    RX_STALE_MS, STATS_MS, connectionRows, connectionVerdict, hardwareProbe, parseReceiverStats, parseSenderStats, readReceiverMessage,
+    receiverStatsMessage,
+} from './stats.js?v=1';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 /** Max characters of signal payload per relay message; keeps each envelope well under 3,900 bytes. */
 export const SIGNAL_CHUNK = 2400;
 export const MAX_SIGNAL_PARTS = 8;
-/** Video budget: up to 1080p at 30 fps and 8 Mbps, plenty for sharp text and smooth video on office Wi-Fi. */
-export const MAX_BITRATE = 8000000;
+/** Video budget: the laptop's native resolution (up to 4K) at up to 30 fps and 15 Mbps, so text is as sharp as on the laptop. */
+export const MAX_BITRATE = 15000000;
 export const MAX_FPS = 30;
-/** Keep the frame rate (smooth scrolling) and let the encoder lower the resolution when bandwidth runs short. */
-export const DEGRADATION = 'maintain-framerate';
+/** Keep the resolution (sharp text) and let the encoder lower the frame rate when bandwidth or the processor runs short. */
+export const DEGRADATION = 'maintain-resolution';
+/** Screen content (text, slides, spreadsheets): the encoder keeps fine detail instead of smooth motion. */
+export const CONTENT_HINT = 'detail';
 /** ICE gathering wait: stop at 1.5 s, or as soon as a host and a server-reflexive (STUN) address are known. */
 export const ICE_WAIT_MS = 1500;
 const now = () => (globalThis.performance && typeof performance.now === 'function' ? performance.now() : Date.now());
@@ -35,13 +41,13 @@ function castError(code, message) {
 // ---------- capture ----------
 
 /**
- * getDisplayMedia options: about 1080p at 30 fps (sharp on a TV, light for the laptop's encoder and the
- * TV's decoder), tab or system audio, the Office TV tab itself left out of the picker, and Chrome's
- * "Share this tab instead" button so the user can switch what is shown without stopping.
+ * getDisplayMedia options: the screen at its native resolution (ideal 2560 x 1440, at most 4K) and up to
+ * 30 fps, so the TV is as sharp as the laptop; tab or system audio, the Office TV tab itself left out of the
+ * picker, and Chrome's "Share this tab instead" button so the user can switch what is shown without stopping.
  */
 export function displayMediaOptions() {
     return {
-        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: MAX_FPS, max: MAX_FPS } },
+        video: { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: MAX_FPS, max: MAX_FPS } },
         audio: true,
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
@@ -123,28 +129,31 @@ export function videoEncoding() {
 
 /**
  * Applies the encoder settings (again after connecting, for browsers that ignore sendEncodings): MAX_BITRATE,
- * MAX_FPS, high priority and degradationPreference 'maintain-framerate'. A browser that rejects a field (older
- * Chrome threw on degradationPreference / networkPriority) gets the plain caps instead.
+ * MAX_FPS, high priority and degradationPreference 'maintain-resolution'. A browser that rejects a field (older
+ * Chrome threw on degradationPreference / networkPriority) is asked again without priorities, then with the
+ * plain caps only. Where degradationPreference is not accepted, Chrome still keeps the resolution for a
+ * 'detail' track (CONTENT_HINT).
  */
 export async function tuneSender(sender) {
     if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') return false;
-    const apply = async full => {
+    const apply = async (priority, degradation) => {
         const p = sender.getParameters();
         if (!p || !Array.isArray(p.encodings) || !p.encodings.length) return false;
         for (const e of p.encodings) {
             e.maxBitrate = MAX_BITRATE;
             e.maxFramerate = MAX_FPS;
-            if (full) { e.priority = 'high'; e.networkPriority = 'high'; }
+            if (priority) { e.priority = 'high'; e.networkPriority = 'high'; }
         }
-        if (full) p.degradationPreference = DEGRADATION;
+        if (degradation) p.degradationPreference = DEGRADATION;
         await sender.setParameters(p);
         return true;
     };
-    try {
-        return await apply(true);
-    } catch (e) {
-        try { return await apply(false); } catch (e2) { return false; } // the browser keeps its own limits
+    for (const [priority, degradation] of [[true, true], [false, true], [false, false]]) {
+        try {
+            return await apply(priority, degradation);
+        } catch (e) { /* try the next, smaller set */ }
     }
+    return false; // the browser keeps its own limits
 }
 
 /** Codecs for the TV's answer: H.264 (packetization-mode=1, constrained baseline first), then VP8, VP9, the rest. */
@@ -514,6 +523,8 @@ const SENDER_LIVE = ['starting', 'waiting', 'connecting', 'sharing', 'reconnecti
  * onstate(state, detail): stopped has detail.reason 'user' | 'ended' (the browser's own "Stop sharing") |
  * 'tv' (the TV closed the receiver) | 'page'; error has detail.code and detail.error.
  * Relay cost: 'cast' command + ack + offer + answer; stopping uses the data channel (no relay message).
+ * While sharing, the TV sends its playback numbers over the data channel every 2 s (rxStats);
+ * connectionInfo() combines them with this browser's own getStats() for the "Connection info" panel.
  */
 export class CastSender {
     constructor({
@@ -538,6 +549,11 @@ export class CastSender {
         this.videoSender = null;
         this.tvData = {};
         this.reconnects = 0;
+        this.rxStats = null;     // the TV's latest numbers (readReceiverMessage), from the data channel
+        this.rxStatsAt = 0;
+        this.rxStatsCount = 0;
+        this._txPrev = null;
+        this._encoderHw = hardwareProbe(this._w.navigator && this._w.navigator.mediaCapabilities, 'encoding');
         this._tvStarted = false;
         this._waiter = null;
     }
@@ -574,11 +590,10 @@ export class CastSender {
     async _start(stream) {
         for (const t of stream.getTracks()) t.addEventListener('ended', () => this.stop('ended'));
         const video = stream.getVideoTracks()[0];
-        // 'motion' (with degradationPreference 'maintain-framerate') keeps scrolling and video smooth: when
-        // bandwidth runs short the encoder lowers the resolution for a moment, not the frame rate. At 8 Mbps
-        // on office Wi-Fi text stays sharp at full 1080p.
+        // 'detail' (with degradationPreference 'maintain-resolution') keeps text as sharp as on the laptop:
+        // when bandwidth or the processor runs short the encoder sends fewer frames, never a blurrier picture.
         if (video && 'contentHint' in video) {
-            try { video.contentHint = 'motion'; } catch (e) { /* optional */ }
+            try { video.contentHint = CONTENT_HINT; } catch (e) { /* optional */ }
         }
         const log = timingLog('tx');
         this._log = log;
@@ -606,7 +621,16 @@ export class CastSender {
         this.dc = dc;
         // The TV closing the receiver (Back on the remote, or the app) closes the data channel at once.
         dc.addEventListener('close', () => { if (this.dc === dc) this.stop('tv'); });
-        dc.addEventListener('message', e => { if (this.dc === dc && e.data === 'bye') this.stop('tv'); });
+        dc.addEventListener('message', e => {
+            if (this.dc !== dc) return;
+            if (e.data === 'bye') { this.stop('tv'); return; }
+            const st = readReceiverMessage(e.data);
+            if (st) {
+                this.rxStats = st;
+                this.rxStatsAt = Date.now();
+                this.rxStatsCount++;
+            }
+        });
         pc.addEventListener('connectionstatechange', () => this._onConn());
         pc.addEventListener('iceconnectionstatechange', () => this._onConn());
         const offer = (async () => {
@@ -771,6 +795,28 @@ export class CastSender {
         if (this.channel) this.channel.close();
     }
 
+    /**
+     * "Connection info": {tx, rx, verdict, rows}. tx = this browser's outgoing video (parseSenderStats), rx =
+     * the TV's numbers from the data channel (null if none arrived in the last 7 s), verdict =
+     * connectionVerdict(), rows = connectionRows(). Null when not connected. Call about every 2 s: rates
+     * and averages are measured between calls.
+     */
+    async connectionInfo() {
+        const pc = this.pc;
+        if (!pc || typeof pc.getStats !== 'function') return null;
+        try {
+            const tx = parseSenderStats(await pc.getStats(), this._txPrev);
+            if (this.pc !== pc) return null;
+            this._txPrev = tx;
+            await this._encoderHw(tx);
+            const rx = this.rxStats && Date.now() - this.rxStatsAt < RX_STALE_MS ? this.rxStats : null;
+            const verdict = connectionVerdict(tx, rx);
+            return { tx, rx, verdict, rows: connectionRows(tx, rx, verdict) };
+        } catch (e) {
+            return null;
+        }
+    }
+
     /** Outgoing video right now: {codec, width, height, fps, bytes}, or null (for tests and diagnostics). */
     async videoStats() {
         const pc = this.pc;
@@ -795,13 +841,25 @@ export class CastSender {
 /**
  * TV side (runs in receive.html inside the TV app's WebView). states: 'waiting' | 'connecting' |
  * 'playing' | 'reconnecting' | 'ended'. ontrack(stream) gets the remote media; onend(reason) fires once.
+ * Every statsMs (2 s) while the data channel is open it sends the laptop a stats message
+ * (receiverStatsMessage: decoded fps, dropped frames, decoder, jitter buffer, estimated delay) over that
+ * channel; extraStats() may add {tvMs, screen} measured by the page.
  */
 export class CastReceiver {
     constructor({
         code, relay, session, RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES,
-        offerTimeoutMs = 90000, graceMs = 25000, onstate, ontrack, onend, window: w,
+        offerTimeoutMs = 90000, graceMs = 25000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w,
     } = {}) {
         this._w = w || globalThis;
+        this._statsMs = statsMs;
+        this._extraStats = extraStats;
+        this._statsTimer = null;
+        this._statsBusy = false;
+        this._rxPrev = null;
+        this._decoderHw = hardwareProbe(this._w.navigator && this._w.navigator.mediaCapabilities, 'decoding');
+        this.dc = null;
+        this.statsSent = 0;
+        this.lastStats = '';
         this._log = () => {};
         this.lowLatency = '';
         this.codecPrefs = false;
@@ -868,12 +926,7 @@ export class CastReceiver {
             const stream = (e.streams && e.streams[0]) || null;
             if (stream && typeof this.ontrack === 'function') this.ontrack(stream, e.track);
         });
-        pc.addEventListener('datachannel', e => {
-            const dc = e.channel;
-            dc.addEventListener('message', m => { if (m.data === 'bye') this.end('stopped'); });
-            // The laptop closed the connection (tab closed, sharing stopped).
-            dc.addEventListener('close', () => this.end('stopped'));
-        });
+        pc.addEventListener('datachannel', e => this._watchChannel(e.channel));
         pc.addEventListener('connectionstatechange', () => this._onConn());
         pc.addEventListener('iceconnectionstatechange', () => this._onConn());
         await pc.setRemoteDescription(desc);
@@ -888,6 +941,49 @@ export class CastReceiver {
         if (this.state === 'ended') return;
         await this.channel.send('answer', await encodeSignal(pc.localDescription));
         this._log('answer-sent', 'lowLatency=' + (this.lowLatency || 'none') + ' h264First=' + this.codecPrefs);
+    }
+
+    /** The laptop's data channel: 'bye' and its closing end the session; once open, stats go out on it. */
+    _watchChannel(dc) {
+        if (!dc) return;
+        this.dc = dc;
+        dc.addEventListener('message', m => { if (m.data === 'bye') this.end('stopped'); });
+        // The laptop closed the connection (tab closed, sharing stopped).
+        dc.addEventListener('close', () => this.end('stopped'));
+        if (dc.readyState === 'open') this._startStats();
+        else dc.addEventListener('open', () => this._startStats());
+    }
+
+    _startStats() {
+        if (this._statsTimer || this.state === 'ended' || !(this._statsMs > 0)) return;
+        this._statsTimer = setInterval(() => { this._sendStats(); }, this._statsMs);
+    }
+
+    /** One stats message to the laptop over the data channel (never the relay). */
+    async _sendStats() {
+        const pc = this.pc;
+        const dc = this.dc;
+        if (this._statsBusy || this.state === 'ended' || !pc || !dc || dc.readyState !== 'open' || typeof pc.getStats !== 'function') return false;
+        this._statsBusy = true;
+        try {
+            const rx = parseReceiverStats(await pc.getStats(), this._rxPrev);
+            this._rxPrev = rx;
+            await this._decoderHw(rx);
+            let extra = {};
+            if (typeof this._extraStats === 'function') {
+                try { extra = this._extraStats() || {}; } catch (e) { extra = {}; }
+            }
+            const text = JSON.stringify(receiverStatsMessage(rx, extra));
+            if (this.pc !== pc || this.dc !== dc || dc.readyState !== 'open') return false;
+            dc.send(text);
+            this.statsSent++;
+            this.lastStats = text;
+            return true;
+        } catch (e) {
+            return false; // stats are only for the laptop's info panel
+        } finally {
+            this._statsBusy = false;
+        }
     }
 
     /** The laptop's one reconnect: a new offer with ICE restart on the same connection. */
@@ -938,6 +1034,8 @@ export class CastReceiver {
         if (this.state === 'ended') return;
         clearTimeout(this._offerTimer);
         clearTimeout(this._graceTimer);
+        clearInterval(this._statsTimer);
+        this._statsTimer = null;
         this._set('ended', { reason, error: err });
         this.state = 'ended';
         if (this.pc) { try { this.pc.close(); } catch (e) { /* ignore */ } }

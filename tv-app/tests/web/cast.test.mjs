@@ -37,7 +37,7 @@ test('first visit: one click connects and shares; the TV plays it; Stop sharing 
     const gdm = await sender.evaluate(() => window.__gdm.calls);
     assert.equal(gdm.length, 1);
     assert.equal(gdm[0].active, true, 'still inside the user gesture');
-    assert.deepEqual(gdm[0].options.video, { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } });
+    assert.deepEqual(gdm[0].options.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 30, max: 30 } });
     assert.equal(gdm[0].options.audio, true);
     assert.equal(gdm[0].options.selfBrowserSurface, 'exclude');
     assert.equal(gdm[0].options.surfaceSwitching, 'include');
@@ -49,6 +49,8 @@ test('first visit: one click connects and shares; the TV plays it; Stop sharing 
     assert.equal(info.tracks, 1);
     assert.ok(info.width > 0 && info.height > 0);
     assert.equal(info.fit, 'contain');
+    assert.deepEqual(info.render, { imageRendering: 'auto', transform: 'none', filter: 'none', position: 'fixed' }, 'drawn at full quality');
+    assert.deepEqual(info.box, { left: 0, top: 0, width: 1280, height: 720 }, 'full screen');
     assert.equal(info.hash, '', 'pairing code removed from the receiver address bar');
     assert.ok(info.overlay, 'no overlay while playing');
     await sleep(700);
@@ -80,11 +82,13 @@ test('first visit: one click connects and shares; the TV plays it; Stop sharing 
     const q = await sender.evaluate(async () => {
         const s = window.__otvCastSender;
         const p = s.videoSender.getParameters();
-        return { hint: s.stream.getVideoTracks()[0].contentHint, enc: p.encodings[0], stats: await s.videoStats() };
+        return { hint: s.stream.getVideoTracks()[0].contentHint, enc: p.encodings[0], degradation: p.degradationPreference, stats: await s.videoStats() };
     });
-    assert.equal(q.hint, 'motion');
-    assert.equal(q.enc.maxBitrate, 8000000);
+    assert.equal(q.hint, 'detail');
+    assert.equal(q.enc.maxBitrate, 15000000);
     assert.equal(q.enc.maxFramerate, 30);
+    assert.equal(q.enc.scaleResolutionDownBy, 1);
+    assert.equal(q.degradation, 'maintain-resolution');
     console.log('# video: ' + JSON.stringify(q.stats) + ', display source: ' + await sender.evaluate(() => window.__gdm.source));
 
     // Relay cost: the cast command, the offer and the answer (+ the TV's ack, which the fake TV publishes directly).
@@ -94,7 +98,8 @@ test('first visit: one click connects and shares; the TV plays it; Stop sharing 
     const cmd = E.tvC.received('cast')[0];
     assert.equal(cmd.args.action, 'start');
     assert.match(cmd.args.session, /^[a-z0-9]{16}$/);
-    for (const p of E.relay.posts) if (p.text) assert.ok(p.text.startsWith('otv1.') && !/candidate|sdp/i.test(p.text), 'only ciphertext on the relay');
+    // Envelopes are base64url, so plaintext SDP markers (which contain '=' and ':') can never appear by chance.
+    for (const p of E.relay.posts) if (p.text) assert.ok(/^otv1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(p.text) && !/a=candidate:|v=0/.test(p.text), 'only ciphertext on the relay');
     await assertLayout(sender, '1440 sharing');
     await sender.screenshot({ path: join(SHOTS, 'sharing-1440-light.png') });
     await receiver.screenshot({ path: join(SHOTS, 'receiver-tv.png') });
@@ -110,6 +115,76 @@ test('first visit: one click connects and shares; the TV plays it; Stop sharing 
     assert.equal(await sender.evaluate(() => window.__gdm.stream.getTracks().every(t => t.readyState === 'ended')), true, 'capture released');
     assert.equal(await sender.title(), 'Office TV · Share your laptop screen');
     await until(() => E.relay.sseCount(E.tvC.topic) === 0, 5000, 'relay streams closed');
+    await receiver.done();
+    await sender.done();
+});
+
+test('connection info: codec and resolution from getStats; the TV\'s numbers arrive over the data channel, not the relay', { skip, timeout: 90000 }, async () => {
+    const sender = await open({ viewport: { width: 1366, height: 768 }, init: [RECORD_DISPLAY, savedTvs([BOARD], CODE_C)] });
+    const rx = receiverFor(E.tvC);
+    await sender.goto(E.web.url + '/tv/');
+    await sender.click('#shareBtn');
+    await sharing(sender);
+    const receiver = await rx.wait(1);
+    await receiverPlaying(receiver);
+    const posts = postsTo(E.tvC);
+
+    // One quiet line while sharing, details folded away.
+    assert.ok(await sender.isVisible('#connInfo'));
+    assert.equal(await text(sender, '#connToggle'), 'Connection info');
+    assert.equal(await sender.getAttribute('#connToggle', 'aria-expanded'), 'false');
+    assert.ok(await sender.isHidden('#connDetails'));
+
+    // The TV sends its numbers every 2 s over the WebRTC data channel.
+    await until(() => sender.evaluate(() => window.__otvCastSender.rxStatsCount >= 2), 15000, 'two stats messages from the TV');
+    const verdict = await until(async () => { const t = await text(sender, '#connText'); return /delay$/.test(t) && t; }, 8000, 'verdict with the delay');
+    assert.match(verdict, /^Direct connection · (VP8|H\.264)[\w .]* · ~\d+ ms delay$/);
+
+    await sender.click('#connToggle');
+    assert.equal(await sender.getAttribute('#connToggle', 'aria-expanded'), 'true');
+    assert.ok(await sender.isVisible('#connDetails'));
+    const row = k => text(sender, '#connRows [data-k="' + k + '"] dd');
+    await until(async () => /bps/.test(await row('bitrate')) && /fps decoded/.test(await row('tvfps')), 8000, 'details filled in');
+    assert.match(await row('codec'), /^(VP8 \(video\/VP8\)|H\.264 \(video\/H264\))$/);
+    assert.match(await row('res'), /^2560 x 1440$/, 'native resolution, not scaled down');
+    assert.match(await row('fps'), /^\d+ fps$/);
+    assert.match(await row('bitrate'), /^[\d.]+ [Mk]bps/);
+    assert.match(await row('encoder'), / · (hardware|software)$/, 'the capturing laptop names its encoder');
+    assert.match(await row('limit'), /^(Nothing|The laptop's processor|Network bandwidth|Other)$/);
+    assert.match(await row('rtt'), /^\d+ ms$/);
+    assert.equal(await row('path'), 'Direct, same network (host / host, UDP)');
+    assert.match(await row('tvfps'), /^\d+ fps decoded$/);
+    assert.match(await row('tvdrop'), /^\d+ \([\d.]+%\)$/);
+    assert.match(await row('tvdecoder'), /hardware|software/, 'from getStats or the web engine\'s media capabilities');
+    assert.match(await row('tvjitter'), /^\d+ ms per frame$/);
+    assert.match(await row('tvdecode'), /^\d+ ms per frame$/);
+    assert.equal(await row('tvscreen'), '1280 x 720 pixels');
+    assert.match(await row('delay'), /^~\d+ ms \(laptop \d+ \+ network \d+ \+ TV \d+ ms/);
+
+    // What the TV sent; none of it used the relay.
+    const tvSide = await receiver.evaluate(() => ({ sent: window.__otvCast.statsSent, last: window.__otvCast.lastStats }));
+    assert.ok(tvSide.sent >= 2);
+    const m = JSON.parse(tvSide.last);
+    assert.equal(m.type, 'stats');
+    for (const k of ['fps', 'framesDropped', 'jitterMs', 'decodeMs', 'tvMs', 'delayMs']) assert.equal(typeof m[k], 'number', k + ' in ' + tvSide.last);
+    assert.ok(tvSide.last.length < 600, 'compact: ' + tvSide.last.length + ' bytes');
+    assert.equal(postsTo(E.tvC), posts, 'stats never go over the relay');
+    console.log('# connection info: ' + verdict + ' | hints: ' + JSON.stringify(await sender.$$eval('#connHints li', l => l.map(x => x.textContent))));
+    console.log('# TV stats message: ' + tvSide.last);
+
+    assert.equal(await sender.evaluate(() => localStorage.getItem('officetv.info')), '1', 'the open panel is remembered');
+    await assertLayout(sender, '1366 sharing, connection info open');
+    await sender.screenshot({ path: join(SHOTS, 'connection-info-1366.png'), fullPage: true });
+    await sender.setViewportSize({ width: 390, height: 844 });
+    await assertLayout(sender, '390 sharing, connection info open');
+    await sender.screenshot({ path: join(SHOTS, 'connection-info-390.png'), fullPage: true });
+    await sender.click('#connToggle');
+    assert.ok(await sender.isHidden('#connDetails'));
+    assert.equal(await sender.getAttribute('#connToggle', 'aria-expanded'), 'false');
+
+    await sender.click('#stopBtn');
+    await receiverClosed(receiver);
+    assert.ok(await sender.isHidden('#connInfo'), 'only while sharing');
     await receiver.done();
     await sender.done();
 });

@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as otv from '../../../tv/otv.js';
 import {
-    CastChannel, CastSender, MAX_BITRATE, MAX_FPS, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, captureScreen, decodeSignal,
+    CastChannel, CastReceiver, CastSender, CONTENT_HINT, DEGRADATION, MAX_BITRATE, MAX_FPS, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, captureScreen, decodeSignal,
     displayMediaOptions, encodeSignal, parseReceiverFragment, preferCodec, preferH264, receiverUrl, senderSupport, signalMessages,
     tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS,
 } from '../../../tv/cast.js';
@@ -195,9 +195,9 @@ test('channel reports relay limits', async () => {
 
 // ---------- capture options, codecs, bitrate ----------
 
-test('getDisplayMedia options: ~1080p30, audio, own tab excluded, tab switching allowed', async () => {
+test('getDisplayMedia options: native resolution (ideal 1440p, up to 4K) at 30 fps, audio, own tab excluded, tab switching allowed', async () => {
     const o = displayMediaOptions();
-    assert.deepEqual(o.video, { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } });
+    assert.deepEqual(o.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 30, max: 30 } });
     assert.equal(o.audio, true);
     assert.equal(o.selfBrowserSurface, 'exclude');
     assert.equal(o.surfaceSwitching, 'include');
@@ -262,23 +262,35 @@ test('preferH264 only reorders when this browser can send H.264, and never throw
     assert.equal(preferH264({}, {}), false);
 });
 
-test('tuneSender caps the encoder at 8 Mbps and 30 fps', async () => {
+test('tuneSender caps the encoder at 15 Mbps and 30 fps and keeps the resolution', async () => {
     let params = { transactionId: 't1', encodings: [{ active: true }] };
     const sender = { getParameters: () => JSON.parse(JSON.stringify(params)), setParameters: async p => { params = p; } };
     assert.equal(await tuneSender(sender), true);
     assert.equal(params.encodings[0].maxBitrate, MAX_BITRATE);
     assert.equal(params.encodings[0].maxFramerate, MAX_FPS);
-    assert.equal(MAX_BITRATE, 8000000);
-    assert.equal(params.degradationPreference, 'maintain-framerate');
+    assert.equal(MAX_BITRATE, 15000000);
+    assert.equal(MAX_FPS, 30);
+    assert.equal(DEGRADATION, 'maintain-resolution');
+    assert.equal(CONTENT_HINT, 'detail');
+    assert.equal(params.degradationPreference, 'maintain-resolution');
     assert.equal(params.encodings[0].priority, 'high');
     assert.equal(params.encodings[0].networkPriority, 'high');
+    // A browser that rejects only the priorities still keeps the resolution.
+    let p1 = { encodings: [{}] };
+    const noPrio = { getParameters: () => JSON.parse(JSON.stringify(p1)),
+        setParameters: async p => { if (p.encodings[0].networkPriority) throw new Error('InvalidModificationError'); p1 = p; } };
+    assert.equal(await tuneSender(noPrio), true);
+    assert.equal(p1.degradationPreference, 'maintain-resolution');
+    assert.equal(p1.encodings[0].maxBitrate, 15000000);
+    assert.equal(p1.encodings[0].networkPriority, undefined);
     // A browser that rejects the newer fields still gets the caps.
     let p2 = { encodings: [{}] };
     const picky = { getParameters: () => JSON.parse(JSON.stringify(p2)),
         setParameters: async p => { if (p.degradationPreference || p.encodings[0].networkPriority) throw new Error('InvalidModificationError'); p2 = p; } };
     assert.equal(await tuneSender(picky), true);
-    assert.equal(p2.encodings[0].maxBitrate, 8000000);
+    assert.equal(p2.encodings[0].maxBitrate, 15000000);
     assert.equal(p2.degradationPreference, undefined);
+    assert.equal(await tuneSender({ getParameters: () => ({ encodings: [{}] }), setParameters: async () => { throw new Error('no'); } }), false);
     assert.equal(await tuneSender({ getParameters: () => ({ encodings: [] }), setParameters: async () => {} }), false);
     assert.equal(await tuneSender(null), false);
 });
@@ -327,6 +339,7 @@ class FakePC extends EventTarget {
     async setLocalDescription(d) { this.localDescription = d; this.signalingState = 'have-local-offer'; this.iceGatheringState = 'complete'; }
     async setRemoteDescription(d) { this.remoteDescription = d; this.signalingState = 'stable'; }
     close() { this.closed = true; this.connectionState = 'closed'; }
+    async getStats() { return new Map((this.stats || []).map(s => [s.id, s])); }
     _conn(s) { this.connectionState = s; this.dispatchEvent(new Event('connectionstatechange')); }
 }
 
@@ -373,10 +386,10 @@ test('sender: cast start, offer, answer, sharing; stop says bye on the data chan
     sender.start(stream);
     await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
     const pc = FakePC.last;
-    assert.equal(stream.getVideoTracks()[0].contentHint, 'motion');
+    assert.equal(stream.getVideoTracks()[0].contentHint, 'detail');
     const [vt, at] = pc.transceivers;
     assert.equal(vt.init.direction, 'sendonly');
-    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 8000000, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]);
+    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 15000000, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]);
     assert.equal(at.init.sendEncodings, undefined);
     assert.equal(sender.state, 'connecting');
     pc.dc._open();
@@ -482,6 +495,88 @@ test('sender: TV not answering times out; cancelling while the TV opens the rece
     await untilTrue(() => tv.received('cast').length === 2);
     assert.deepEqual(tv.received('cast').map(c => c.args.action), ['start', 'stop']);
     link.close();
+});
+
+// ---------- connection info: the TV's numbers over the data channel ----------
+
+const dcMessage = data => Object.assign(new Event('message'), { data });
+
+test('sender: the TV\'s stats arrive over the data channel (no relay); connectionInfo() combines both sides', async () => {
+    const { relay, tv, link, sender, stream } = await castRig();
+    sender.start(stream);
+    await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
+    const pc = FakePC.last;
+    pc.dc._open();
+    pc._conn('connected');
+    assert.equal(sender.state, 'sharing');
+    pc.stats = [
+        { id: 'c', type: 'codec', mimeType: 'video/H264' },
+        { id: 'o', type: 'outbound-rtp', kind: 'video', timestamp: 1000, ssrc: 1, codecId: 'c', frameWidth: 2560, frameHeight: 1440, framesPerSecond: 30,
+            bytesSent: 100, framesEncoded: 10, totalEncodeTime: 0.08, packetsSent: 10, totalPacketSendDelay: 0.05, encoderImplementation: 'ExternalEncoder', qualityLimitationReason: 'none' },
+        { id: 't', type: 'transport', selectedCandidatePairId: 'p' },
+        { id: 'p', type: 'candidate-pair', localCandidateId: 'l', remoteCandidateId: 'r', currentRoundTripTime: 0.004 },
+        { id: 'l', type: 'local-candidate', candidateType: 'host' },
+        { id: 'r', type: 'remote-candidate', candidateType: 'host' },
+    ];
+    let info = await sender.connectionInfo();
+    assert.equal(info.rx, null);
+    assert.equal(info.verdict.text, 'Direct connection · H.264 hardware');
+    assert.equal(info.rows.find(r => r.k === 'res').value, '2560 x 1440');
+    const posts = relay.posts.length;
+    pc.dc.dispatchEvent(dcMessage(JSON.stringify({ type: 'stats', v: 1, codec: 'video/H264', fps: 30, framesDropped: 0, dropPct: 0, decoder: 'ExternalDecoder',
+        powerEfficientDecoder: true, hardware: true, hardwareFrom: 'stats', jitterMs: 10, decodeMs: 6, rttMs: 4, tvMs: 60, tvMsFrom: 'measured', delayMs: 62, screen: '3840x2160' })));
+    pc.dc.dispatchEvent(dcMessage('not json'));
+    pc.dc.dispatchEvent(dcMessage('{"type":"hello"}'));
+    assert.equal(sender.rxStatsCount, 1);
+    assert.equal(sender.rxStats.decoder, 'ExternalDecoder');
+    info = await sender.connectionInfo();
+    // laptop 17 + 8 + 5, network 2, TV 60 = 92 ms
+    assert.equal(info.verdict.text, 'Direct connection · H.264 hardware · ~90 ms delay');
+    assert.equal(info.rows.find(r => r.k === 'tvdecoder').value, 'ExternalDecoder · hardware');
+    assert.equal(relay.posts.length, posts, 'no relay messages for stats');
+    // Stale numbers from the TV are not shown.
+    sender.rxStatsAt -= 10000;
+    assert.equal((await sender.connectionInfo()).rx, null);
+    assert.equal(sender.state, 'sharing', 'stats never stop sharing');
+    pc.dc.dispatchEvent(dcMessage('bye'));
+    assert.equal(sender.state, 'stopped');
+    assert.equal(await sender.connectionInfo(), null, 'nothing after stopping');
+    link.close();
+    tv.rx.close();
+});
+
+test('receiver: sends a stats message over the data channel every statsMs while it is open', async () => {
+    const rx = new CastReceiver({ code: CODE, relay: RELAY, session: SESSION, statsMs: 25, window: {},
+        extraStats: () => ({ tvMs: 40, screen: '1920x1080' }) });
+    let n = 0;
+    rx.pc = { getStats: async () => { n++; return [
+        { id: 'c', type: 'codec', mimeType: 'video/H264' },
+        { id: 'i', type: 'inbound-rtp', kind: 'video', timestamp: 1000 + n * 25, ssrc: 1, codecId: 'c', frameWidth: 1920, frameHeight: 1080, framesPerSecond: 30,
+            framesDecoded: 30 * n, framesDropped: 0, jitterBufferDelay: 0.3 * n, jitterBufferEmittedCount: 30 * n, totalDecodeTime: 0.15 * n },
+    ]; } };
+    const dc = new FakeDC();
+    rx._watchChannel(dc);
+    await sleep(80);
+    assert.equal(dc.sent.length, 0, 'nothing before the channel opens');
+    dc._open();
+    await untilTrue(() => dc.sent.length >= 2);
+    const m = JSON.parse(dc.sent[dc.sent.length - 1]);
+    assert.equal(m.type, 'stats');
+    assert.equal(m.fps, 30);
+    assert.equal(m.jitterMs, 10);
+    assert.equal(m.decodeMs, 5);
+    assert.equal(m.tvMs, 40);
+    assert.equal(m.tvMsFrom, 'measured');
+    assert.equal(m.screen, '1920x1080');
+    assert.equal(m.hardware, null, 'no decoder name, no mediaCapabilities in this fake window');
+    assert.equal(rx.statsSent, dc.sent.length);
+    assert.ok(rx.lastStats.length < 600);
+    // 'bye' ends the session and the timer.
+    dc.dispatchEvent(dcMessage('bye'));
+    assert.equal(rx.state, 'ended');
+    const sent = dc.sent.length;
+    await sleep(80);
+    assert.equal(dc.sent.length, sent, 'no stats after the end');
 });
 
 // ---------- latency tuning ----------

@@ -5,11 +5,13 @@
 // Relay use is kept small (the free relay has a daily limit per office network): one 'ping' per saved TV
 // when the page loads (no polling), then per sharing session: 'cast' start + ack + offer + answer.
 import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=3';
-import { CastSender, captureScreen, senderSupport } from './cast.js?v=3';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=4';
 
 const $ = id => document.getElementById(id);
 const STORE_KEY = 'officetv.tvs';
 const SELECTED_KEY = 'officetv.selected';
+const INFO_KEY = 'officetv.info';
+const INFO_MS = 2000;
 const MAX_TVS = 12;
 const MAX_PINGS = 6;
 const UNSUPPORTED_TEXT = 'Screen sharing needs Chrome, Edge or Safari on a laptop, Chromebook or Mac.';
@@ -62,6 +64,7 @@ const state = {
     shared: false,          // a session ended: the big button says "Share again"
     unsupported: '',        // why this browser cannot share its screen
     view: '',
+    infoOpen: false,        // "Connection info" details expanded (remembered)
 };
 
 function loadTvs() {
@@ -346,6 +349,58 @@ function stopSharing(reason) {
 // ---------- view ----------
 
 let clock = null;
+let infoClock = null;
+
+// ---------- connection info (while sharing) ----------
+
+/** Reads the connection numbers (this browser's getStats() + the TV's, from the data channel) and shows them. */
+async function refreshInfo() {
+    const s = state.session;
+    if (!s || s.phase !== 'sharing' || !s.sender) return;
+    const info = await s.sender.connectionInfo();
+    if (state.session !== s || s.phase !== 'sharing' || !info) return;
+    s.info = info;
+    renderInfo(s);
+}
+
+function renderInfo(s) {
+    const info = s && s.info;
+    const v = info ? info.verdict : { text: 'Measuring…', level: 'wait', hints: [] };
+    $('connText').textContent = v.text;
+    $('connDot').className = 'dot ' + v.level;
+    const open = state.infoOpen;
+    $('connToggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+    $('connDetails').hidden = !open;
+    $('connHint').hidden = open || !v.hints.length;
+    $('connHint').textContent = v.hints[0] || '';
+    const hints = $('connHints');
+    hints.hidden = !v.hints.length;
+    hints.textContent = '';
+    for (const h of v.hints) {
+        const li = document.createElement('li');
+        li.textContent = h;
+        hints.appendChild(li);
+    }
+    const rows = $('connRows');
+    rows.textContent = '';
+    for (const r of (info ? info.rows : [])) {
+        const div = document.createElement('div');
+        div.dataset.k = r.k;
+        const dt = document.createElement('dt');
+        dt.textContent = r.label;
+        const dd = document.createElement('dd');
+        dd.textContent = r.value;
+        div.appendChild(dt);
+        div.appendChild(dd);
+        rows.appendChild(div);
+    }
+}
+
+function toggleInfo() {
+    state.infoOpen = !state.infoOpen;
+    storage.set(INFO_KEY, state.infoOpen ? '1' : '');
+    renderInfo(state.session);
+}
 
 const hms = ms => {
     const t = Math.max(0, Math.floor(ms / 1000));
@@ -485,6 +540,13 @@ function render() {
     const ticking = view === 'live' && s.phase === 'sharing';
     if (ticking && !clock) clock = setInterval(tick, 1000);
     if (!ticking && clock) { clearInterval(clock); clock = null; }
+    $('connInfo').hidden = !ticking;
+    if (ticking && !infoClock) {
+        renderInfo(s);
+        refreshInfo();
+        infoClock = setInterval(refreshInfo, INFO_MS);
+    }
+    if (!ticking && infoClock) { clearInterval(infoClock); infoClock = null; }
     if (changed && view === 'live') $('stopBtn').focus();
 }
 
@@ -615,6 +677,7 @@ function wire() {
     });
     $('forgetYes').addEventListener('click', forgetSelected);
     $('stopBtn').addEventListener('click', () => stopSharing('user'));
+    $('connToggle').addEventListener('click', toggleInfo);
     // Closing or leaving the tab stops sharing (the TV hears it over the data channel).
     window.addEventListener('pagehide', () => stopSharing('page'));
     window.addEventListener('hashchange', () => {
@@ -647,6 +710,7 @@ function start() {
     state.tvs = loadTvs();
     const saved = storage.get(SELECTED_KEY);
     state.selected = state.tvs.some(t => t.code === saved) ? saved : state.tvs.length ? state.tvs[0].code : null;
+    state.infoOpen = storage.get(INFO_KEY) === '1';
     handleFragment();
     render();
     if (!state.unsupported) for (const tv of state.tvs.slice(0, MAX_PINGS)) ping(tv);

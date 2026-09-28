@@ -2,3 +2,4 @@
 import './otv.test.mjs';
 import './tvlink.test.mjs';
 import './cast.test.mjs';
+import './stats.test.mjs';

@@ -1,7 +1,7 @@
 // Screen sharing receiver. The Office TV app opens this page full screen in its own WebView with
 // #s=<session>&code=<pairing code>[&relay=<url>]. The fragment never leaves the device; it is removed
 // from the address bar right away. See PROTOCOL.md section 8.
-import { CastReceiver, parseReceiverFragment } from './cast.js?v=3';
+import { CastReceiver, parseReceiverFragment } from './cast.js?v=4';
 
 const $ = id => document.getElementById(id);
 const video = $('video');
@@ -43,19 +43,41 @@ try { video.disablePictureInPicture = true; } catch (e) { /* optional */ }
 try { video.disableRemotePlayback = true; } catch (e) { /* optional */ }
 video.controls = false;
 
-/** Diagnostics only (no buffering): logs when the first frame is painted. */
-function watchFirstFrame() {
-    if (typeof video.requestVideoFrameCallback === 'function') {
-        video.requestVideoFrameCallback((t, meta) => {
-            console.info('[otv] rx page +' + since() + ' first-frame ' + (meta && meta.width) + 'x' + (meta && meta.height));
-        });
-    } else {
+// Per-frame timing for the laptop's "Connection info" (no buffering, nothing is held back): the time from
+// a frame's last packet arriving to it being on screen (receiveTime -> expectedDisplayTime), averaged over
+// each 2 s stats interval.
+const timing = { sum: 0, n: 0, first: true };
+
+function watchFrames(stream) {
+    if (typeof video.requestVideoFrameCallback !== 'function') {
         video.addEventListener('playing', () => console.info('[otv] rx page +' + since() + ' playing'), { once: true });
+        return;
     }
+    const onFrame = (now, meta) => {
+        if (video.srcObject !== stream) return; // a new stream has its own loop
+        if (timing.first) {
+            timing.first = false;
+            console.info('[otv] rx page +' + since() + ' first-frame ' + (meta && meta.width) + 'x' + (meta && meta.height));
+        }
+        const d = meta && typeof meta.receiveTime === 'number' && typeof meta.expectedDisplayTime === 'number'
+            ? meta.expectedDisplayTime - meta.receiveTime : -1;
+        if (d >= 0 && d < 10000) { timing.sum += d; timing.n++; }
+        video.requestVideoFrameCallback(onFrame);
+    };
+    video.requestVideoFrameCallback(onFrame);
+}
+
+/** Extra numbers for the stats message: measured TV-side delay (ms, null if unknown) and the page size in device pixels. */
+function frameStats() {
+    const tvMs = timing.n ? timing.sum / timing.n : null;
+    timing.sum = 0;
+    timing.n = 0;
+    const dpr = window.devicePixelRatio || 1;
+    return { tvMs, screen: Math.round(window.innerWidth * dpr) + 'x' + Math.round(window.innerHeight * dpr) };
 }
 
 async function play(stream) {
-    if (video.srcObject !== stream) { video.srcObject = stream; watchFirstFrame(); }
+    if (video.srcObject !== stream) { video.srcObject = stream; watchFrames(stream); }
     video.muted = false;
     try {
         await video.play();
@@ -95,6 +117,7 @@ function main() {
         },
         ontrack: stream => { play(stream); },
         onend: reason => finish(reason),
+        extraStats: frameStats,
     }));
     window.__otvCast = rx; // for tests
     document.addEventListener('keydown', unmute);

@@ -10,8 +10,11 @@
 <style>
 html, body { margin: 0; height: 100%; background: #000; color: #e8eef0; overflow: hidden;
   font: 500 clamp(18px, 2.2vw, 34px)/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
-#status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+/* The picture fills the screen at full quality: the whole frame, aspect ratio kept (black bars if the laptop
+   screen is not 16:9), drawn 1:1 by the compositor; no transforms, filters or pixelated scaling. */
+video { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; object-fit: contain; object-position: 50% 50%;
+  image-rendering: auto; transform: none; filter: none; background: #000; }
+#status { position: fixed; top: 0; right: 0; bottom: 0; left: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: .6em; text-align: center; padding: 0 8vw; background: #000; }
 #status[hidden] { display: none; }
 #status small { color: #9fb0b5; font-size: .7em; font-weight: 400; }
@@ -26,6 +29,6 @@ video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contai
 <div id="status" role="status"><span id="statusText">Getting ready…</span><small id="statusSub"></small></div>
 <div id="note" class="pill" role="status" hidden></div>
 <div id="sound" class="pill" hidden>Sound is off. Press OK on the remote to turn it on.</div>
-<script type="module" src="receive.js?v=3"></script>
+<script type="module" src="receive.js?v=4"></script>
 </body>
 </html>
