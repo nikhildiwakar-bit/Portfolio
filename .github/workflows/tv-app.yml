@@ -48,6 +48,7 @@ jobs:
 
       # Fixed public link: .../releases/download/tv-app-latest/OfficeTV.apk
       - name: Publish download link
+        if: github.ref_name != 'gh-pages'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

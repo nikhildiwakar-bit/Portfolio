@@ -119,8 +119,8 @@ jobs:
           if-no-files-found: warn
 
   screens:
+    if: always() && github.ref_name != 'gh-pages'
     needs: emulator
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
