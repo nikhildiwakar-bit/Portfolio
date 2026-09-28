@@ -10,8 +10,8 @@ android {
         applicationId 'com.nikhil.officetv'
         minSdk 21
         targetSdk 33
-        versionCode 8
-        versionName '2.4'
+        versionCode 9
+        versionName '3.0'
     }
 
     // One shared key so every new build installs as an update over the old one.
@@ -34,6 +34,9 @@ android {
         }
     }
 
+    // src/debug holds DebugHooks with the loopback test API used by tv-app/ci; src/release has no-op
+    // stubs, so release APKs contain no server and never log the pairing code.
+
     buildFeatures {
         buildConfig true
     }
@@ -43,7 +46,8 @@ android {
         full {
             dimension 'edition'
         }
-        // Same app without the Accessibility service, for TVs where Play Protect blocks it.
+        // Same app without the Accessibility service, for TVs where Play Protect or "Restricted setting"
+        // blocks it. It opens the cast screen with "Display over other apps" instead.
         lite {
             dimension 'edition'
         }
@@ -61,8 +65,4 @@ android {
     }
 }
 
-dependencies {
-    implementation 'org.nanohttpd:nanohttpd:2.3.1'
-    // 3.3.0 is the last zxing core that runs on Android 5+ without desugaring.
-    implementation 'com.google.zxing:core:3.3.0'
-}
+// No third-party libraries: the app is the relay client, a WebView receiver and a small UI.

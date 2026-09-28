@@ -2,14 +2,15 @@
 # JVM tests for the pure-Java relay package (com.nikhil.officetv.relay). Needs only a JDK (8+ API; 11+ to run)
 # and org.json. Exit 0 only if everything passed.
 #
-#   run.sh                       compile + run VectorsTest and RelayClientTest (default)
+#   run.sh                       compile + run VectorsTest, RelayClientTest and (with ANDROID_ALL_JAR) CommandsTest
 #   run.sh fake-ntfy [args]      run the fake relay:  [port] [--https] [--host H] [--keepalive-ms N] [--fail429 N] [--cert-out F]
 #   run.sh e2e <relay> <code> [--trust cert.pem]   run the stand-in TV (E2EHarness)
 #   run.sh live [relay]          RelayLiveTest against https://ntfy.sh (exit 2 = no network / 429)
 #
 # Env: VECTORS (default tests/vectors.json), ORGJSON_JAR (default /tmp/claude-0/json-20240303.jar), ANDROID_ALL_JAR (default
 # /tmp/claude-0/android-all-13-robolectric-9030017.jar; if present, the unit tests run a second time with
-# Android's own org.json, which escapes '/' and has checked JSONException, to catch size/API differences).
+# Android's own org.json, which escapes '/' and has checked JSONException, to catch size/API differences, and
+# app/CommandsTest checks the TV app's command contract against the real app sources).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 APP=$(cd "$HERE/../.." && pwd)
@@ -61,7 +62,36 @@ suite "RelayClientTest" -cp "$CP" $PKG.RelayClientTest
 if [ -f "$ANDROID_ALL_JAR" ]; then
   suite "VectorsTest with Android's org.json" -cp "$OUT/classes:$ANDROID_ALL_JAR" $PKG.VectorsTest "$VECTORS"
   suite "RelayClientTest with Android's org.json" -cp "$OUT/classes:$ANDROID_ALL_JAR" $PKG.RelayClientTest
+  # The app's command contract: app sources (main + release) compiled against android-all with stub R/BuildConfig.
+  APPSRC="$APP/app/src"
+  STUB="$OUT/app/stub/com/nikhil/officetv"
+  mkdir -p "$STUB" "$OUT/app/classes"
+  cat > "$STUB/R.java" <<'J'
+package com.nikhil.officetv;
+public final class R {
+  public static final class drawable { public static final int ic_launcher = 1, banner = 2; }
+  public static final class string { public static final int app_name = 3, a11y_desc = 4; }
+  public static final class xml { public static final int a11y_config = 5; }
+}
+J
+  cat > "$STUB/BuildConfig.java" <<'J'
+package com.nikhil.officetv;
+public final class BuildConfig {
+  public static final boolean DEBUG = false;
+  public static final String APPLICATION_ID = "com.nikhil.officetv";
+  public static final String BUILD_TYPE = "release";
+  public static final String FLAVOR = "full";
+  public static final int VERSION_CODE = 9;
+  public static final String VERSION_NAME = "3.0";
+}
+J
+  find "$APPSRC/main/java" "$APPSRC/release/java" "$HERE/app" "$OUT/app/stub" -name '*.java' > "$OUT/app/sources.txt"
+  if filtered javac --release 8 -encoding UTF-8 -nowarn -d "$OUT/app/classes" -cp "$ANDROID_ALL_JAR" @"$OUT/app/sources.txt"; then
+    suite "CommandsTest (TV app command contract)" -cp "$OUT/app/classes:$ANDROID_ALL_JAR" com.nikhil.officetv.CommandsTest
+  else
+    echo "!! FAILED: app sources did not compile for CommandsTest"; FAILED=1
+  fi
 else
-  echo "(skipping the Android org.json pass: $ANDROID_ALL_JAR not found)"
+  echo "(skipping the Android org.json pass and CommandsTest: $ANDROID_ALL_JAR not found)"
 fi
 if [ "$FAILED" = 0 ]; then echo "ALL JVM TESTS PASSED"; else echo "JVM TESTS FAILED"; exit 1; fi

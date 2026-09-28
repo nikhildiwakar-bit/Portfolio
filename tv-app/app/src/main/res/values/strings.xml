@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Office TV</string>
-    <string name="a11y_desc">Phone se Back, Home aur slide aage/peeche karne ke liye. Yeh app screen ka content na padhti hai na kahin bhejti hai.</string>
+    <string name="a11y_desc">Lets Office TV open the screen-sharing view by itself when a laptop starts sharing, even while another app is on the TV. Office TV does not read, record or change anything on the screen.</string>
 </resources>

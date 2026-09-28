@@ -1,7 +1,7 @@
 // Screen sharing receiver. The Office TV app opens this page full screen in its own WebView with
 // #s=<session>&code=<pairing code>[&relay=<url>]. The fragment never leaves the device; it is removed
 // from the address bar right away. See PROTOCOL.md section 8.
-import { CastReceiver, parseReceiverFragment } from './cast.js?v=1';
+import { CastReceiver, parseReceiverFragment } from './cast.js?v=2';
 
 const $ = id => document.getElementById(id);
 const video = $('video');
@@ -13,6 +13,11 @@ function show(text, sub) {
     $('statusSub').textContent = sub || '';
 }
 
+function note(text) {
+    $('note').hidden = !text;
+    $('note').textContent = text || '';
+}
+
 const END_TEXT = {
     stopped: 'Screen sharing ended.',
     disconnected: 'The connection to the laptop was lost.',
@@ -22,6 +27,7 @@ const END_TEXT = {
 
 function finish(reason) {
     video.srcObject = null;
+    note('');
     $('sound').hidden = true;
     show(END_TEXT[reason] || END_TEXT.stopped, 'Returning to the previous screen…');
     setTimeout(() => {
@@ -53,7 +59,8 @@ function main() {
     const params = parseReceiverFragment(location.hash);
     try { history.replaceState(null, '', location.pathname); } catch (e) { /* ignore */ }
     if (!params) {
-        show('This page shows a laptop screen on an office TV.', 'Start it with "Share my screen" on the Office TV Remote page.');
+        show('This page shows a laptop screen on an office TV.',
+            'To share a screen, open nikhildiwakar-bit.github.io/Portfolio/tv on a laptop.');
         return;
     }
     if (typeof RTCPeerConnection !== 'function') {
@@ -64,7 +71,8 @@ function main() {
     const rx = new CastReceiver(Object.assign({}, params, {
         onstate: s => {
             if (s === 'connecting') show('Connecting to the laptop…');
-            else if (s === 'playing') show('');
+            else if (s === 'playing') { show(''); note(''); }
+            else if (s === 'reconnecting') note('Reconnecting to the laptop…');
         },
         ontrack: stream => { play(stream); },
         onend: reason => finish(reason),
@@ -72,6 +80,8 @@ function main() {
     window.__otvCast = rx; // for tests
     document.addEventListener('keydown', unmute);
     document.addEventListener('click', unmute);
+    // The TV app closing this screen: close the connection so the laptop knows at once.
+    window.addEventListener('pagehide', () => rx.end('stopped'));
     rx.start().catch(() => rx.end('error'));
 }
 

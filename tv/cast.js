@@ -1,20 +1,144 @@
 // Office TV "Share my screen": laptop -> TV screen sharing over WebRTC (PROTOCOL.md section 8).
 // Signaling (SDP offer/answer, with every ICE candidate inside) travels over the same encrypted relay
 // topic as commands, in c2r (controller -> receiver) and r2c (receiver -> controller) messages that the
-// TV app and TvLink both ignore. Media goes directly between the browsers; the relay never sees it.
-import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, deriveKey, deriveTopic, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=2';
+// TV app ignores. Media goes directly between the browsers; the relay never sees it.
+import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, deriveKey, deriveTopic, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=3';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 /** Max characters of signal payload per relay message; keeps each envelope well under 3,900 bytes. */
 export const SIGNAL_CHUNK = 2400;
 export const MAX_SIGNAL_PARTS = 8;
+/** Video budget: up to 1080p at 30 fps and 6 Mbps, plenty for sharp text and smooth video on office Wi-Fi. */
+export const MAX_BITRATE = 6000000;
+export const MAX_FPS = 30;
 const FRESH_S = 300;
 
 function castError(code, message) {
     const e = new Error(message);
     e.code = code;
     return e;
+}
+
+// ---------- capture ----------
+
+/**
+ * getDisplayMedia options: about 1080p at 30 fps (sharp on a TV, light for the laptop's encoder and the
+ * TV's decoder), tab or system audio, the Office TV tab itself left out of the picker, and Chrome's
+ * "Share this tab instead" button so the user can switch what is shown without stopping.
+ */
+export function displayMediaOptions() {
+    return {
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: MAX_FPS, max: MAX_FPS } },
+        audio: true,
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'include',
+        systemAudio: 'include',
+    };
+}
+
+/**
+ * Opens the browser's screen picker and resolves with the stream. Call it straight from a click handler,
+ * before any await: browsers allow it only while the click still counts as a user gesture. If the browser
+ * rejects one of the options (TypeError), it asks again with the plain defaults.
+ */
+export function captureScreen(md = globalThis.navigator && globalThis.navigator.mediaDevices) {
+    if (!md || typeof md.getDisplayMedia !== 'function') {
+        return Promise.reject(castError('unsupported', 'Screen capture is not available in this browser.'));
+    }
+    let p;
+    try {
+        p = md.getDisplayMedia(displayMediaOptions());
+    } catch (e) {
+        p = Promise.reject(e);
+    }
+    return Promise.resolve(p).catch(e => {
+        if (e && e.name === 'TypeError') return md.getDisplayMedia({ video: true, audio: true });
+        throw e;
+    });
+}
+
+/** What this browser lacks for sharing its screen: null if supported, else 'display' | 'webrtc'. */
+export function senderSupport(w = globalThis) {
+    const md = w.navigator && w.navigator.mediaDevices;
+    if (!md || typeof md.getDisplayMedia !== 'function') return 'display';
+    if (typeof w.RTCPeerConnection !== 'function') return 'webrtc';
+    return null;
+}
+
+// ---------- codecs and bitrate ----------
+
+/** Codec list with `mime` first (packetization-mode=1 entries before the others), the rest in the original order. */
+export function preferCodec(codecs, mime = 'video/H264') {
+    const want = mime.toLowerCase();
+    const list = Array.isArray(codecs) ? codecs : [];
+    const is = c => String(c && c.mimeType).toLowerCase() === want;
+    const pm1 = c => /packetization-mode=1/.test((c && c.sdpFmtpLine) || '');
+    const hit = list.filter(is);
+    return hit.filter(pm1).concat(hit.filter(c => !pm1(c)), list.filter(c => !is(c)));
+}
+
+const codecKey = c => (c.mimeType + ' ' + c.clockRate + ' ' + (c.sdpFmtpLine || '')).toLowerCase();
+
+/**
+ * Puts H.264 first in the offer when this browser can send it. TV chips decode H.264 in hardware, which keeps
+ * the picture smooth on slow TV processors; if the TV cannot decode it, its answer picks the next codec (VP8).
+ * Only codecs this browser can both send and receive are listed, which every browser accepts.
+ */
+export function preferH264(transceiver, w = globalThis) {
+    try {
+        const R = w.RTCRtpReceiver;
+        const S = w.RTCRtpSender;
+        if (!transceiver || typeof transceiver.setCodecPreferences !== 'function') return false;
+        if (!R || typeof R.getCapabilities !== 'function' || !S || typeof S.getCapabilities !== 'function') return false;
+        const recv = R.getCapabilities('video');
+        const send = S.getCapabilities('video');
+        if (!recv || !send || !Array.isArray(recv.codecs) || !Array.isArray(send.codecs)) return false;
+        const sendKeys = new Set(send.codecs.map(codecKey));
+        const both = recv.codecs.filter(c => sendKeys.has(codecKey(c)));
+        if (!both.some(c => /^video\/h264$/i.test(c.mimeType))) return false;
+        transceiver.setCodecPreferences(preferCodec(both));
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+/** Caps the video encoder at MAX_BITRATE / MAX_FPS (again after connecting, for browsers that ignore sendEncodings). */
+export async function tuneSender(sender) {
+    if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') return false;
+    try {
+        const p = sender.getParameters();
+        if (!p || !Array.isArray(p.encodings) || !p.encodings.length) return false;
+        let changed = false;
+        for (const e of p.encodings) {
+            if (e.maxBitrate !== MAX_BITRATE) { e.maxBitrate = MAX_BITRATE; changed = true; }
+            if (e.maxFramerate !== MAX_FPS) { e.maxFramerate = MAX_FPS; changed = true; }
+        }
+        if (changed) await sender.setParameters(p);
+        return true;
+    } catch (e) {
+        return false; // the browser keeps its own limits
+    }
+}
+
+/** Adds the shared screen as send-only tracks with the video limits. Returns the video RTCRtpSender. */
+function addMedia(pc, stream, w) {
+    let videoSender = null;
+    for (const track of stream.getTracks()) {
+        let tr = null;
+        if (typeof pc.addTransceiver === 'function') {
+            const init = { direction: 'sendonly', streams: [stream] };
+            if (track.kind === 'video') init.sendEncodings = [{ maxBitrate: MAX_BITRATE, maxFramerate: MAX_FPS }];
+            try { tr = pc.addTransceiver(track, init); } catch (e) { tr = null; }
+        }
+        const sender = tr ? tr.sender : pc.addTrack(track, stream);
+        if (track.kind === 'video') {
+            videoSender = sender;
+            if (tr) preferH264(tr, w);
+        }
+    }
+    return videoSender;
 }
 
 // ---------- payload encoding ----------
@@ -143,14 +267,17 @@ export function parseReceiverFragment(hash) {
 /**
  * One cast session's signaling over the relay. `out` is the direction this side sends ('c2r' or 'r2c');
  * it listens for the opposite one, the same session id, and fresh, never-seen message ids.
+ * With `link` (a TvLink) it shares that link's event stream; otherwise it opens its own (the receiver,
+ * with since= so an offer published before the page loaded is replayed).
  * onsignal(cast, data) fires for each complete signal.
  */
 export class CastChannel {
-    constructor({ code, relay = DEFAULT_RELAY, session, out, since = '', fetch: fetchFn, EventSource: ES } = {}) {
-        this.code = normalizeCode(code);
+    constructor({ code, relay = DEFAULT_RELAY, session, out, since = '', link = null, fetch: fetchFn, EventSource: ES } = {}) {
+        this.link = link;
+        this.code = normalizeCode(link ? link.code : code);
         if (!this.code) throw new Error('invalid pairing code');
         if (!validSession(session)) throw new Error('invalid session');
-        this.relay = normalizeRelay(relay || DEFAULT_RELAY) || DEFAULT_RELAY;
+        this.relay = link ? link.relay : normalizeRelay(relay || DEFAULT_RELAY) || DEFAULT_RELAY;
         this.session = session;
         this.out = out;
         this.in = out === 'c2r' ? 'r2c' : 'c2r';
@@ -158,16 +285,24 @@ export class CastChannel {
         this.onsignal = null;
         this.connected = false;
         this.posted = 0;
-        this._fetch = fetchFn || ((...a) => globalThis.fetch(...a));
+        this._fetch = fetchFn || (link && link._fetch) || ((...a) => globalThis.fetch(...a));
         this._ES = ES || globalThis.EventSource;
         this._asm = new SignalAssembler();
         this._seen = [];
         this._waiters = [];
         this._es = null;
+        this._unlisten = null;
         this._closed = false;
     }
 
     async init() {
+        if (this.link) {
+            await this.link.init();
+            this.topic = this.link.topic;
+            this.key = this.link.key;
+            if (!this._closed && !this._unlisten) this._unlisten = this.link.listen((m, ev) => this._onMessage(m, ev));
+            return;
+        }
         this.topic = await deriveTopic(this.code);
         this.key = await deriveKey(this.code);
         if (this._closed) return;
@@ -189,7 +324,9 @@ export class CastChannel {
         }
     }
 
+    /** Resolves true once the event stream is open, or false after ms. */
     waitOpen(ms) {
+        if (this.link) return this.link.ready(ms);
         if (this.connected) return Promise.resolve(true);
         return new Promise(resolve => {
             const done = v => { clearTimeout(t); resolve(v); };
@@ -206,9 +343,12 @@ export class CastChannel {
         let ev;
         try { ev = JSON.parse(raw); } catch (e) { return; }
         if (!ev || ev.event !== 'message' || typeof ev.message !== 'string' || ev.message.indexOf('otv1.') !== 0) return;
-        const m = await open(this.key, this.topic, ev.message);
-        if (!m || m.v !== 1 || m.dir !== this.in || m.session !== this.session || typeof m.id !== 'string') return;
-        const now = typeof ev.time === 'number' ? ev.time : Date.now() / 1000;
+        this._onMessage(await open(this.key, this.topic, ev.message), ev);
+    }
+
+    _onMessage(m, ev) {
+        if (this._closed || !m || m.v !== 1 || m.dir !== this.in || m.session !== this.session || typeof m.id !== 'string') return;
+        const now = ev && typeof ev.time === 'number' ? ev.time : Date.now() / 1000;
         if (typeof m.ts !== 'number' || Math.abs(m.ts / 1000 - now) > FRESH_S) return;
         if (this._seen.indexOf(m.id) >= 0) return;
         this._seen.push(m.id);
@@ -240,6 +380,8 @@ export class CastChannel {
 
     close() {
         this._closed = true;
+        if (this._unlisten) this._unlisten();
+        this._unlisten = null;
         if (this._es) {
             try { this._es.close(); } catch (e) { /* ignore */ }
         }
@@ -270,51 +412,66 @@ export function iceGathered(pc, ms = 4000) {
     });
 }
 
-/** What this browser lacks for sharing its screen: null if supported, else 'display' | 'webrtc'. */
-export function senderSupport(w = globalThis) {
-    const md = w.navigator && w.navigator.mediaDevices;
-    if (!md || typeof md.getDisplayMedia !== 'function') return 'display';
-    if (typeof w.RTCPeerConnection !== 'function') return 'webrtc';
-    return null;
-}
+const connState = pc => pc.connectionState || pc.iceConnectionState;
+const SENDER_LIVE = ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting'];
 
 /**
- * Laptop side. states: 'idle' | 'starting' | 'waiting' | 'sharing' | 'stopped' | 'error'.
- * onstate(state, detail) is called on each change; detail.code/message for errors.
+ * Laptop side.
+ * states: 'idle' -> 'starting' (relay stream) -> 'waiting' (TV opens the receiver) -> 'connecting' (TV said
+ * yes; offer sent) -> 'sharing' <-> 'reconnecting' (one ICE restart after a drop), then 'stopped' or 'error'.
+ * onstate(state, detail): stopped has detail.reason 'user' | 'ended' (the browser's own "Stop sharing") |
+ * 'tv' (the TV closed the receiver) | 'page'; error has detail.code and detail.error.
+ * Relay cost: 'cast' command + ack + offer + answer; stopping uses the data channel (no relay message).
  */
 export class CastSender {
-    constructor({ link, RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES, answerTimeoutMs = 60000, onstate } = {}) {
+    constructor({
+        link, RTCPeerConnection: PC, onstate, window: w,
+        ackTimeoutMs = 20000, answerTimeoutMs = 30000, connectTimeoutMs = 20000, dropMs = 3000, reconnectTimeoutMs = 12000,
+    } = {}) {
         this.link = link;
         this.state = 'idle';
         this.onstate = onstate || null;
-        this._PC = PC || globalThis.RTCPeerConnection;
-        this._fetch = fetchFn;
-        this._ES = ES;
+        this._w = w || globalThis;
+        this._PC = PC || this._w.RTCPeerConnection;
+        this._ackTimeoutMs = ackTimeoutMs;
         this._answerTimeoutMs = answerTimeoutMs;
+        this._connectTimeoutMs = connectTimeoutMs;
+        this._dropMs = dropMs;
+        this._reconnectTimeoutMs = reconnectTimeoutMs;
         this.pc = null;
         this.dc = null;
         this.channel = null;
         this.stream = null;
         this.session = null;
+        this.videoSender = null;
+        this.tvData = {};
+        this.reconnects = 0;
         this._tvStarted = false;
+        this._waiter = null;
     }
 
-    _set(s, detail) {
-        if (this.state === 'stopped' || this.state === 'error') return;
-        this.state = s;
+    get active() {
+        return SENDER_LIVE.indexOf(this.state) >= 0;
+    }
+
+    _emit(s, detail) {
         if (typeof this.onstate === 'function') {
             try { this.onstate(s, detail || {}); } catch (e) { /* UI errors must not break sharing */ }
         }
     }
 
-    get active() {
-        return this.state === 'starting' || this.state === 'waiting' || this.state === 'sharing';
+    _set(s, detail) {
+        if (!this.active || this.state === s) return;
+        this.state = s;
+        this._emit(s, detail);
     }
 
-    /** Starts sharing `stream` (from getDisplayMedia, obtained inside the click handler). */
+    /** Starts sharing `stream` (from captureScreen(), called inside the click handler). */
     async start(stream) {
+        if (this.state !== 'idle') return;
         this.stream = stream;
-        this._set('starting');
+        this.state = 'starting';
+        this._emit('starting');
         try {
             await this._start(stream);
         } catch (e) {
@@ -323,90 +480,183 @@ export class CastSender {
     }
 
     async _start(stream) {
-        for (const t of stream.getTracks()) {
-            t.addEventListener('ended', () => this.stop('ended'));
+        for (const t of stream.getTracks()) t.addEventListener('ended', () => this.stop('ended'));
+        const video = stream.getVideoTracks()[0];
+        // 'detail' keeps text and thin lines sharp (slides, documents, spreadsheets): when bandwidth runs short
+        // the browser lowers the frame rate, not the resolution. Video in a shared tab still plays at up to
+        // 30 fps because the 6 Mbps budget is plenty on office Wi-Fi.
+        if (video && 'contentHint' in video) {
+            try { video.contentHint = 'detail'; } catch (e) { /* optional */ }
         }
-        await this.link.init();
         this.session = newId(16);
-        const ch = new CastChannel({
-            code: this.link.code, relay: this.link.relay, session: this.session, out: 'c2r',
-            fetch: this._fetch, EventSource: this._ES,
-        });
+        const ch = new CastChannel({ link: this.link, session: this.session, out: 'c2r' });
         this.channel = ch;
-        const answer = new Promise((resolve, reject) => {
-            const t = setTimeout(() => reject(castError('no_answer', 'The TV did not connect.')), this._answerTimeoutMs);
-            ch.onsignal = (cast, data) => {
-                if (cast === 'answer') { clearTimeout(t); resolve(data); }
-                else if (cast === 'bye') { clearTimeout(t); reject(castError('declined', 'The TV ended the session.')); }
-            };
-        });
-        answer.catch(() => {});
+        ch.onsignal = (cast, data) => this._onSignal(cast, data);
         await ch.init();
+        if (!this.active) return;
+        if (!await ch.waitOpen(8000)) throw castError('network', 'The relay could not be reached.');
+        if (!this.active) return;
+        this._set('waiting');
         const pc = new this._PC({ iceServers: ICE_SERVERS });
         this.pc = pc;
-        for (const t of stream.getTracks()) pc.addTrack(t, stream);
-        this.dc = pc.createDataChannel('otv');
+        this.videoSender = addMedia(pc, stream, this._w);
+        const dc = pc.createDataChannel('otv');
+        this.dc = dc;
+        // The TV closing the receiver (Back on the remote, or the app) closes the data channel at once.
+        dc.addEventListener('close', () => { if (this.dc === dc) this.stop('tv'); });
+        dc.addEventListener('message', e => { if (this.dc === dc && e.data === 'bye') this.stop('tv'); });
         pc.addEventListener('connectionstatechange', () => this._onConn());
         pc.addEventListener('iceconnectionstatechange', () => this._onConn());
-        await pc.setLocalDescription(await pc.createOffer());
-        const [, opened] = await Promise.all([iceGathered(pc), ch.waitOpen(8000)]);
-        if (this.state !== 'starting') return;
-        if (!opened) throw castError('network', 'relay not reachable');
-        this._set('waiting');
-        const ack = await this.link.send('cast', { action: 'start', session: this.session }, { timeoutMs: 20000 });
-        if (!ack.ok) throw castError('tv', ack.msg || 'The TV could not start the receiver.');
-        this._tvStarted = true;
+        // Ask the TV to open the receiver while this browser gathers its network addresses.
+        const session = this.session;
+        const ack = this.link.send('cast', { action: 'start', session }, { timeoutMs: this._ackTimeoutMs }).then(a => {
+            if (a.ok) {
+                this._tvStarted = true;
+                // Cancelled while the TV was opening the receiver: close it again.
+                if (!this.active) this.link.send('cast', { action: 'stop', session }).catch(() => {});
+            }
+            return a;
+        });
+        const offer = (async () => {
+            await pc.setLocalDescription(await pc.createOffer());
+            await iceGathered(pc);
+        })();
+        const [a] = await Promise.all([ack, offer]);
         if (!this.active) return;
-        await ch.send('offer', await encodeSignal(pc.localDescription));
+        if (!a.ok) throw castError('tv', a.msg || 'The TV could not open the screen receiver.');
+        this.tvData = a.data && typeof a.data === 'object' ? a.data : {};
+        this._set('connecting', { data: this.tvData });
+        const answer = this._expect(this._answerTimeoutMs, 'no_answer', 'The TV did not connect.');
+        await ch.send('offer', await encodeSignal(pc.localDescription, { compress: false }));
         const desc = await decodeSignal(await answer);
-        if (!desc || desc.type !== 'answer') throw castError('bad_answer', 'The TV sent an invalid answer.');
         if (!this.active) return;
+        if (!desc || desc.type !== 'answer') throw castError('bad_answer', 'The TV sent an invalid answer.');
         await pc.setRemoteDescription(desc);
+        tuneSender(this.videoSender);
+        // The laptop and the TV cannot reach each other (different networks, no TURN): say so in good time.
+        this._connectTimer = setTimeout(() => {
+            if (this.state === 'connecting') this._fail(castError('ice', 'Could not connect to the TV.'));
+        }, this._connectTimeoutMs);
+    }
+
+    _expect(ms, code, message) {
+        return new Promise((resolve, reject) => {
+            const w = {
+                resolve: d => { clearTimeout(t); resolve(d); },
+                reject: e => { clearTimeout(t); reject(e); },
+            };
+            const t = setTimeout(() => {
+                if (this._waiter === w) this._waiter = null;
+                reject(castError(code, message));
+            }, ms);
+            this._waiter = w;
+        });
+    }
+
+    _onSignal(cast, data) {
+        if (cast === 'answer') {
+            const w = this._waiter;
+            this._waiter = null;
+            if (w) w.resolve(data);
+        } else if (cast === 'bye') {
+            // The receiver gave up (e.g. it could not use the offer) or closed.
+            if (this.state === 'sharing' || this.state === 'reconnecting') this.stop('tv');
+            else this._fail(castError('tv_error', 'The TV could not show the screen.'), false);
+        }
     }
 
     _onConn() {
         const pc = this.pc;
         if (!pc || !this.active) return;
-        const s = pc.connectionState || pc.iceConnectionState;
+        const s = connState(pc);
         if (s === 'connected' || s === 'completed') {
             clearTimeout(this._dropTimer);
-            this._set('sharing');
+            if (this.state === 'connecting' || this.state === 'reconnecting') {
+                clearTimeout(this._restartTimer);
+                this._set('sharing');
+                tuneSender(this.videoSender);
+            }
         } else if (s === 'failed') {
-            this._fail(castError('ice', 'Could not connect to the TV.'));
+            this._dropped();
         } else if (s === 'disconnected' && this.state === 'sharing') {
+            // Often a short Wi-Fi hiccup that heals by itself; restart only if it lasts.
             clearTimeout(this._dropTimer);
             this._dropTimer = setTimeout(() => {
-                if (this.pc && (this.pc.connectionState || this.pc.iceConnectionState) === 'disconnected') {
-                    this._fail(castError('ice', 'The connection to the TV was lost.'));
-                }
-            }, 10000);
+                const now = this.pc && connState(this.pc);
+                if (now === 'disconnected' || now === 'failed') this._dropped();
+            }, this._dropMs);
         }
     }
 
-    _fail(e) {
-        if (!this.active) return;
-        const code = (e && e.code) || 'error';
-        this._teardown(true);
-        this._set('error', { code, message: (e && e.message) || 'error', error: e });
-        this.state = 'error';
+    _dropped() {
+        if (this.state === 'reconnecting') return; // the restart's own timer decides
+        if (this.state === 'sharing' && this.reconnects < 1) this.reconnect();
+        else if (this.state === 'sharing') this._fail(castError('lost', 'The connection to the TV was lost.'));
+        else this._fail(castError('ice', 'Could not connect to the TV.'));
     }
 
-    /** Stops sharing. reason: 'user' | 'ended' (the browser's own "Stop sharing" button). */
+    /**
+     * Reconnects once after the connection dropped: an ICE restart (new offer and answer, two relay messages)
+     * on the same session, so the TV keeps its receiver open. Resolves true if the TV answered.
+     */
+    async reconnect() {
+        if (this.state !== 'sharing' || !this.pc || this.reconnects >= 1) return false;
+        this.reconnects++;
+        clearTimeout(this._dropTimer);
+        this._set('reconnecting');
+        const pc = this.pc;
+        const lost = () => castError('lost', 'The connection to the TV was lost.');
+        this._restartTimer = setTimeout(() => { if (this.state === 'reconnecting') this._fail(lost()); }, this._reconnectTimeoutMs);
+        try {
+            await pc.setLocalDescription(await pc.createOffer({ iceRestart: true }));
+            await iceGathered(pc);
+            if (!this.active || this.pc !== pc) return false;
+            const answer = this._expect(this._reconnectTimeoutMs, 'lost', 'The connection to the TV was lost.');
+            await this.channel.send('offer', await encodeSignal(pc.localDescription, { compress: false }));
+            const desc = await decodeSignal(await answer);
+            if (!this.active || this.pc !== pc) return false;
+            if (!desc || desc.type !== 'answer') throw lost();
+            await pc.setRemoteDescription(desc);
+            this._onConn(); // an ICE restart on a working path never leaves 'connected', so no event fires
+            return true;
+        } catch (e) {
+            if (this.state === 'reconnecting') this._fail(lost());
+            return false;
+        }
+    }
+
+    _fail(e, tellTv = true) {
+        const code = (e && e.code) || 'error';
+        this._end('error', { code, message: (e && e.message) || 'error', error: e }, tellTv);
+    }
+
+    /** Stops sharing. reason: 'user' | 'ended' (the browser's own "Stop sharing" button) | 'tv' | 'page'. */
     stop(reason = 'user') {
-        if (!this.active) return;
-        this._teardown(true);
-        this._set('stopped', { reason });
+        this._end('stopped', { reason }, reason !== 'tv');
+    }
+
+    _end(s, detail, tellTv) {
+        if (!this.active) return false;
+        this.state = s; // final first, so events caused by the teardown are ignored
+        this._teardown(tellTv);
+        this._emit(s, detail);
+        return true;
     }
 
     _teardown(tellTv) {
         clearTimeout(this._dropTimer);
+        clearTimeout(this._restartTimer);
+        clearTimeout(this._connectTimer);
+        const w = this._waiter;
+        this._waiter = null;
+        if (w) w.reject(castError('closed', 'closed'));
         const dc = this.dc;
         let told = false;
         if (tellTv && dc && dc.readyState === 'open') {
             try { dc.send('bye'); told = true; } catch (e) { /* fall back to the relay */ }
         }
         if (tellTv && !told && this._tvStarted) {
-            // The data channel is not up yet, so ask the TV app to close the receiver (one relay message).
+            // The data channel is not up (yet), so ask the TV app to close the receiver (one relay message).
             this.link.send('cast', { action: 'stop', session: this.session }).catch(() => {});
         }
         const pc = this.pc;
@@ -417,14 +667,37 @@ export class CastSender {
         if (this.stream) for (const t of this.stream.getTracks()) { try { t.stop(); } catch (e) { /* ignore */ } }
         if (this.channel) this.channel.close();
     }
+
+    /** Outgoing video right now: {codec, width, height, fps, bytes}, or null (for tests and diagnostics). */
+    async videoStats() {
+        const pc = this.pc;
+        if (!pc || typeof pc.getStats !== 'function') return null;
+        try {
+            const report = await pc.getStats();
+            let out = null;
+            const codecs = new Map();
+            report.forEach(r => { if (r.type === 'codec') codecs.set(r.id, r.mimeType); });
+            report.forEach(r => {
+                if (r.type === 'outbound-rtp' && r.kind === 'video') {
+                    out = { codec: codecs.get(r.codecId) || '', width: r.frameWidth || 0, height: r.frameHeight || 0, fps: r.framesPerSecond || 0, bytes: r.bytesSent || 0 };
+                }
+            });
+            return out;
+        } catch (e) {
+            return null;
+        }
+    }
 }
 
 /**
  * TV side (runs in receive.html inside the TV app's WebView). states: 'waiting' | 'connecting' |
- * 'playing' | 'ended'. ontrack(stream) gets the remote media; onend(reason) fires once.
+ * 'playing' | 'reconnecting' | 'ended'. ontrack(stream) gets the remote media; onend(reason) fires once.
  */
 export class CastReceiver {
-    constructor({ code, relay, session, RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES, offerTimeoutMs = 90000, onstate, ontrack, onend } = {}) {
+    constructor({
+        code, relay, session, RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES,
+        offerTimeoutMs = 90000, graceMs = 25000, onstate, ontrack, onend,
+    } = {}) {
         this.code = code;
         this.relay = relay;
         this.session = session;
@@ -436,13 +709,16 @@ export class CastReceiver {
         this._fetch = fetchFn;
         this._ES = ES;
         this._offerTimeoutMs = offerTimeoutMs;
+        this._graceMs = graceMs;
         this.pc = null;
         this.channel = null;
         this._gotOffer = false;
+        this._lastOffer = '';
+        this._graceTimer = null;
     }
 
     _set(s, detail) {
-        if (this.state === 'ended') return;
+        if (this.state === 'ended' || this.state === s) return;
         this.state = s;
         if (typeof this.onstate === 'function') {
             try { this.onstate(s, detail || {}); } catch (e) { /* ignore */ }
@@ -458,9 +734,13 @@ export class CastReceiver {
         });
         this.channel = ch;
         ch.onsignal = (cast, data) => {
-            if (cast === 'offer' && !this._gotOffer) {
-                this._gotOffer = true;
-                this._answer(data).catch(e => this.end('error', e));
+            if (cast === 'offer') {
+                if (!this.pc && !this._gotOffer) {
+                    this._gotOffer = true;
+                    this._answer(data).catch(e => this._failed(e));
+                } else if (this.pc) {
+                    this._restart(data).catch(() => { /* the grace timer ends the session */ });
+                }
             } else if (cast === 'bye') this.end('stopped');
         };
         this._offerTimer = setTimeout(() => { if (!this._gotOffer) this.end('timeout'); }, this._offerTimeoutMs);
@@ -470,6 +750,7 @@ export class CastReceiver {
     async _answer(data) {
         const desc = await decodeSignal(data);
         if (!desc || desc.type !== 'offer') throw castError('bad_offer', 'invalid offer');
+        this._lastOffer = data;
         this._set('connecting');
         const pc = new this._PC({ iceServers: ICE_SERVERS });
         this.pc = pc;
@@ -478,7 +759,10 @@ export class CastReceiver {
             if (stream && typeof this.ontrack === 'function') this.ontrack(stream, e.track);
         });
         pc.addEventListener('datachannel', e => {
-            e.channel.addEventListener('message', m => { if (m.data === 'bye') this.end('stopped'); });
+            const dc = e.channel;
+            dc.addEventListener('message', m => { if (m.data === 'bye') this.end('stopped'); });
+            // The laptop closed the connection (tab closed, sharing stopped).
+            dc.addEventListener('close', () => this.end('stopped'));
         });
         pc.addEventListener('connectionstatechange', () => this._onConn());
         pc.addEventListener('iceconnectionstatechange', () => this._onConn());
@@ -489,27 +773,53 @@ export class CastReceiver {
         await this.channel.send('answer', await encodeSignal(pc.localDescription));
     }
 
+    /** The laptop's one reconnect: a new offer with ICE restart on the same connection. */
+    async _restart(data) {
+        if (this.state === 'ended' || data === this._lastOffer) return;
+        const desc = await decodeSignal(data);
+        if (!desc || desc.type !== 'offer') return;
+        this._lastOffer = data;
+        const pc = this.pc;
+        await pc.setRemoteDescription(desc);
+        await pc.setLocalDescription(await pc.createAnswer());
+        await iceGathered(pc);
+        if (this.state === 'ended' || this.pc !== pc) return;
+        await this.channel.send('answer', await encodeSignal(pc.localDescription));
+    }
+
+    _failed(e) {
+        // Tell the laptop right away instead of letting it wait for an answer (one relay message).
+        if (this.channel && this.state !== 'ended') this.channel.send('bye', 'error').catch(() => {});
+        this.end('error', e);
+    }
+
     _onConn() {
         const pc = this.pc;
         if (!pc || this.state === 'ended') return;
-        const s = pc.connectionState || pc.iceConnectionState;
+        const s = connState(pc);
         if (s === 'connected' || s === 'completed') {
-            clearTimeout(this._dropTimer);
+            clearTimeout(this._graceTimer);
+            this._graceTimer = null;
             this._set('playing');
-        } else if (s === 'failed' || s === 'closed') {
+        } else if (s === 'closed') {
             this.end('disconnected');
-        } else if (s === 'disconnected') {
-            clearTimeout(this._dropTimer);
-            this._dropTimer = setTimeout(() => {
-                if (this.pc && (this.pc.connectionState || this.pc.iceConnectionState) === 'disconnected') this.end('disconnected');
-            }, 8000);
+        } else if (s === 'failed' || s === 'disconnected') {
+            if (this.state === 'playing') this._set('reconnecting');
+            // Wait for the laptop's reconnect before giving up.
+            if (!this._graceTimer) {
+                this._graceTimer = setTimeout(() => {
+                    this._graceTimer = null;
+                    const now = this.pc && connState(this.pc);
+                    if (now !== 'connected' && now !== 'completed') this.end('disconnected');
+                }, this._graceMs);
+            }
         }
     }
 
     end(reason, err) {
         if (this.state === 'ended') return;
         clearTimeout(this._offerTimer);
-        clearTimeout(this._dropTimer);
+        clearTimeout(this._graceTimer);
         this._set('ended', { reason, error: err });
         this.state = 'ended';
         if (this.pc) { try { this.pc.close(); } catch (e) { /* ignore */ } }

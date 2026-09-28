@@ -4,10 +4,6 @@
 export const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 export const CONTROLLER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/';
 export const DEFAULT_RELAY = 'https://ntfy.sh';
-/** Largest file sendFile() accepts (plaintext). Sent in 1.9 MB encrypted parts (ntfy.sh caps each attachment at 2 MB). */
-export const MAX_FILE_BYTES = 20 * 1000 * 1000;
-/** ntfy.sh accepts attachments up to 2 MB, so bigger files are sent as several encrypted parts. */
-export const CHUNK_BYTES = 1900 * 1000;
 export const MAX_ENVELOPE_BYTES = 3900;
 
 const enc = new TextEncoder();
@@ -244,19 +240,14 @@ function linkError(code, message, extra) {
     return e;
 }
 
-/** Merges the parts of one ack (the 'apps' list comes in several) into {ok, msg, data}. */
+/** Merges the parts of one ack (a TV may split a long reply over several) into {ok, msg, data}. */
 export function mergeAcks(acks) {
     const list = acks.slice().sort((a, b) => (a.part | 0) - (b.part | 0));
     const data = {};
-    let apps = null;
     for (const a of list) {
         const d = a.data && typeof a.data === 'object' && !Array.isArray(a.data) ? a.data : {};
-        for (const k of Object.keys(d)) {
-            if (k === 'apps' && Array.isArray(d.apps)) apps = (apps || []).concat(d.apps);
-            else data[k] = d[k];
-        }
+        for (const k of Object.keys(d)) data[k] = d[k];
     }
-    if (apps) data.apps = apps;
     const first = list.find(a => typeof a.msg === 'string' && a.msg);
     return {
         ok: list.length > 0 && list.every(a => a.ok === true),
@@ -270,9 +261,11 @@ export function mergeAcks(acks) {
 /**
  * One paired TV. Events come over one EventSource; commands are simple CORS POSTs.
  * state: 'unknown' | 'online' | 'offline'. onchange(link) fires when state/status/connected change.
+ * Other messages on the topic (screen sharing signals) go to listen() callbacks, so a sharing session
+ * needs no second event stream. suspend() closes the stream while nothing needs it.
  */
 export class TvLink {
-    constructor({ code, name = '', relay = DEFAULT_RELAY, fetch: fetchFn, EventSource: ES, XMLHttpRequest: XHR } = {}) {
+    constructor({ code, name = '', relay = DEFAULT_RELAY, fetch: fetchFn, EventSource: ES } = {}) {
         const c = normalizeCode(code);
         if (!c) throw new Error('invalid pairing code');
         this.code = c;
@@ -289,8 +282,8 @@ export class TvLink {
         this.onchange = null;
         this._fetch = fetchFn || ((...a) => globalThis.fetch(...a));
         this._ES = ES || globalThis.EventSource;
-        this._XHR = XHR || (fetchFn ? null : globalThis.XMLHttpRequest);
         this._pending = new Map();
+        this._listeners = new Set();
         this._recent = [];
         this._es = null;
         this._retry = 0;
@@ -427,7 +420,16 @@ export class TvLink {
         }
         if (typeof body !== 'string' || body.indexOf('otv1.') !== 0 || !this.key) return;
         const m = await open(this.key, this.topic, body);
-        if (!m || m.dir !== 't2c' || typeof m.re !== 'string') return; // own echoes, other senders
+        if (!m) return;
+        if (m.dir !== 't2c') {
+            // Commands (own echoes) and screen sharing signals: listeners filter what they need.
+            const event = ev && typeof ev === 'object' ? ev : null;
+            for (const fn of Array.from(this._listeners)) {
+                try { fn(m, event); } catch (e) { /* a listener must not break the link */ }
+            }
+            return;
+        }
+        if (typeof m.re !== 'string') return;
         const p = this._pending.get(m.re);
         if (p) {
             this._onAckPart(p, m);
@@ -454,7 +456,7 @@ export class TvLink {
         clearTimeout(p.timer);
         const ack = mergeAcks(Array.from(p.got.values()));
         if (partial) ack.partial = true;
-        if ((p.cmd === 'ping' || p.cmd === 'rename') && ack.ok && ack.data && typeof ack.data.name === 'string') {
+        if (p.cmd === 'ping' && ack.ok && ack.data && typeof ack.data.name === 'string') {
             this.status = ack.data;
         }
         this.state = 'online';
@@ -539,71 +541,35 @@ export class TvLink {
         return this.send('ping', {}, opts);
     }
 
-    /** Encrypts and uploads a File/Blob (<= MAX_FILE_BYTES) and asks the TV to open it. */
-    async sendFile(file, { onProgress, timeoutMs = 90000 } = {}) {
-        await this.init();
-        const size = file && typeof file.size === 'number' ? file.size : -1;
-        if (size < 0) throw linkError('relay', 'not a file');
-        if (size > MAX_FILE_BYTES) throw linkError('too_big', 'file too big', { size, max: MAX_FILE_BYTES });
-        const progress = f => {
-            if (typeof onProgress === 'function') {
-                try { onProgress(Math.max(0, Math.min(1, f))); } catch (e) { /* ignore */ }
-            }
-        };
-        progress(0);
-        const bytes = await readBytes(file);
-        const name = String(file.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 120) || 'file';
-        const count = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES));
-        const chunks = [];
-        for (let i = 0; i < count; i++) {
-            const part = bytes.subarray(i * CHUNK_BYTES, Math.min(bytes.length, (i + 1) * CHUNK_BYTES));
-            const sealed = await sealFile(this.key, this.topic, part);
-            const base = 0.02 + 0.9 * i / count;
-            const res = await this._upload(this.url + '?filename=otv.bin&firebase=no', sealed.data,
-                f => progress(base + f * 0.9 / count));
-            const url = res && res.attachment && res.attachment.url;
-            if (typeof url !== 'string' || !url) throw linkError('relay', 'relay returned no attachment url');
-            chunks.push({ url, iv: sealed.iv, size: part.length });
-        }
-        progress(0.93);
-        const args = count === 1 ? { url: chunks[0].url, name, iv: chunks[0].iv, size } : { name, size, chunks };
-        const ack = await this.send('file', args, { timeoutMs });
-        progress(1);
-        return ack;
+    /** fn(message, event) gets every decrypted message that is not an ack. Returns an unsubscribe function. */
+    listen(fn) {
+        this._listeners.add(fn);
+        return () => { this._listeners.delete(fn); };
     }
 
-    _upload(url, data, onFrac) {
-        // 413: the relay refused the size (its limit may be lower than ours).
-        const tooBig = () => linkError('too_big', 'relay refused the file size', { size: data.length - 16, max: MAX_FILE_BYTES, status: 413 });
-        const viaFetch = async () => {
-            let res;
-            try {
-                res = await this._fetch(url, { method: 'POST', body: data, credentials: 'omit', referrerPolicy: 'no-referrer' });
-            } catch (e) {
-                throw linkError('network', 'upload failed: ' + (e && e.message));
-            }
-            if (res.status === 429) throw linkError('rate_limit', 'relay limit reached', rateLimitInfo(await readText(res)));
-            if (res.status === 413) throw tooBig();
-            if (!res.ok) throw linkError('relay', 'relay HTTP ' + res.status, { status: res.status });
-            onFrac(1);
-            try { return await res.json(); } catch (e) { throw linkError('relay', 'bad relay reply'); }
-        };
-        if (!this._XHR) return viaFetch();
-        return new Promise((resolve, reject) => {
-            const x = new this._XHR();
-            x.open('POST', url);
-            x.upload.onprogress = e => { if (e.lengthComputable && e.total) onFrac(e.loaded / e.total); };
-            x.onload = () => {
-                if (x.status === 429) return reject(linkError('rate_limit', 'relay limit reached', rateLimitInfo(x.responseText)));
-                if (x.status === 413) return reject(tooBig());
-                if (x.status < 200 || x.status >= 300) return reject(linkError('relay', 'relay HTTP ' + x.status, { status: x.status }));
-                onFrac(1);
-                try { resolve(JSON.parse(x.responseText)); } catch (e) { reject(linkError('relay', 'bad relay reply')); }
-            };
-            // Progress listeners force a CORS preflight; if that is refused, retry once as a simple request.
-            x.onerror = () => viaFetch().then(resolve, reject);
-            x.send(data);
-        });
+    /** Derives the keys and opens the event stream if needed. Resolves true once it is open, false after ms. */
+    async ready(ms = 8000) {
+        await this.init();
+        if (this._closed) return false;
+        return this._waitConnected(ms);
+    }
+
+    /**
+     * Closes the event stream while nothing needs it (no command waiting for an ack, no listener), so an
+     * idle page holds no relay connection. The next send() or ready() opens it again. Returns true if idle.
+     */
+    suspend() {
+        if (this._pending.size || this._listeners.size) return false;
+        clearTimeout(this._retryTimer);
+        this._retryTimer = null;
+        const es = this._es;
+        this._es = null;
+        if (es) {
+            try { es.close(); } catch (e) { /* ignore */ }
+        }
+        this._retry = 0;
+        this._setConnected(false);
+        return true;
     }
 
     close() {
@@ -619,17 +585,4 @@ export class TvLink {
         for (const f of this._openWaiters) f(false);
         this._openWaiters = [];
     }
-}
-
-async function readBytes(file) {
-    if (typeof file.arrayBuffer === 'function') return new Uint8Array(await file.arrayBuffer());
-    if (typeof FileReader !== 'undefined') {
-        return new Promise((resolve, reject) => {
-            const r = new FileReader();
-            r.onload = () => resolve(new Uint8Array(r.result));
-            r.onerror = () => reject(r.error);
-            r.readAsArrayBuffer(file);
-        });
-    }
-    throw new Error('cannot read file');
 }

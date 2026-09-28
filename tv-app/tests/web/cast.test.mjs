@@ -1,223 +1,234 @@
-// End-to-end test for "Share my screen": the controller page (sender) and tv/receive.html (the page the
-// TV app shows) run in two Chromium pages. They signal over the local mock relay (standing in for
-// https://ntfy.sh) with real encryption, and WebRTC media flows between the pages. A fake TV acks the
-// 'cast' command and "opens" the receiver page like CastActivity does. Run: node --test tv-app/tests/web/
-import test, { after, before } from 'node:test';
+// End-to-end "Share my screen": the website (sender) and tv/receive.html (the page the TV app shows) run
+// in two Chromium pages. They signal over the local mock relay (standing in for https://ntfy.sh) with real
+// encryption, and WebRTC media flows between the pages. The fake TV acks 'cast' and "opens" the receiver
+// like CastActivity does. Run: node --test tv-app/tests/web/
+import test, { after, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execSync } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createRelay } from './mock-relay.mjs';
-import { makeCert, startRelayServers, startStatic } from './servers.mjs';
-import { createFakeTv } from '../node/fake-tv.mjs';
-import { receiverUrl } from '../../../tv/cast.js';
+import { join } from 'node:path';
+import {
+    CODE_C, HAS_TLS, RECORD_DISPLAY, SHOTS, acquire, assertLayout, open, receiverFor, receiverPlaying, release, reset, savedTvs,
+    sleep, text, until,
+} from './harness.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO = resolve(HERE, '../../..');
-const CODE = 'H7P2K9R4T1';
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+let E;
+before(async () => { E = await acquire(); });
+after(release);
+beforeEach(reset);
 
-async function loadPlaywright() {
-    try {
-        return await import('playwright');
-    } catch (e) {
-        const root = execSync('npm root -g').toString().trim();
-        return import(pathToFileURL(join(root, 'playwright', 'index.mjs')).href);
-    }
-}
+const skip = !HAS_TLS && 'openssl missing';
+const BOARD = { name: 'Board Room', code: CODE_C, relay: 'https://ntfy.sh' };
+const label = page => page.$eval('#liveTitle', el => el.textContent);
+/** Relay messages posted to one TV's topic (other tests' stragglers go to other topics). */
+const postsTo = tv => E.relay.posts.filter(p => p.topic === tv.topic).length;
+const sharing = (page, ms = 30000) => page.waitForFunction(() => /^Sharing to /.test(document.getElementById('liveLabel').textContent)
+    && document.getElementById('liveChip').textContent === 'Live', null, { timeout: ms });
+const receiverClosed = p => until(() => p.evaluate(() => window.__closed >= 1 && window.__otvCast.state === 'ended').catch(() => false), 10000, 'receiver closed');
 
-async function until(fn, ms, what) {
-    const end = Date.now() + ms;
-    for (;;) {
-        const v = await fn();
-        if (v) return v;
-        if (Date.now() > end) throw new Error('timed out waiting for ' + what);
-        await sleep(50);
-    }
-}
+test('first visit: one click connects and shares; the TV plays it; Stop sharing ends it', { skip, timeout: 90000 }, async () => {
+    const sender = await open({ viewport: { width: 1440, height: 900 }, init: [RECORD_DISPLAY] });
+    const rx = receiverFor(E.tvC);
+    await sender.goto(E.web.url + '/tv/');
+    await sender.fill('#code', 'h7p2k 9r4t1');
+    await sender.fill('#tvName', 'Board Room');
+    const posts0 = postsTo(E.tvC);
+    await sender.click('#connectBtn');
 
-// If headless Chromium cannot fake getDisplayMedia, fall back to an animated canvas + a tone.
-const FAKE_DISPLAY = () => {
-    const md = navigator.mediaDevices;
-    if (!md) return;
-    const real = md.getDisplayMedia ? md.getDisplayMedia.bind(md) : null;
-    md.getDisplayMedia = async constraints => {
-        if (real) {
-            try {
-                const s = await real(constraints);
-                window.__displaySource = 'getDisplayMedia';
-                return s;
-            } catch (e) { /* use the canvas */ }
-        }
-        window.__displaySource = 'canvas';
-        const c = document.createElement('canvas');
-        c.width = 640;
-        c.height = 360;
-        const g = c.getContext('2d');
-        let n = 0;
-        setInterval(() => {
-            g.fillStyle = 'hsl(' + (n++ * 7 % 360) + ',70%,50%)';
-            g.fillRect(0, 0, 640, 360);
-            g.fillStyle = '#fff';
-            g.font = '48px sans-serif';
-            g.fillText('Slide ' + n, 40, 120);
-        }, 33);
-        const stream = c.captureStream(30);
-        try {
-            const ac = new AudioContext();
-            const osc = ac.createOscillator();
-            const dst = ac.createMediaStreamDestination();
-            osc.connect(dst);
-            osc.start();
-            stream.addTrack(dst.stream.getAudioTracks()[0]);
-        } catch (e) { /* video only */ }
-        return stream;
-    };
-};
+    // The picker opened straight from that click, with the quality options.
+    const gdm = await sender.evaluate(() => window.__gdm.calls);
+    assert.equal(gdm.length, 1);
+    assert.equal(gdm[0].active, true, 'still inside the user gesture');
+    assert.deepEqual(gdm[0].options.video, { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } });
+    assert.equal(gdm[0].options.audio, true);
+    assert.equal(gdm[0].options.selfBrowserSurface, 'exclude');
+    assert.equal(gdm[0].options.surfaceSwitching, 'include');
+    assert.equal(gdm[0].options.systemAudio, 'include');
 
-let browser, relay, relaySrv, web, tv, tls;
-
-before(async () => {
-    const { chromium } = await loadPlaywright();
-    relay = createRelay();
-    tls = makeCert('ntfy.sh');
-    relaySrv = await startRelayServers(relay, { tls });
-    web = await startStatic(REPO);
-    tv = await createFakeTv({ code: CODE, name: 'Board Room', publish: (t, env) => relay.publish(t, env, undefined, { cache: false }) });
-    relay.subscribe(tv.topic, ev => tv.handle(ev));
-    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/proxy/i.test(k)));
-    const args = ['--no-proxy-server', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
-        '--auto-select-desktop-capture-source=Entire screen', '--autoplay-policy=no-user-gesture-required'];
-    if (tls) args.push('--host-resolver-rules=MAP ntfy.sh 127.0.0.1:' + relaySrv.httpsPort);
-    browser = await chromium.launch({ env, args });
-});
-
-after(async () => {
-    if (browser) await browser.close();
-    if (relaySrv) await relaySrv.close();
-    if (web) await web.close();
-});
-
-async function newPage(init) {
-    const ctx = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 } });
-    if (init) await ctx.addInitScript(init);
-    const page = await ctx.newPage();
-    page.errors = [];
-    page.on('pageerror', e => page.errors.push(e.message));
-    page.on('console', m => { if (m.type() === 'error') page.errors.push(m.text()); });
-    page.ctx = ctx;
-    return page;
-}
-
-test('laptop screen plays on the receiver page and stops cleanly', { skip: !makeCert() && 'openssl missing' }, async () => {
-    const sender = await newPage(FAKE_DISPLAY);
-    let receiver = null;
-    let receiverUrlSeen = null;
-    tv.oncast = session => {
-        // What CastActivity does: open the receiver with the session and pairing code in the fragment.
-        const u = receiverUrl({ session, code: CODE }, web.url + '/tv/receive.html');
-        receiverUrlSeen = u;
-        newPage(() => { window.OfficeTvCast = { close() { window.__closed = (window.__closed || 0) + 1; } }; })
-            .then(async p => {
-                // Load a little later so the offer is already on the relay (the receiver must replay it).
-                await sleep(400);
-                await p.goto(u);
-                receiver = p;
-            });
-    };
-
-    await sender.goto(web.url + '/tv/#pair=' + CODE + '&name=' + encodeURIComponent('Board Room'));
-    await sender.waitForFunction(() => /Board Room is connected/.test(document.getElementById('toastText').textContent), null, { timeout: 10000 });
-    assert.ok(await sender.isVisible('#castBtn'), 'Share my screen is visible for one TV');
-    const postsBefore = relay.posts.length;
-
-    await sender.click('#castBtn');
-    await sender.waitForFunction(() => /Sharing/.test(document.getElementById('castState').textContent), null, { timeout: 30000 });
-    assert.ok(await sender.isVisible('#castStop'));
-    await until(() => receiver, 10000, 'receiver page');
-
-    const info = await until(() => receiver.evaluate(() => {
-        const v = document.getElementById('video');
-        const s = v.srcObject;
-        if (!s || v.paused || v.videoWidth === 0 || v.readyState < 2) return null;
-        return {
-            videoTracks: s.getVideoTracks().filter(t => t.readyState === 'live').length,
-            audioTracks: s.getAudioTracks().length,
-            width: v.videoWidth, height: v.videoHeight, time: v.currentTime, fit: getComputedStyle(v).objectFit,
-            state: window.__otvCast.state, hash: location.hash, status: document.getElementById('status').hidden,
-        };
-    }), 20000, 'playing video on the receiver');
-    assert.equal(info.videoTracks, 1);
+    await sharing(sender);
+    const receiver = await rx.wait(1);
+    const info = await receiverPlaying(receiver);
+    assert.equal(info.tracks, 1);
     assert.ok(info.width > 0 && info.height > 0);
     assert.equal(info.fit, 'contain');
-    assert.equal(info.state, 'playing');
-    assert.equal(info.hash, '', 'pairing code removed from the address bar');
-    assert.ok(info.status, 'status overlay hidden while playing');
+    assert.equal(info.hash, '', 'pairing code removed from the receiver address bar');
+    assert.ok(info.overlay, 'no overlay while playing');
     await sleep(700);
-    const t2 = await receiver.evaluate(() => document.getElementById('video').currentTime);
-    assert.ok(t2 > info.time, 'video keeps playing');
-    assert.ok(receiverUrlSeen.includes('#s='));
+    assert.ok(await receiver.evaluate(() => document.getElementById('video').currentTime) > info.time, 'video keeps playing');
 
-    // Signaling cost: cast command + ack + one offer + one answer.
-    const castPosts = relay.posts.length - postsBefore;
-    assert.ok(castPosts <= 4, 'relay messages used: ' + castPosts);
-    const cmd = tv.received('cast').slice(-1)[0];
+    // Status panel: TV name, running clock, live mini preview.
+    const clock = async () => {
+        const m = /^Sharing to Board Room · (\d\d):(\d\d):(\d\d)$/.exec(await label(sender));
+        assert.ok(m, 'status line: ' + await label(sender));
+        return (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]);
+    };
+    const c1 = await clock();
+    await sleep(2100);
+    assert.ok(await clock() > c1, 'the clock runs');
+    assert.equal(await text(sender, '#stopBtn'), 'Stop sharing');
+    assert.ok(await sender.isHidden('#hero'), 'the panel takes the page');
+    const pv = await until(() => sender.evaluate(() => {
+        const v = document.getElementById('preview');
+        const live = !!v.srcObject && v.srcObject.getVideoTracks()[0].readyState === 'live';
+        return live && v.videoWidth > 0 ? { muted: v.muted } : null;
+    }), 5000, 'mini preview');
+    assert.equal(pv.muted, true);
+    assert.equal(await sender.title(), 'Sharing to Board Room · Office TV');
+
+    // The TV answered, so it is saved.
+    assert.deepEqual(await sender.evaluate(() => JSON.parse(localStorage.getItem('officetv.tvs'))), [BOARD]);
+
+    // Quality settings reached the encoder.
+    const q = await sender.evaluate(async () => {
+        const s = window.__otvCastSender;
+        const p = s.videoSender.getParameters();
+        return { hint: s.stream.getVideoTracks()[0].contentHint, enc: p.encodings[0], stats: await s.videoStats() };
+    });
+    assert.equal(q.hint, 'detail');
+    assert.equal(q.enc.maxBitrate, 6000000);
+    assert.equal(q.enc.maxFramerate, 30);
+    console.log('# video: ' + JSON.stringify(q.stats) + ', display source: ' + await sender.evaluate(() => window.__gdm.source));
+
+    // Relay cost: the cast command, the offer and the answer (+ the TV's ack, which the fake TV publishes directly).
+    { const n = postsTo(E.tvC) - posts0; assert.ok(n >= 3 && n <= 4, 'relay messages posted (the plain offer may take 2 parts): ' + n); }
+    assert.equal(E.tvC.received('cast').length, 1);
+    assert.equal(E.tvC.received('ping').length, 0, 'the first visit needs no ping');
+    const cmd = E.tvC.received('cast')[0];
     assert.equal(cmd.args.action, 'start');
     assert.match(cmd.args.session, /^[a-z0-9]{16}$/);
-    // Nothing on the relay is readable: SDP and candidates are inside the encrypted envelopes.
-    for (const p of relay.posts) if (p.text) assert.ok(p.text.startsWith('otv1.') && !/candidate|sdp/i.test(p.text));
+    for (const p of E.relay.posts) if (p.text) assert.ok(p.text.startsWith('otv1.') && !/candidate|sdp/i.test(p.text), 'only ciphertext on the relay');
+    await assertLayout(sender, '1440 sharing');
+    await sender.screenshot({ path: join(SHOTS, 'sharing-1440-light.png') });
+    await receiver.screenshot({ path: join(SHOTS, 'receiver-tv.png') });
 
-    // Stop sharing: the receiver learns it over the data channel (no relay message) and closes itself.
-    const before = relay.posts.length;
-    await sender.click('#castStop');
-    await sender.waitForFunction(() => /Stopped/.test(document.getElementById('castState').textContent), null, { timeout: 5000 });
-    await until(() => receiver.evaluate(() => window.__closed === 1 && window.__otvCast.state === 'ended'), 10000, 'receiver closed');
-    assert.equal(relay.posts.length, before, 'stop used no relay messages');
-    assert.ok(await sender.isHidden('#castStop'));
-    console.log('# display source: ' + await sender.evaluate(() => window.__displaySource));
-
-    // The browser's own "Stop sharing" (track ended) also stops.
-    let receiver2 = null;
-    tv.oncast = session => {
-        newPage(() => { window.OfficeTvCast = { close() { window.__closed = 1; } }; }).then(async p => {
-            await p.goto(receiverUrl({ session, code: CODE }, web.url + '/tv/receive.html'));
-            receiver2 = p;
-        });
-    };
-    await sender.click('#castBtn');
-    await sender.waitForFunction(() => /Sharing/.test(document.getElementById('castState').textContent), null, { timeout: 30000 });
-    await until(() => receiver2, 10000, 'second receiver');
-    await sender.evaluate(() => window.__otvCastSender.stream.getVideoTracks()[0].dispatchEvent(new Event('ended')));
-    await sender.waitForFunction(() => /Stopped/.test(document.getElementById('castState').textContent), null, { timeout: 5000 });
-    await until(() => receiver2.evaluate(() => window.__closed === 1), 10000, 'second receiver closed');
-
-    assert.deepEqual(sender.errors, []);
-    assert.deepEqual(receiver.errors, []);
-    tv.oncast = null;
-    await receiver.ctx.close();
-    await receiver2.ctx.close();
-    await sender.ctx.close();
+    // Stop: the TV hears it over the data channel (no relay message) and closes the receiver.
+    const before = postsTo(E.tvC);
+    await sender.click('#stopBtn');
+    await sender.waitForSelector('#homeCard', { state: 'visible', timeout: 5000 });
+    assert.equal(await text(sender, '#noticeTitle'), 'Sharing stopped.');
+    assert.equal(await text(sender, '#shareLabel'), 'Share again');
+    await receiverClosed(receiver);
+    assert.equal(postsTo(E.tvC), before, 'stopping used no relay messages');
+    assert.equal(await sender.evaluate(() => window.__gdm.stream.getTracks().every(t => t.readyState === 'ended')), true, 'capture released');
+    assert.equal(await sender.title(), 'Office TV · Share your laptop screen');
+    await until(() => E.relay.sseCount(E.tvC.topic) === 0, 5000, 'relay streams closed');
+    await receiver.done();
+    await sender.done();
 });
 
-test('unsupported browsers get a clear explanation', async () => {
-    const page = await newPage(() => {
-        if (navigator.mediaDevices) navigator.mediaDevices.getDisplayMedia = undefined;
-    });
-    await page.goto(web.url + '/tv/#pair=' + CODE + '&name=' + encodeURIComponent('Board Room'));
-    await page.waitForFunction(() => /Board Room is connected/.test(document.getElementById('toastText').textContent), null, { timeout: 10000 });
-    const starts = tv.received('cast').length;
-    await page.click('#castBtn');
-    const text = await page.textContent('#castText');
-    assert.match(text, /cannot share its screen/);
-    assert.match(text, /Phones and tablets/);
-    assert.equal(await page.textContent('#castState'), 'Error.');
-    assert.equal(tv.received('cast').length, starts, 'no cast command sent');
-    await page.ctx.close();
+test('returning visitor: one ping on load, one-click share on one relay stream; the browser\'s own Stop ends it', { skip, timeout: 90000 }, async () => {
+    const sender = await open({ init: [RECORD_DISPLAY, savedTvs([BOARD], CODE_C)] });
+    const rx = receiverFor(E.tvC);
+    await sender.goto(E.web.url + '/tv/');
+    await sender.waitForFunction(() => /Online/.test(document.querySelector('.tv .tv-status').textContent), null, { timeout: 10000 });
+    assert.equal(await text(sender, '#shareBtn'), 'Share my screen');
+    await until(() => E.relay.sseCount(E.tvC.topic) === 0, 3000, 'idle stream closed after the ping');
+    assert.equal(E.tvC.received('ping').length, 1);
+
+    await sender.click('#shareBtn');
+    assert.equal(await sender.evaluate(() => window.__gdm.calls[0].active), true);
+    await sharing(sender);
+    const receiver = await rx.wait(1);
+    await receiverPlaying(receiver);
+    assert.equal(E.relay.sseCount(E.tvC.topic), 2, 'one stream for the laptop (acks and signals share it) + one for the TV page');
+
+    // The browser's own "Stop sharing" bar ends the capture track.
+    await sender.evaluate(() => window.__otvCastSender.stream.getVideoTracks()[0].dispatchEvent(new Event('ended')));
+    await sender.waitForSelector('#homeCard', { state: 'visible', timeout: 5000 });
+    assert.equal(await text(sender, '#noticeTitle'), 'Sharing stopped.');
+    await receiverClosed(receiver);
+    assert.equal(E.tvC.received('ping').length, 1, 'no polling');
+    await receiver.done();
+    await sender.done();
+});
+
+test('the TV closes the receiver: "The TV stopped showing your screen." and Share again works', { skip, timeout: 90000 }, async () => {
+    const sender = await open({ viewport: { width: 1366, height: 768 }, colorScheme: 'dark', init: [RECORD_DISPLAY, savedTvs([BOARD], CODE_C)] });
+    const rx = receiverFor(E.tvC);
+    await sender.goto(E.web.url + '/tv/');
+    await sender.click('#shareBtn');
+    await sharing(sender);
+    const first = await rx.wait(1);
+    await receiverPlaying(first);
+    await assertLayout(sender, '1366 dark sharing');
+    await sender.screenshot({ path: join(SHOTS, 'sharing-1366-dark.png') });
+
+    // Back on the TV remote: CastActivity tears the page down, which closes the peer connection.
+    await first.goto('about:blank');
+    await sender.waitForSelector('#homeCard', { state: 'visible', timeout: 10000 });
+    assert.equal(await text(sender, '#noticeTitle'), 'The TV stopped showing your screen.');
+    assert.equal(await sender.getAttribute('#notice', 'class'), 'notice bad');
+    assert.equal(await text(sender, '#shareLabel'), 'Share again');
+    assert.equal(await sender.evaluate(() => document.activeElement.id), 'shareBtn');
+    await assertLayout(sender, '1366 dark ended');
+    await sender.screenshot({ path: join(SHOTS, 'tv-stopped-1366-dark.png') });
+
+    await sender.click('#shareBtn');
+    await sharing(sender);
+    const second = await rx.wait(2);
+    await receiverPlaying(second);
+    assert.equal(E.tvC.received('cast').length, 2);
+    await sender.click('#stopBtn');
+    await receiverClosed(second);
+    await first.done();
+    await second.done();
+    await sender.done();
+});
+
+test('the TV vanishes without a goodbye (power cut): one reconnect attempt, then a clear message', { skip, timeout: 90000 }, async () => {
+    const fast = () => { window.__otvTest = { dropMs: 500, reconnectTimeoutMs: 2500 }; };
+    const sender = await open({ init: [RECORD_DISPLAY, fast, savedTvs([BOARD], CODE_C)] });
+    const rx = receiverFor(E.tvC);
+    await sender.goto(E.web.url + '/tv/');
+    await sender.click('#shareBtn');
+    await sharing(sender);
+    const receiver = await rx.wait(1);
+    await receiverPlaying(receiver);
+    const before = postsTo(E.tvC);
+    await receiver.ctx.close(); // the renderer is gone: no data channel close, only silence
+    await sender.waitForFunction(() => document.getElementById('liveChip').textContent === 'Reconnecting', null, { timeout: 20000 });
+    assert.match(await text(sender, '#liveLabel'), /^Reconnecting to Board Room/);
+    await sender.waitForSelector('#homeCard', { state: 'visible', timeout: 20000 });
+    assert.equal(await text(sender, '#noticeTitle'), 'The connection to the TV was lost.');
+    assert.equal(await text(sender, '#noticeText'), 'Check the Wi-Fi, then share again.');
+    assert.equal(await text(sender, '#shareLabel'), 'Share again');
+    { const n = postsTo(E.tvC) - before; assert.ok(n >= 1 && n <= 2, 'one restart offer (1-2 parts), never answered: ' + n); }
+    await sender.done();
+});
+
+test('reconnects once after a drop: ICE restart on the same session, two relay messages, the TV keeps playing', { skip, timeout: 90000 }, async () => {
+    const sender = await open({ init: [RECORD_DISPLAY, savedTvs([BOARD], CODE_C)] });
+    const rx = receiverFor(E.tvC);
+    await sender.goto(E.web.url + '/tv/');
+    await sender.click('#shareBtn');
+    await sharing(sender);
+    const receiver = await rx.wait(1);
+    await receiverPlaying(receiver);
+    const before = postsTo(E.tvC);
+    const firstOffer = await receiver.evaluate(() => window.__otvCast._lastOffer);
+    const states = sender.evaluate(() => new Promise(resolve => {
+        const s = window.__otvCastSender;
+        const seen = [];
+        const prev = s.onstate;
+        s.onstate = (st, d) => { seen.push(st); prev(st, d); if (st === 'sharing') resolve(seen); };
+        s.reconnect();
+    }));
+    assert.deepEqual(await states, ['reconnecting', 'sharing']);
+    assert.equal(await sender.evaluate(() => window.__otvCastSender.reconnects), 1);
+    assert.notEqual(await receiver.evaluate(() => window.__otvCast._lastOffer), firstOffer, 'the TV got the restart offer');
+    { const n = postsTo(E.tvC) - before; assert.ok(n >= 2 && n <= 3, 'offer (1-2 parts) + answer: ' + n); }
+    const t = await receiver.evaluate(() => document.getElementById('video').currentTime);
+    await sleep(600);
+    assert.ok(await receiver.evaluate(() => document.getElementById('video').currentTime) > t, 'still playing');
+    assert.equal(await sender.evaluate(() => window.__otvCastSender.reconnect()), false, 'only once per session');
+    await sender.click('#stopBtn');
+    await receiverClosed(receiver);
+    await receiver.done();
+    await sender.done();
 });
 
 test('receiver page without parameters explains itself', async () => {
-    const page = await newPage();
-    await page.goto(web.url + '/tv/receive.html');
-    assert.match(await page.textContent('#statusText'), /shows a laptop screen/);
-    await page.ctx.close();
+    const page = await open();
+    await page.goto(E.web.url + '/tv/receive.html');
+    assert.equal(await text(page, '#statusText'), 'This page shows a laptop screen on an office TV.');
+    assert.match(await text(page, '#statusSub'), /open nikhildiwakar-bit\.github\.io\/Portfolio\/tv on a laptop/);
+    await page.done();
 });

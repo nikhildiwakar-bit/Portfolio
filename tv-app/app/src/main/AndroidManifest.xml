@@ -1,52 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Relay (ntfy.sh) and the WebRTC receiver page. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Keep screen on, Wi-Fi lock, waking the screen when a laptop starts sharing. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Ready for sharing after a TV restart or an app update, without opening the app. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- "Display over other apps": lets Android 10+ open the cast screen while another app is shown. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
 
-    <!-- Needed on Android 11+ to see which apps are installed. -->
-    <queries>
-        <package android:name="com.android.chrome" />
-        <package android:name="com.google.android.youtube" />
-        <package android:name="com.google.android.youtube.tv" />
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.LAUNCHER" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:mimeType="*/*" />
-        </intent>
-    </queries>
-
     <application
         android:name=".OfficeTvApp"
         android:allowBackup="false"
-        android:largeHeap="true"
-        android:usesCleartextTraffic="true"
         android:banner="@drawable/banner"
+        android:hardwareAccelerated="true"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:usesCleartextTraffic="false"
+        android:theme="@style/OfficeTv">
 
         <activity
             android:name=".MainActivity"
@@ -59,36 +37,27 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ViewerActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|smallestScreenSize|uiMode"
-            android:exported="false"
-            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
-
+        <!-- Full-screen WebRTC receiver ("Share my screen"). One at a time; a new session reuses it. -->
         <activity
             android:name=".CastActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|smallestScreenSize|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode|fontScale|locale|layoutDirection"
             android:excludeFromRecents="true"
             android:exported="false"
+            android:hardwareAccelerated="true"
             android:launchMode="singleTask"
-            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+            android:theme="@style/OfficeTv.Cast" />
+
+        <service
+            android:name=".ControlService"
+            android:exported="false" />
 
         <service
             android:name=".ServiceJob"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
-        <service
-            android:name=".ControlService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
-
-        <activity
-            android:name=".ScreenCaptureActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-
+        <!-- Full flavor only (removed from lite): lets Android 10+ open the cast screen on its own.
+             It receives no window content and performs no actions. -->
         <service
             android:name=".RemoteA11yService"
             android:exported="true"
@@ -110,12 +79,9 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
         </receiver>
-
-        <provider
-            android:name=".FilesProvider"
-            android:authorities="${applicationId}.files"
-            android:exported="false"
-            android:grantUriPermissions="true" />
     </application>
 </manifest>

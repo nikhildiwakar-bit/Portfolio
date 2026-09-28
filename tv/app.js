@@ -1,33 +1,24 @@
-// Office TV Remote: controller page. The relay protocol itself lives in otv.js.
-// The ?v= query keeps app.js and otv.js from mixing versions in a browser cache; bump it together with the
-// one in index.html whenever either file changes.
-import {
-    ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, MAX_FILE_BYTES, TvLink, cleanName, displayCode, normalizeCode,
-    normalizeRelay, parsePairFragment,
-} from './otv.js?v=2';
-import { CastSender, senderSupport } from './cast.js?v=1';
+// Office TV: show a laptop screen on an office TV (PROTOCOL.md section 8). The relay protocol lives in
+// otv.js, screen sharing in cast.js. The ?v= queries keep app.js, cast.js and otv.js from mixing versions
+// in a browser cache; bump them together (and the one in index.html) whenever a file changes.
+//
+// Relay use is kept small (the free relay has a daily limit per office network): one 'ping' per saved TV
+// when the page loads (no polling), then per sharing session: 'cast' start + ack + offer + answer.
+import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=3';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=2';
 
 const $ = id => document.getElementById(id);
 const STORE_KEY = 'officetv.tvs';
 const SELECTED_KEY = 'officetv.selected';
-const ALL = 'all';
-const ADD = '+add';
-const PING_FRESH_MS = 60 * 1000;        // re-selecting a TV within a minute does not ping again
-const VISIBLE_PING_MS = 5 * 60 * 1000;  // coming back to the tab pings only after 5 minutes away
-
-const STATE_TEXT = { online: 'online', offline: 'not answering', unknown: 'status unknown' };
-const KEY_TEXT = {
-    next_slide: 'Next slide.', prev_slide: 'Previous slide.', scroll_down: 'Scrolled down.',
-    scroll_up: 'Scrolled up.', back: 'Pressed Back.', home: 'Pressed Home.', recents: 'Opened recent apps.',
-    play_pause: 'Pressed Play/Pause.', next: 'Next track.', previous: 'Previous track.',
-    volume_up: 'Volume up.', volume_down: 'Volume down.', mute: 'Mute toggled.', wake: 'Screen woken up.',
-};
-// Short generic acks from the TV that read better as the fuller text above.
-const GENERIC_KEY_MSGS = ['Done', 'Play/Pause', 'Next', 'Previous', 'Volume +', 'Volume -', 'Mute', 'Screen on'];
+const MAX_TVS = 12;
+const MAX_PINGS = 6;
+const UNSUPPORTED_TEXT = 'Screen sharing needs Chrome, Edge or Safari on a laptop, Chromebook or Mac.';
+const TEST = window.__otvTest || {}; // test-only overrides (shorter timeouts)
 
 // ---------- storage (falls back to memory) ----------
 
 const storage = (() => {
+    const mem = new Map();
     let ok = true;
     try {
         const k = 'officetv.probe';
@@ -39,10 +30,13 @@ const storage = (() => {
     return {
         get ok() { return ok; },
         get(k) {
-            if (!ok) return null;
-            try { return window.localStorage.getItem(k); } catch (e) { return null; }
+            if (ok) {
+                try { return window.localStorage.getItem(k); } catch (e) { ok = false; }
+            }
+            return mem.has(k) ? mem.get(k) : null;
         },
         set(k, v) {
+            mem.set(k, v);
             if (!ok) return false;
             try {
                 window.localStorage.setItem(k, v);
@@ -56,15 +50,18 @@ const storage = (() => {
 })();
 
 const state = {
-    tvs: [],               // [{name, code, relay}], same shape as saved
-    links: new Map(),      // code -> TvLink
-    selected: null,        // code | ALL | null
-    apps: new Map(),       // code -> [{label, pkg}]
-    appsShownFor: undefined,
-    pinging: new Set(),
-    pairOpen: false,
-    fileBusy: false,
-    awakeBusy: false,
+    tvs: [],                // saved TVs [{name, code, relay}]
+    selected: null,         // code of the selected saved TV
+    links: new Map(),       // code -> TvLink
+    health: new Map(),      // code -> 'checking' | 'online' | 'offline' | 'unknown'
+    adding: false,          // the code form is open although TVs are saved
+    confirmForget: false,
+    session: null,          // {tv, link, pending, phase, sender, stream, startedAt}
+    notice: null,           // {kind: 'info' | 'bad', title, text} under the saved TVs
+    setupError: null,       // {title, text} in the code form
+    shared: false,          // a session ended: the big button says "Share again"
+    unsupported: '',        // why this browser cannot share its screen
+    view: '',
 };
 
 function loadTvs() {
@@ -77,15 +74,42 @@ function loadTvs() {
         if (!code || out.some(x => x.code === code)) continue;
         out.push({ name: cleanName(t.name || ''), code, relay: normalizeRelay(t.relay || DEFAULT_RELAY) || DEFAULT_RELAY });
     }
-    return out;
+    return out.slice(0, MAX_TVS);
 }
 
 function saveTvs() {
-    const ok = storage.set(STORE_KEY, JSON.stringify(state.tvs.map(t => ({ name: t.name, code: t.code, relay: t.relay }))));
-    $('storageNote').hidden = ok;
+    storage.set(STORE_KEY, JSON.stringify(state.tvs.map(t => ({ name: t.name, code: t.code, relay: t.relay }))));
+    storage.set(SELECTED_KEY, state.selected || '');
 }
 
-// ---------- links ----------
+/** Adds a TV (or updates the saved one with the same code), selects it and saves. */
+function keepTv({ code, name, relay }) {
+    let tv = state.tvs.find(t => t.code === code);
+    if (tv) {
+        if (name) tv.name = cleanName(name);
+        if (relay) tv.relay = normalizeRelay(relay) || tv.relay;
+    } else {
+        tv = { name: cleanName(name || ''), code, relay: normalizeRelay(relay || DEFAULT_RELAY) || DEFAULT_RELAY };
+        state.tvs.unshift(tv);
+        state.tvs = state.tvs.slice(0, MAX_TVS);
+    }
+    state.selected = tv.code;
+    saveTvs();
+    return tv;
+}
+
+/** Uses the name the TV reports for a TV the user did not name. */
+function adoptName(tv, name) {
+    const n = cleanName(name);
+    if (!n || tv.name) return;
+    tv.name = n;
+    if (state.tvs.indexOf(tv) >= 0) saveTvs();
+}
+
+const tvName = tv => tv.name || 'TV ' + displayCode(tv.code).slice(0, 5);
+const selectedTv = () => state.tvs.find(t => t.code === state.selected) || null;
+
+// ---------- relay links ----------
 
 function linkFor(tv) {
     let l = state.links.get(tv.code);
@@ -95,1051 +119,537 @@ function linkFor(tv) {
     }
     if (!l) {
         l = new TvLink({ code: tv.code, name: tv.name, relay: tv.relay });
-        l.onchange = scheduleRender;
         state.links.set(tv.code, l);
-        l.init().catch(() => fatal('Encryption does not work in this browser. Please use a recent version of Chrome, Edge or Safari.'));
     }
     return l;
 }
 
-const statusOf = tv => {
-    const l = state.links.get(tv.code);
-    return l && l.status ? l.status : null;
-};
-
-function tvName(tv) {
-    const s = statusOf(tv);
-    return tv.name || (s && cleanName(s.name)) || 'TV ' + displayCode(tv.code).slice(0, 5);
+/** Closes a link's event stream unless a sharing session uses it, so an idle page holds no relay connection. */
+function rest(link) {
+    if (link && !(state.session && state.session.link === link)) link.suspend();
 }
 
-const prefix = tv => (state.tvs.length > 1 ? tvName(tv) + ': ' : '');
-const selectedTv = () => state.tvs.find(t => t.code === state.selected) || null;
-
-function targets() {
-    if (state.selected === ALL) return state.tvs.slice();
-    const t = selectedTv();
-    return t ? [t] : [];
+function dropLink(code) {
+    const l = state.links.get(code);
+    if (l) l.close();
+    state.links.delete(code);
 }
 
-function lanUrl(tv) {
-    const s = tv && statusOf(tv);
-    const list = s && Array.isArray(s.lanUrls) ? s.lanUrls : [];
-    for (const u of list) {
-        try {
-            const url = new URL(String(u));
-            if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
-        } catch (e) { /* skip */ }
-    }
-    return '';
-}
-
-const LIVE_NOTE = 'Live Screen works when this laptop is on the same Wi-Fi as the TV.';
-
-/** The TV's LAN page with #live, so it scrolls to and starts the Live Screen card. */
-function liveUrl(list) {
-    for (const u of Array.isArray(list) ? list : []) {
-        try {
-            const url = new URL(String(u));
-            if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
-            url.hash = 'live';
-            return url.href;
-        } catch (e) { /* skip */ }
-    }
-    return '';
-}
-
-/** Asks the TV to share its screen (the TV shows "Start now"), then opens its LAN page in a new tab. */
-async function startLiveScreen() {
-    const tv = selectedTv();
-    if (!tv) return;
-    // Open the tab now, inside the click, so pop-up blockers allow it; it is pointed at the TV once it answers.
-    let win = null;
-    try { win = window.open('', '_blank'); } catch (e) { win = null; }
-    if (win) {
-        try {
-            win.document.title = 'Live Screen';
-            win.document.body.style.font = '16px system-ui, sans-serif';
-            win.document.body.style.padding = '24px';
-            win.document.body.textContent = 'Asking the TV to share its screen…';
-        } catch (e) { /* ignore */ }
-    }
-    const [r] = await act('screen', { action: 'start' }, { btn: $('liveBtn'), silent: true });
-    const ack = r && r.ack;
-    if (!ack || !ack.ok) {
-        if (win) try { win.close(); } catch (e) { /* ignore */ }
-        return;
-    }
-    const s = statusOf(tv);
-    const url = liveUrl(ack.data && ack.data.lanUrls) || liveUrl(s && s.lanUrls);
-    if (!url) {
-        if (win) try { win.close(); } catch (e) { /* ignore */ }
-        toast(prefix(tv) + 'The TV did not report its Wi-Fi address. Open the Office TV app on the TV and try again. ' + LIVE_NOTE, 'bad');
-        return;
-    }
-    if (win) {
-        try { win.opener = null; win.location.href = url; } catch (e) { win = null; }
-    }
-    if (!win) window.open(url, '_blank', 'noopener');
-    toast(prefix(tv) + (ack.msg || 'Tap “Start now” on the TV to share its screen.') + ' ' + LIVE_NOTE, 'ok',
-        { link: { href: url, label: 'Open Live Screen' }, duration: 9000 });
-}
-
-function lanLink(tv) {
-    const href = lanUrl(tv);
-    return href ? { href, label: 'Same Wi-Fi page' } : null;
-}
-
-// ---------- toast ----------
-
-let toastTimer = 0;
-
-function toast(text, kind = 'ok', { link, duration } = {}) {
-    const t = $('toast');
-    $('toastText').textContent = text;
-    t.className = 'toast show' + (kind === 'bad' ? ' bad' : '');
-    const a = $('toastLink');
-    if (link && link.href) {
-        a.href = link.href;
-        a.textContent = link.label;
-        a.hidden = false;
-    } else {
-        a.hidden = true;
-        a.removeAttribute('href');
-    }
-    clearTimeout(toastTimer);
-    const ms = duration != null ? duration : (kind === 'bad' ? 9000 : 3500);
-    if (ms > 0) toastTimer = setTimeout(hideToast, ms);
-}
-
-function hideToast() {
-    clearTimeout(toastTimer);
-    $('toast').classList.remove('show');
-}
-
-function fmtMB(bytes) {
-    // Rounded up, so a file just over the limit never reads as "20 MB".
-    return (Math.ceil(bytes / 1e5) / 10).toFixed(1) + ' MB';
-}
-
-function tooBigText(size) {
-    return 'This file is ' + fmtMB(size) + '. Files sent over the internet can be up to ' + Math.round(MAX_FILE_BYTES / 1e6)
-        + ' MB. For a larger file, put it on Google Drive and send the link in the "Open a link" box above, '
-        + 'or connect this laptop to the TV\'s Wi-Fi and open the TV\'s Same Wi-Fi page.';
-}
-
-function errText(e) {
-    switch (e && e.code) {
-        case 'timeout':
-            return 'The TV did not answer. Is it on and connected to the internet? Open the Office TV app on the TV once.';
-        case 'rate_limit':
-            if (e.limit === 'burst') {
-                return 'Too many commands in a short time. Wait 1 minute and try again.';
-            }
-            return 'Today\'s free limit has been reached. Commands go through the free ntfy.sh relay, which allows a '
-                + 'limited number of messages per day for the whole office. Try again later, or open the TV\'s Same Wi-Fi page on the TV\'s Wi-Fi.';
-        case 'network':
-            return 'Check your internet connection. This device does not seem to be online.';
-        case 'too_big':
-            return tooBigText(e.size || 0);
-        case 'relay':
-            return 'The relay server returned an unexpected response' + (e.status ? ' (' + e.status + ')' : '')
-                + '. Please try again in a moment.';
-        default:
-            return 'Something went wrong. Please try again.';
-    }
-}
-
-function showError(tv, e) {
-    const link = e && (e.code === 'rate_limit' || e.code === 'too_big') ? lanLink(tv) : null;
-    toast((tv ? prefix(tv) : '') + errText(e), 'bad', { link });
-}
-
-function ackText(cmd, args, ack, okText) {
-    if (!ack.ok) return ack.msg || 'The TV did not accept this command.';
-    if (cmd === 'key' && (!ack.msg || GENERIC_KEY_MSGS.indexOf(ack.msg) >= 0)) return KEY_TEXT[args.key] || 'Done.';
-    return ack.msg || okText || 'Done.';
-}
-
-function fatal(text) {
-    $('fatalText').textContent = text;
-    $('fatal').hidden = false;
-}
-
-// ---------- rendering ----------
-
-let renderQueued = false;
-
-function scheduleRender() {
-    if (renderQueued) return;
-    renderQueued = true;
-    Promise.resolve().then(() => {
-        renderQueued = false;
-        render();
-    });
-}
-
-function render() {
-    const has = state.tvs.length > 0;
-    $('picker').hidden = !has;
-    $('tvBar').hidden = !has;
-    $('controls').hidden = !has;
-    const pair = $('pairCard');
-    pair.hidden = has && !state.pairOpen;
-    pair.classList.toggle('with-tvs', has);
-    $('pairCancel').hidden = !has;
-    if (state.selected !== ALL) $('results').hidden = true;
-    if (!has) {
-        $('permBanner').hidden = true;
-        return;
-    }
-    renderPicker();
-    renderBar();
-    renderNotices();
-    renderScreen();
-    if (state.appsShownFor !== state.selected) renderApps();
-}
-
-function makeChip(code) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'tv-chip' + (code === ADD ? ' add' : '');
-    b.dataset.code = code;
-    if (code === ADD) {
-        b.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg><span>Add TV</span>';
-        b.addEventListener('click', () => (state.pairOpen ? closePair() : openPair()));
-    } else if (code === ALL) {
-        b.innerHTML = '<svg class="ic" aria-hidden="true"><use href="#i-all"/></svg><span class="nm"></span>';
-        b.addEventListener('click', () => select(ALL));
-    } else {
-        b.innerHTML = '<span class="dot" aria-hidden="true"></span><span class="nm"></span><span class="sr-only"></span>';
-        b.addEventListener('click', () => select(code));
-    }
-    return b;
-}
-
-function renderPicker() {
-    const nav = $('picker');
-    const want = state.tvs.map(t => t.code);
-    if (state.tvs.length > 1) want.push(ALL);
-    want.push(ADD);
-    const existing = new Map();
-    for (const el of Array.from(nav.children)) existing.set(el.dataset.code, el);
-    want.forEach((code, i) => {
-        const b = existing.get(code) || makeChip(code);
-        existing.delete(code);
-        if (code === ADD) {
-            b.setAttribute('aria-expanded', String(!!state.pairOpen));
-        } else {
-            b.setAttribute('aria-pressed', String(state.selected === code));
-            if (code === ALL) {
-                b.querySelector('.nm').textContent = 'All TVs (' + state.tvs.length + ')';
-            } else {
-                const tv = state.tvs.find(t => t.code === code);
-                const l = state.links.get(code);
-                const st = l ? l.state : 'unknown';
-                b.querySelector('.dot').className = 'dot ' + st;
-                b.querySelector('.nm').textContent = tvName(tv);
-                b.querySelector('.sr-only').textContent = ', ' + STATE_TEXT[st];
-                b.title = tvName(tv) + ' (' + STATE_TEXT[st] + ')';
-            }
-        }
-        if (nav.children[i] !== b) nav.insertBefore(b, nav.children[i] || null);
-    });
-    for (const el of existing.values()) el.remove();
-}
-
-function renderBar() {
-    const meta = $('barMeta');
-    meta.classList.remove('bad');
-    if (state.selected === ALL) {
-        const counts = { online: 0, offline: 0, unknown: 0 };
-        for (const tv of state.tvs) counts[(state.links.get(tv.code) || {}).state || 'unknown']++;
-        $('barDot').className = 'dot ' + (counts.offline ? 'offline' : counts.unknown ? 'unknown' : 'online');
-        $('barName').textContent = 'All TVs (' + state.tvs.length + ')';
-        const parts = [];
-        if (counts.online) parts.push(counts.online + ' online');
-        if (counts.offline) parts.push(counts.offline + ' not answering');
-        if (counts.unknown) parts.push(counts.unknown + ' status unknown');
-        meta.textContent = 'Every command goes to all TVs. ' + parts.join(', ') + '.';
-        $('refreshBtn').lastElementChild.textContent = 'Refresh all';
-        $('renameBtn').hidden = true;
-        $('castBtn').hidden = true;
-        $('liveBtn').hidden = true;
-        $('removeBtn').hidden = true;
-        $('barLan').hidden = true;
-        return;
-    }
-    const tv = selectedTv();
-    if (!tv) return;
-    const l = linkFor(tv);
-    const s = l.status;
-    $('barDot').className = 'dot ' + l.state;
-    $('barName').textContent = tvName(tv);
-    $('refreshBtn').lastElementChild.textContent = 'Refresh';
-    $('renameBtn').hidden = false;
-    $('castBtn').hidden = false;
-    $('liveBtn').hidden = false;
-    $('removeBtn').hidden = false;
-    if (state.pinging.has(tv.code) && l.state !== 'online') {
-        meta.textContent = 'Contacting the TV…';
-    } else if (l.state === 'offline') {
-        meta.textContent = 'The TV did not answer. Is it on and connected to the internet? Open the Office TV app on the TV once.';
-        meta.classList.add('bad');
-    } else if (s) {
-        const bits = [];
-        if (s.model) bits.push(String(s.model));
-        if (s.android) bits.push('Android ' + s.android);
-        if (s.appVersion) bits.push('App ' + s.appVersion + (s.flavor === 'lite' ? ' (lite)' : ''));
-        bits.push(l.state === 'online' ? 'Online' : 'Status may be out of date');
-        meta.textContent = bits.join(' · ');
-    } else {
-        meta.textContent = l.state === 'online' ? 'Online' : 'Status unknown. Press Refresh.';
-    }
-    const lan = lanUrl(tv);
-    $('barLan').hidden = !lan;
-    if (lan) $('barLan').href = lan;
-}
-
-function renderNotices() {
-    const list = targets().map(tv => ({ tv, s: statusOf(tv) })).filter(x => x.s && x.s.needsPermission);
-    const banner = $('permBanner');
-    if (!list.length) {
-        banner.hidden = true;
-    } else {
-        let text;
-        if (state.selected === ALL) {
-            text = 'These TVs still need a permission: ' + list.map(x => tvName(x.tv)).join(', ')
-                + '. On each one, open the Office TV app and turn on the permission it asks for (Accessibility or "Display over other apps"), '
-                + 'otherwise links and files will not open on the TV.';
-        } else if (list[0].s.flavor === 'lite') {
-            text = 'The TV still needs a permission. Open the Office TV app on the TV and allow "Display over other apps", '
-                + 'otherwise links and files will not open on the TV.';
-        } else {
-            text = 'The TV still needs a permission. Open the Office TV app on the TV and turn on Accessibility '
-                + '(Settings > Accessibility > Office TV > On), otherwise links, files and remote buttons will not work on the TV.';
-        }
-        $('permText').textContent = text;
-        banner.hidden = false;
-    }
-    const tv = selectedTv();
-    const s = tv && statusOf(tv);
-    $('a11yNote').hidden = !(s && s.accessibility === false && !s.needsPermission && s.flavor !== 'lite');
-    $('chromeTip').hidden = !targets().some(t => { const st = statusOf(t); return !!(st && st.chrome === true); });
-    const lan = lanUrl(tv);
-    $('fileLan').hidden = !lan;
-    if (lan) $('fileLan').href = lan;
-}
-
-function renderScreen() {
-    const known = targets().map(statusOf).filter(Boolean);
-    if (!state.awakeBusy && known.length) $('awake').checked = known.every(s => s.keepAwake !== false);
-    const vol = $('vol');
-    const s = state.selected !== ALL && known[0];
-    if (s && s.maxVolume > 0 && document.activeElement !== vol) {
-        vol.value = String(Math.round(s.volume * 100 / s.maxVolume / 5) * 5);
-        $('volOut').textContent = vol.value + '%';
-    }
-}
-
-function renderApps() {
-    const sel = state.selected;
-    state.appsShownFor = sel;
-    const allMode = sel === ALL;
-    $('loadApps').disabled = allMode || !sel;
-    $('appsNote').hidden = !allMode;
-    const box = $('apps');
-    box.textContent = '';
-    const list = !allMode && sel ? state.apps.get(sel) : null;
-    const filter = $('appFilter');
-    filter.hidden = !list || list.length < 8;
-    if (!list) {
-        filter.value = '';
-        return;
-    }
-    const q = filter.hidden ? '' : filter.value.trim().toLowerCase();
-    const shown = q ? list.filter(a => (a.label + ' ' + a.pkg).toLowerCase().indexOf(q) >= 0) : list;
-    for (const a of shown) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = a.label;
-        b.title = a.label + ' (' + a.pkg + ')';
-        b.addEventListener('click', () => act('app', { pkg: a.pkg }, { btn: b, okText: 'Opened ' + a.label + ' on the TV.' }));
-        box.appendChild(b);
-    }
-    if (!shown.length) {
-        const p = document.createElement('p');
-        p.className = 'note';
-        p.textContent = q ? 'No app matches that name.' : 'No apps found on the TV.';
-        box.appendChild(p);
-    }
-}
-
-function showResults(title, res, textFor) {
-    $('resultsTitle').textContent = title;
-    const ul = $('resultsList');
-    ul.textContent = '';
-    for (const r of res) {
-        const ok = !!(r.ack && r.ack.ok);
-        const li = document.createElement('li');
-        li.className = ok ? 'ok' : 'bad';
-        const dot = document.createElement('span');
-        dot.className = 'dot ' + (r.ack ? 'online' : r.err && r.err.code === 'timeout' ? 'offline' : 'unknown');
-        dot.setAttribute('aria-hidden', 'true');
-        const b = document.createElement('b');
-        b.textContent = tvName(r.tv);
-        const msg = document.createElement('span');
-        msg.className = 'msg';
-        msg.textContent = r.ack ? textFor(r.ack) : errText(r.err);
-        li.append(dot, b, msg);
-        ul.appendChild(li);
-    }
-    $('results').hidden = false;
-}
-
-function summaryToast(res, textFor) {
-    const good = res.filter(r => r.ack && r.ack.ok).length;
-    if (good === res.length) {
-        toast('Done on all ' + res.length + ' TVs.', 'ok');
-        return;
-    }
-    const bad = res.find(r => !(r.ack && r.ack.ok));
-    const why = bad.ack ? textFor(bad.ack) : errText(bad.err);
-    const rl = res.find(r => r.err && r.err.code === 'rate_limit');
-    toast('Done on ' + good + ' of ' + res.length + ' TVs. ' + tvName(bad.tv) + ': ' + why, 'bad',
-        { link: rl ? lanLink(rl.tv) : null, duration: 12000 });
-}
-
-// ---------- actions ----------
-
-function setBusy(btn, on) {
-    if (!btn) return;
-    btn._busy = Math.max(0, (btn._busy || 0) + (on ? 1 : -1));
-    if (btn._busy) btn.setAttribute('aria-busy', 'true');
-    else btn.removeAttribute('aria-busy');
-}
-
-/** Sends a command to the selected TV (or every TV) and shows the result. Resolves with [{tv, ack|err}]. */
-async function act(cmd, args, { btn, timeoutMs, okText, silent } = {}) {
-    const list = targets();
-    if (!list.length) {
-        toast('Add a TV first.', 'bad');
-        openPair();
-        return [];
-    }
-    const textFor = ack => ackText(cmd, args, ack, okText);
-    setBusy(btn, true);
+async function ping(tv) {
+    const link = linkFor(tv);
+    state.health.set(tv.code, 'checking');
+    render();
     try {
-        if (state.selected !== ALL) {
-            const tv = list[0];
-            const slow = setTimeout(() => toast(prefix(tv) + 'Sending to the TV…', 'info', { duration: 0 }), 900);
-            try {
-                const ack = await linkFor(tv).send(cmd, args, { timeoutMs });
-                clearTimeout(slow);
-                if (!ack.ok || !silent) toast(prefix(tv) + textFor(ack), ack.ok ? 'ok' : 'bad');
-                else hideToast();
-                return [{ tv, ack }];
-            } catch (e) {
-                clearTimeout(slow);
-                showError(tv, e);
-                return [{ tv, err: e }];
-            }
-        }
-        toast('Sending to ' + list.length + ' TVs…', 'info', { duration: 0 });
-        const res = await Promise.all(list.map(tv => linkFor(tv).send(cmd, args, { timeoutMs })
-            .then(ack => ({ tv, ack }), err => ({ tv, err }))));
-        showResults('All TVs: ' + actionTitle(cmd, args), res, textFor);
-        summaryToast(res, textFor);
-        return res;
-    } finally {
-        setBusy(btn, false);
-        render();
+        const ack = await link.ping({ timeoutMs: TEST.pingTimeoutMs || 12000 });
+        state.health.set(tv.code, ack.ok ? 'online' : 'unknown');
+        if (ack.ok && ack.data && typeof ack.data.name === 'string') adoptName(tv, ack.data.name);
+    } catch (e) {
+        state.health.set(tv.code, e && e.code === 'timeout' ? 'offline' : 'unknown');
     }
-}
-
-function actionTitle(cmd, args) {
-    switch (cmd) {
-        case 'open': return 'Open link';
-        case 'youtube': return 'YouTube';
-        case 'key': return (KEY_TEXT[args.key] || args.key).replace(/\.$/, '');
-        case 'volume': return 'Volume ' + args.percent + '%';
-        case 'awake': return args.on ? 'Keep screen on' : 'Screen normal';
-        case 'ping': return 'Refresh';
-        case 'screen': return 'Live Screen';
-        default: return cmd;
-    }
-}
-
-async function pingTv(tv) {
-    const l = linkFor(tv);
-    state.pinging.add(tv.code);
-    scheduleRender();
-    try {
-        const ack = await l.ping();
-        adoptStatus(tv);
-        return { tv, ack };
-    } catch (err) {
-        return { tv, err };
-    } finally {
-        state.pinging.delete(tv.code);
-        render();
-    }
-}
-
-function maybePing(tv, freshMs) {
-    const l = linkFor(tv);
-    if (state.pinging.has(tv.code) || Date.now() - Math.max(l.lastPingAt, l.lastAckAt) < freshMs) return;
-    pingTv(tv).then(r => {
-        if (r.err && r.err.code !== 'timeout') showError(tv, r.err); // offline already shows on the chip
-    });
-}
-
-function adoptStatus(tv) {
-    const s = statusOf(tv);
-    if (s && !tv.name && s.name) {
-        tv.name = cleanName(s.name);
-        saveTvs();
-    }
-}
-
-function select(code, { ping = true } = {}) {
-    state.selected = code;
-    storage.set(SELECTED_KEY, code || '');
-    render();
-    if (ping) for (const tv of targets()) maybePing(tv, PING_FRESH_MS);
-}
-
-// ---------- pairing ----------
-
-function openPair() {
-    state.pairOpen = true;
-    render();
-    $('pairCard').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    $('pairCode').focus();
-}
-
-function closePair() {
-    state.pairOpen = false;
-    setPairError('');
+    rest(link);
     render();
 }
 
-function setPairError(text) {
-    $('pairErr').textContent = text;
-    if (text) $('pairCode').setAttribute('aria-invalid', 'true');
-    else $('pairCode').removeAttribute('aria-invalid');
-}
+// ---------- code input ----------
 
 function looseCode(raw) {
-    return String(raw || '').toUpperCase().replace(/[\s\-\u2010-\u2015]+/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+    return String(raw || '').toUpperCase().replace(/[\s\-‐-―]+/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
 }
 
 /** Explains what is wrong with a typed code, or returns '' when it is valid. */
 function explainCode(raw) {
     const s = looseCode(raw);
-    if (!s) return 'Type the TV code. It is shown on the Office TV app screen on the TV (for example 7K3M9-QX2TD).';
+    if (!s) return 'Type the TV code. It is shown on the TV in the Office TV app (for example 7K3M9-QX2TD).';
     const bad = [];
     for (const ch of s) if (ALPHABET.indexOf(ch) < 0 && bad.indexOf(ch) < 0) bad.push(ch);
-    if (bad.indexOf('U') >= 0) return 'Codes never contain "U". Could it be a "V"? Check the TV and type it again.';
-    if (bad.length) return 'Codes never contain "' + bad.join(' ') + '". A code only has the characters 0-9 and A-Z.';
-    if (s.length < 10) return 'A code has 10 characters (for example 7K3M9-QX2TD). You typed ' + s.length + ', ' + (10 - s.length) + ' missing.';
-    if (s.length > 10) return 'A code has 10 characters (for example 7K3M9-QX2TD). You typed ' + s.length + ', ' + (s.length - 10) + ' too many.';
+    if (bad.indexOf('U') >= 0) return 'TV codes never contain the letter U. Could it be a V? Check the TV and try again.';
+    if (bad.length) return 'TV codes only use the letters A to Z and the numbers 0 to 9. Remove "' + bad.join(' ') + '".';
+    if (s.length !== 10) return 'A TV code has 10 characters. This one has ' + s.length + '.';
     return '';
 }
 
+function setCodeError(text) {
+    $('codeErr').textContent = text;
+    $('codeErr').hidden = !text;
+    $('codeHint').hidden = !!text;
+    if (text) $('code').setAttribute('aria-invalid', 'true');
+    else $('code').removeAttribute('aria-invalid');
+}
+
 function onCodeInput() {
-    const raw = $('pairCode').value;
-    const help = $('pairHelp');
+    const raw = $('code').value;
+    const hint = $('codeHint');
     const s = looseCode(raw);
-    setPairError('');
-    help.classList.remove('good');
+    setCodeError('');
+    hint.classList.remove('good');
     if (/pair=/i.test(raw)) {
-        help.textContent = parsePairFragment(raw) ? 'Pairing link found. Press "Add TV".' : 'This pairing link is incomplete.';
+        const ok = !!parsePairFragment(raw);
+        hint.textContent = ok ? 'TV link found.' : 'This TV link is incomplete. Type the code shown on the TV instead.';
+        hint.classList.toggle('good', ok);
         return;
     }
     const problem = s ? explainCode(raw) : '';
     if (!s) {
-        help.textContent = '10 characters. Upper or lower case, spaces and dashes are all fine.';
+        hint.textContent = '10 letters and numbers, as shown on the TV.';
     } else if (!problem) {
-        help.textContent = 'Code looks good: ' + displayCode(s);
-        help.classList.add('good');
-    } else if (/never contain/.test(problem)) {
-        setPairError(problem);
-        help.textContent = '';
+        hint.textContent = 'Looks good: ' + displayCode(s);
+        hint.classList.add('good');
+    } else if (s.length <= 10 && /letter U|only use/.test(problem)) {
+        setCodeError(problem);
+        hint.textContent = '';
     } else {
-        help.textContent = Math.min(s.length, 99) + '/10 characters';
+        hint.textContent = Math.min(s.length, 99) + ' of 10 characters';
     }
 }
 
-function submitPair() {
-    const raw = $('pairCode').value;
-    const name = cleanName($('pairName').value);
-    if (/pair=/i.test(raw)) {
-        const p = parsePairFragment(raw);
-        if (p) {
-            pairTv({ code: p.code, name: name || p.name, relay: p.relay }, { focus: true });
+// ---------- sharing ----------
+
+function captureProblem(e) {
+    const name = e && e.name;
+    const msg = String((e && e.message) || '');
+    if (e && e.code === 'unsupported') return { title: UNSUPPORTED_TEXT, text: '' };
+    if (name === 'NotAllowedError' && /system/i.test(msg)) {
+        return {
+            title: 'Your computer blocked screen recording.',
+            text: 'On a Mac, open System Settings → Privacy & Security → Screen Recording, allow your browser, then reopen the browser.',
+        };
+    }
+    if (name === 'NotAllowedError' || name === 'AbortError') return null; // the user closed the picker
+    if (name === 'InvalidStateError') return { title: 'Please click the button again.', text: 'Your browser needs a fresh click to show its screen picker.' };
+    if (name === 'NotReadableError') return { title: 'The screen could not be captured.', text: 'Close other apps that record the screen, then try again.' };
+    if (name === 'NotFoundError') return { title: 'There is no screen to share.', text: 'Please try again.' };
+    return { title: 'Your browser could not start screen sharing.', text: 'Please try again.' };
+}
+
+function castProblem(code, err, s) {
+    const e = err || {};
+    const name = tvName(s.tv);
+    switch (code) {
+        case 'timeout':
+            return s.pending
+                ? { title: 'The TV did not answer.', text: 'Check that the code matches the one on the TV and that the TV is on. If it was just switched on, open the Office TV app on it once.' }
+                : { title: name + ' did not answer.', text: 'Make sure the TV is on, open the Office TV app on it once, then try again.' };
+        case 'rate_limit':
+            return e.limit === 'burst'
+                ? { title: 'Too many attempts in a short time.', text: 'Wait a minute, then try again.' }
+                : { title: 'The free relay limit for today has been reached.', text: 'This office network has used up today\'s free messages. Please try again later.' };
+        case 'network':
+            return { title: 'This laptop seems to be offline.', text: 'Check the internet connection, then try again.' };
+        case 'relay':
+            return { title: 'The connection service did not respond.', text: 'Please try again in a moment.' };
+        case 'tv':
+            return { title: e.message || 'The TV could not open the screen receiver.', text: '' };
+        case 'no_answer':
+            return { title: 'The TV did not connect.', text: 'Update the Office TV app and Android System WebView on the TV, then try again.' };
+        case 'tv_error':
+            return { title: 'The TV could not show your screen.', text: 'Update Android System WebView on the TV, then try again.' };
+        case 'ice':
+            return { title: 'Could not connect to the TV.', text: 'Works best when the laptop and TV are on the same Wi-Fi. Check the network, then try again.' };
+        case 'lost':
+            return { title: 'The connection to the TV was lost.', text: 'Check the Wi-Fi, then share again.' };
+        default:
+            return { title: 'Screen sharing stopped unexpectedly.', text: 'Please try again.' };
+    }
+}
+
+function stopStream(stream) {
+    if (stream) for (const t of stream.getTracks()) { try { t.stop(); } catch (e) { /* ignore */ } }
+}
+
+/**
+ * Starts sharing to `tv`. Must run synchronously inside the click (or submit) handler: getDisplayMedia is
+ * the very first call, so the browser still sees the user gesture. Key derivation and the relay connection
+ * then run while the picker is open. `pending`: a TV typed in just now; it is saved once it answers.
+ */
+function share(tv, pending) {
+    if (state.session || state.unsupported) return;
+    const picked = captureScreen();
+    const link = linkFor(tv);
+    link.ready(8000).catch(() => {});
+    const s = { tv, link, pending, phase: 'picking', sender: null, stream: null, startedAt: 0 };
+    state.session = s;
+    state.notice = null;
+    state.setupError = null;
+    state.confirmForget = false;
+    render();
+    picked.then(stream => {
+        if (state.session !== s) {
+            stopStream(stream);
             return;
         }
-    }
-    const problem = explainCode(raw);
-    if (problem) {
-        setPairError(problem);
-        $('pairHelp').textContent = '';
-        $('pairCode').focus();
-        return;
-    }
-    pairTv({ code: normalizeCode(looseCode(raw)), name, relay: DEFAULT_RELAY }, { focus: true });
-}
-
-async function pairTv({ code, name, relay }, { focus = false } = {}) {
-    let tv = state.tvs.find(t => t.code === code);
-    const existed = !!tv;
-    if (tv) {
-        if (name) tv.name = name;
-        if (relay) tv.relay = relay;
-    } else {
-        tv = { name: name || '', code, relay: relay || DEFAULT_RELAY };
-        state.tvs.push(tv);
-    }
-    saveTvs();
-    $('pairForm').reset();
-    onCodeInput();
-    state.pairOpen = false;
-    select(code, { ping: false });
-    if (focus) {
-        const chip = $('picker').querySelector('[data-code="' + code + '"]');
-        if (chip) chip.focus();
-    }
-    toast((existed ? tvName(tv) + ' is already added. ' : 'TV added. ') + 'Contacting the TV…', 'info', { duration: 0 });
-    const r = await pingTv(tv);
-    if (r.ack && r.ack.ok) {
-        toast(tvName(tv) + ' is connected. Use the controls below.', 'ok', { duration: 5000 });
-    } else if (r.ack) {
-        toast(prefix(tv) + (r.ack.msg || 'The TV answered, but something is wrong.'), 'bad');
-    } else if (r.err.code === 'timeout') {
-        toast('TV saved, but it has not answered yet. Is it on, connected to the internet, and is the code right? '
-            + 'Open the Office TV app on the TV once, then press Refresh.', 'bad', { duration: 12000 });
-    } else {
-        showError(tv, r.err);
-    }
-}
-
-function takeFragment() {
-    const h = location.hash || '';
-    if (!/pair=/i.test(h)) return null;
-    const p = parsePairFragment(h);
-    try {
-        history.replaceState(null, '', location.pathname + location.search);
-    } catch (e) {
-        location.hash = '';
-    }
-    return p || { invalid: true };
-}
-
-function handleFragment() {
-    const frag = takeFragment();
-    if (!frag) return false;
-    if (frag.invalid) {
-        openPair();
-        setPairError('The pairing link is incomplete or invalid. Type the TV code shown on the TV here instead.');
-    } else {
-        pairTv(frag);
-    }
-    return true;
-}
-
-// ---------- link, YouTube, files ----------
-
-/** Turns what people type into a URL: 'meet.google.com/abc' -> https://..., a Meet code, or a Google search. */
-function toUrl(text) {
-    const s = String(text || '').trim();
-    if (!s) return '';
-    if (/^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i.test(s)) return 'https://meet.google.com/' + s.toLowerCase();
-    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s) || /^(mailto|tel|intent|market):/i.test(s)) return s;
-    const host = s.split(/[/?#]/)[0];
-    if (/\s/.test(s) || !(host.indexOf('.') > 0 || /^localhost(:\d+)?$/i.test(host))) {
-        return 'https://www.google.com/search?q=' + encodeURIComponent(s);
-    }
-    if (/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/.test(host)) return 'http://' + s;
-    return 'https://' + s;
-}
-
-function setProgress(f) {
-    const pct = Math.round(Math.max(0, Math.min(1, f)) * 100);
-    $('progBar').firstElementChild.style.width = pct + '%';
-    $('progBar').setAttribute('aria-valuenow', String(pct));
-    $('progPct').textContent = pct + '%';
-}
-
-function showFileMsg(text) {
-    const box = $('fileMsg');
-    box.textContent = '';
-    const p = document.createElement('p');
-    p.textContent = text;
-    box.appendChild(p);
-    box.hidden = false;
-}
-
-async function sendFile(file) {
-    if (!file || state.fileBusy) return;
-    const list = targets();
-    if (!list.length) {
-        toast('Add a TV first.', 'bad');
-        return;
-    }
-    $('fileMsg').hidden = true;
-    if (file.size > MAX_FILE_BYTES) {
-        showFileMsg(tooBigText(file.size));
-        toast('This file is ' + fmtMB(file.size) + '; only files up to 20 MB can be sent. Use a Google Drive link or the Same Wi-Fi page.',
-            'bad', { link: lanLink(list[0]) });
-        return;
-    }
-    if (!file.size) {
-        toast('This file is empty (0 KB).', 'bad');
-        return;
-    }
-    state.fileBusy = true;
-    $('drop').classList.add('busy');
-    $('progWrap').hidden = false;
-    setProgress(0);
-    const frac = list.map(() => 0);
-    const multi = list.length > 1;
-    $('progName').textContent = (multi ? 'Sending to ' + list.length + ' TVs: ' : 'Sending: ') + file.name;
-    let res;
-    try {
-        // Each TV has its own key, so each gets its own encrypted upload; run them side by side.
-        res = await Promise.all(list.map((tv, i) => linkFor(tv).sendFile(file, {
-            onProgress: f => {
-                frac[i] = f;
-                setProgress(frac.reduce((a, b) => a + b, 0) / list.length);
-            },
-        }).then(ack => ({ tv, ack }), err => ({ tv, err }))));
-    } finally {
-        state.fileBusy = false;
-        $('drop').classList.remove('busy');
-        setTimeout(() => { if (!state.fileBusy) $('progWrap').hidden = true; }, 1500);
+        s.stream = stream;
+        const sender = new CastSender({
+            link, onstate: (st, d) => onCastState(s, st, d),
+            ackTimeoutMs: TEST.ackTimeoutMs, dropMs: TEST.dropMs, reconnectTimeoutMs: TEST.reconnectTimeoutMs,
+        });
+        s.sender = sender;
+        window.__otvCastSender = sender; // for tests
+        s.phase = 'starting';
         render();
+        sender.start(stream);
+    }, err => {
+        if (state.session !== s) return;
+        endSession(s, captureProblem(err));
+    });
+}
+
+function onCastState(s, st, d) {
+    if (state.session !== s) return;
+    if (st === 'connecting') {
+        // The TV answered, so the code is right: remember it.
+        if (s.pending) {
+            s.tv = keepTv(s.tv);
+            s.pending = false;
+            state.adding = false;
+        }
+        state.health.set(s.tv.code, 'online');
+        if (d && d.data && typeof d.data.name === 'string') adoptName(s.tv, d.data.name);
     }
-    const textFor = ack => ack.msg || (ack.ok ? 'Sent ' + file.name + ' to the TV.' : 'The file did not open on the TV.');
-    if (state.selected !== ALL) {
-        const r = res[0];
-        if (r.ack) toast(prefix(r.tv) + textFor(r.ack), r.ack.ok ? 'ok' : 'bad');
-        else showError(r.tv, r.err);
-        if (r.err && r.err.code === 'too_big') showFileMsg(tooBigText(file.size));
+    if (st === 'stopped') {
+        if (d.reason === 'tv') endSession(s, { title: 'The TV stopped showing your screen.', text: '' }, 'bad');
+        else endSession(s, s.pending ? null : { title: 'Sharing stopped.', text: '' }, 'info');
+        return;
+    }
+    if (st === 'error') {
+        if (d.code === 'timeout') state.health.set(s.tv.code, 'offline');
+        endSession(s, castProblem(d.code, d.error, s));
+        return;
+    }
+    s.phase = st;
+    if (st === 'sharing' && !s.startedAt) s.startedAt = Date.now();
+    render();
+}
+
+function endSession(s, problem, kind = 'bad') {
+    state.session = null;
+    stopStream(s.stream);
+    if (s.pending) {
+        dropLink(s.tv.code);
+        if (problem) state.setupError = problem;
     } else {
-        showResults('All TVs: ' + file.name, res, textFor);
-        summaryToast(res, textFor);
+        rest(s.link);
+        state.shared = state.shared || !!s.sender;
+        if (problem) state.notice = Object.assign({ kind }, problem);
     }
+    render();
+    const target = state.view === 'setup' ? (problem ? $('code') : $('connectBtn')) : $('shareBtn');
+    if (target && !target.hidden) target.focus({ preventScroll: false });
 }
 
-// ---------- dialogs ----------
-
-function openDialog(d) {
-    if (typeof d.showModal === 'function') d.showModal();
-    else d.setAttribute('open', '');
+function stopSharing(reason) {
+    const s = state.session;
+    if (!s) return;
+    if (s.sender) s.sender.stop(reason);
+    else endSession(s, null);
 }
 
-function closeDialog(d) {
-    if (typeof d.close === 'function') d.close();
-    else d.removeAttribute('open');
-}
+// ---------- view ----------
 
-// ---------- wiring ----------
+let clock = null;
 
-// ---------- Share my screen (PROTOCOL.md section 8) ----------
-
-const CAST_STATE = {
-    starting: 'Starting…',
-    waiting: 'Waiting for the TV…',
-    sharing: 'Sharing',
-    stopped: 'Stopped.',
-    error: 'Error.',
+const hms = ms => {
+    const t = Math.max(0, Math.floor(ms / 1000));
+    const p = n => (n < 10 ? '0' : '') + n;
+    return p(Math.floor(t / 3600)) + ':' + p(Math.floor(t / 60) % 60) + ':' + p(t % 60);
 };
 
-function castErrText(d, tvLabel) {
-    const e = d && d.error;
-    if (e && ['timeout', 'rate_limit', 'network', 'relay'].indexOf(e.code) >= 0) return errText(e);
-    switch (d && d.code) {
-        case 'tv': return e.message;
-        case 'no_answer':
-            return tvLabel + ' did not connect. Make sure the Office TV app on the TV is up to date (version 2.4 or later) and try again.';
-        case 'ice':
-            return e.message + ' The laptop and the TV must be able to reach each other; this usually works when both are on the office network.';
-        case 'declined': return 'The TV ended the session.';
-        default: return 'Screen sharing failed. Please try again.';
+function tick() {
+    const s = state.session;
+    const on = !!(s && s.phase === 'sharing' && s.startedAt);
+    $('liveTimer').hidden = !on;
+    $('liveSep').textContent = on ? ' · ' : '';
+    $('liveClock').textContent = on ? hms(Date.now() - s.startedAt) : '';
+}
+
+function showNotice(el, titleEl, textEl, n) {
+    el.hidden = !n;
+    if (!n) return;
+    if (n.kind) {
+        el.classList.toggle('bad', n.kind === 'bad');
+        const icon = el.querySelector('use');
+        if (icon) icon.setAttribute('href', n.kind === 'bad' ? '#i-alert' : '#i-info');
+    }
+    titleEl.textContent = n.title;
+    textEl.textContent = n.text ? ' ' + n.text : '';
+}
+
+function setBusy(btn, labelEl, busy, idleText) {
+    btn.disabled = busy;
+    if (busy) btn.setAttribute('aria-busy', 'true');
+    else btn.removeAttribute('aria-busy');
+    labelEl.textContent = busy ? 'Choose what to share…' : idleText;
+}
+
+const HEALTH_TEXT = { checking: 'Checking…', online: 'Online', offline: 'Not answering', unknown: 'Status unknown' };
+
+function renderTvList() {
+    const list = $('tvList');
+    const seen = new Set();
+    list.classList.toggle('single', state.tvs.length === 1);
+    for (const tv of state.tvs) {
+        seen.add(tv.code);
+        let b = list.querySelector('[data-code="' + tv.code + '"]');
+        if (!b) {
+            b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'tv';
+            b.setAttribute('role', 'radio');
+            b.dataset.code = tv.code;
+            b.innerHTML = '<span class="tv-ic"><svg class="ic"><use href="#i-tv"/></svg></span>'
+                + '<span class="tv-txt"><span class="tv-name"></span><span class="tv-meta"><span class="dot"></span>'
+                + '<span class="tv-status"></span><span class="tv-code"></span></span></span>'
+                + '<span class="tv-check" aria-hidden="true"><svg class="ic"><use href="#i-check"/></svg></span>';
+        }
+        list.appendChild(b); // keeps the saved order
+        const on = tv.code === state.selected;
+        const health = state.health.get(tv.code) || 'unknown';
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        b.tabIndex = on ? 0 : -1;
+        b.querySelector('.tv-name').textContent = tvName(tv);
+        b.querySelector('.dot').className = 'dot ' + health;
+        b.querySelector('.tv-status').textContent = HEALTH_TEXT[health];
+        b.querySelector('.tv-code').textContent = '· ' + displayCode(tv.code);
+    }
+    for (const b of Array.from(list.children)) if (!seen.has(b.dataset.code)) b.remove();
+}
+
+const LIVE_TEXT = {
+    starting: ['Connecting', 'Connecting to {tv}…', 'Getting the connection ready.'],
+    waiting: ['Connecting', 'Connecting to {tv}…', 'Opening the screen receiver on the TV.'],
+    connecting: ['Connecting', 'Connecting to {tv}…', 'The TV is getting ready. This takes a few seconds.'],
+    sharing: ['Live', 'Sharing to {tv}', 'Everything in the screen, window or tab you picked is visible on the TV.'],
+    reconnecting: ['Reconnecting', 'Reconnecting to {tv}…', 'The connection dropped for a moment. Trying again.'],
+};
+
+function render() {
+    const s = state.session;
+    const hasTvs = state.tvs.length > 0;
+    const live = !!s && s.phase !== 'picking';
+    let view;
+    if (state.unsupported) view = 'unsupported';
+    else if (live) view = 'live';
+    else if (!hasTvs || state.adding || (s && s.pending)) view = 'setup';
+    else view = 'home';
+    const changed = view !== state.view;
+    state.view = view;
+    document.body.classList.toggle('is-live', view === 'live');
+    document.body.classList.toggle('unsupported', view === 'unsupported');
+    $('setupCard').hidden = view !== 'setup';
+    $('homeCard').hidden = view !== 'home';
+    $('livePanel').hidden = view !== 'live';
+    $('unsupportedCard').hidden = view !== 'unsupported';
+
+    if (view === 'setup') {
+        $('setupTitle').textContent = hasTvs ? 'Add a TV' : 'Connect to a TV';
+        $('setupBackRow').hidden = !hasTvs || !!s;
+        showNotice($('setupErr'), $('setupErrTitle'), $('setupErrText'), state.setupError);
+        setBusy($('connectBtn'), $('connectLabel'), !!s, 'Connect and share screen');
+    }
+
+    if (view === 'home') {
+        const tv = selectedTv();
+        const one = state.tvs.length === 1;
+        $('homeTitle').textContent = one ? 'Your TV' : 'Your TVs';
+        renderTvList();
+        $('offlineHint').hidden = !(tv && state.health.get(tv.code) === 'offline') || !!(state.notice && state.notice.kind === 'bad');
+        showNotice($('notice'), $('noticeTitle'), $('noticeText'), state.notice);
+        setBusy($('shareBtn'), $('shareLabel'), !!s, state.shared ? 'Share again' : 'Share my screen');
+        $('forgetBtn').hidden = !tv;
+        $('forgetConfirm').hidden = !state.confirmForget || !tv;
+        if (tv) $('forgetText').textContent = 'Forget ' + tvName(tv) + ' on this laptop? You will need the TV code to add it again.';
+        $('storageNote').hidden = storage.ok;
+    }
+
+    if (view === 'live') {
+        const [chip, title, text] = LIVE_TEXT[s.phase] || LIVE_TEXT.starting;
+        const name = tvName(s.tv);
+        $('liveChip').textContent = chip;
+        $('liveChip').classList.toggle('on', s.phase === 'sharing');
+        $('liveLabel').textContent = title.replace('{tv}', name);
+        $('liveText').textContent = text;
+        $('stopLabel').textContent = s.phase === 'sharing' || s.phase === 'reconnecting' ? 'Stop sharing' : 'Cancel';
+        $('onAir').hidden = s.phase !== 'sharing';
+        $('veil').hidden = s.phase === 'sharing';
+        const pv = $('preview');
+        if (pv.srcObject !== s.stream) {
+            pv.srcObject = s.stream;
+            const p = pv.play && pv.play();
+            if (p && p.catch) p.catch(() => {});
+        }
+        document.title = (s.phase === 'sharing' ? 'Sharing to ' : s.phase === 'reconnecting' ? 'Reconnecting to ' : 'Connecting to ') + name + ' · Office TV';
+    } else {
+        if ($('preview').srcObject) $('preview').srcObject = null;
+        document.title = 'Office TV · Share your laptop screen';
+    }
+    tick();
+    const ticking = view === 'live' && s.phase === 'sharing';
+    if (ticking && !clock) clock = setInterval(tick, 1000);
+    if (!ticking && clock) { clearInterval(clock); clock = null; }
+    if (changed && view === 'live') $('stopBtn').focus();
+}
+
+// ---------- actions ----------
+
+function select(code) {
+    if (!state.tvs.some(t => t.code === code) || state.selected === code) return;
+    state.selected = code;
+    state.confirmForget = false;
+    storage.set(SELECTED_KEY, code);
+    render();
+}
+
+function onSetupSubmit(e) {
+    e.preventDefault();
+    if (state.session || state.unsupported) return;
+    const raw = $('code').value;
+    const name = cleanName($('tvName').value);
+    let target = null;
+    if (/pair=/i.test(raw)) target = parsePairFragment(raw);
+    if (!target) {
+        const problem = explainCode(raw);
+        if (problem) {
+            setCodeError(problem);
+            $('codeHint').textContent = '';
+            $('code').focus();
+            return;
+        }
+        target = { code: normalizeCode(looseCode(raw)), name: '', relay: DEFAULT_RELAY };
+    }
+    setCodeError('');
+    const tv = { code: target.code, name: name || target.name, relay: target.relay };
+    const saved = state.tvs.find(t => t.code === tv.code);
+    if (saved) {
+        // Already known: share right away (same click), updating its name if one was typed.
+        if (name) saved.name = name;
+        state.selected = saved.code;
+        state.adding = false;
+        saveTvs();
+        share(saved, false);
+    } else {
+        share(tv, true);
     }
 }
 
-function renderCast(s, d, tvLabel) {
-    const panel = $('castPanel');
-    panel.hidden = false;
-    panel.classList.toggle('bad', s === 'error');
-    panel.classList.toggle('sharing', s === 'sharing');
-    $('castState').textContent = CAST_STATE[s] || '';
-    let text = '';
-    if (s === 'starting') text = 'Choose the screen, window or tab to show on ' + tvLabel + '.';
-    else if (s === 'waiting') text = 'Opening the screen receiver on ' + tvLabel + '. This can take a few seconds.';
-    else if (s === 'sharing') text = 'Your screen is showing on ' + tvLabel + '. Anything you show there is visible on the TV.';
-    else if (s === 'stopped') text = 'Your screen is no longer shown on ' + tvLabel + '.';
-    else if (s === 'error') text = castErrText(d, tvLabel);
-    $('castText').textContent = text;
-    const live = s === 'starting' || s === 'waiting' || s === 'sharing';
-    $('castStop').hidden = !live;
-    $('castClose').hidden = live;
-    $('castBtn').disabled = live;
-}
-
-async function startCast() {
+function forgetSelected() {
     const tv = selectedTv();
     if (!tv) return;
-    if (state.cast && state.cast.active) return;
-    const lack = senderSupport(window);
-    if (lack) {
-        const why = lack === 'display'
-            ? 'This browser cannot share its screen. Use Chrome, Edge or Firefox on a laptop or desktop computer. Phones and tablets cannot share their screen from a web page.'
-            : 'This browser does not support screen sharing (WebRTC). Please use a recent version of Chrome or Edge.';
-        renderCast('error', { code: 'unsupported', error: { message: why } }, tvName(tv));
-        $('castText').textContent = why;
-        return;
-    }
-    const tvLabel = tvName(tv);
-    let stream;
-    // getDisplayMedia must run straight from the click, before any await.
-    const pick = navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
-    renderCast('starting', {}, tvLabel);
-    try {
-        stream = await pick;
-    } catch (e) {
-        const denied = e && (e.name === 'NotAllowedError' || e.name === 'AbortError');
-        if (denied) {
-            $('castPanel').hidden = true;
-            $('castBtn').disabled = false;
-            toast('Screen sharing was cancelled.', 'info');
-        } else {
-            renderCast('error', { code: 'capture', error: e }, tvLabel);
-            $('castText').textContent = 'Could not capture the screen: ' + ((e && e.message) || 'unknown error') + '.';
-        }
-        return;
-    }
-    const sender = new CastSender({ link: linkFor(tv), onstate: (s, d) => { if (state.cast === sender) renderCast(s, d, tvLabel); } });
-    state.cast = sender;
-    window.__otvCastSender = sender; // for tests
-    sender.start(stream);
+    dropLink(tv.code);
+    state.health.delete(tv.code);
+    state.tvs = state.tvs.filter(t => t !== tv);
+    state.selected = state.tvs.length ? state.tvs[0].code : null;
+    state.confirmForget = false;
+    state.notice = { kind: 'info', title: 'Forgot ' + tvName(tv) + '.', text: '' };
+    saveTvs();
+    render();
+    (state.view === 'setup' ? $('code') : $('shareBtn')).focus();
 }
 
-function stopCast() {
-    if (state.cast) state.cast.stop('user');
+/** '#pair=<code>&name=<name>' links (from the TV): save the TV, then clear the fragment. Returns the TV or null. */
+function handleFragment() {
+    const hash = location.hash || '';
+    if (!/pair=/i.test(hash)) return null;
+    const p = parsePairFragment(hash);
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* ignore */ }
+    if (!p) {
+        state.adding = true;
+        state.setupError = { title: 'This TV link is incomplete.', text: 'Type the code shown on the TV instead.' };
+        return null;
+    }
+    const tv = keepTv(p);
+    state.adding = false;
+    state.notice = null;
+    return tv;
+}
+
+function onTvListKey(e) {
+    const keys = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1, Home: -Infinity, End: Infinity };
+    if (!(e.key in keys) || !state.tvs.length) return;
+    e.preventDefault();
+    const i = Math.max(0, state.tvs.findIndex(t => t.code === state.selected));
+    const d = keys[e.key];
+    const n = state.tvs.length;
+    const j = d === -Infinity ? 0 : d === Infinity ? n - 1 : (i + d + n) % n;
+    select(state.tvs[j].code);
+    const b = $('tvList').querySelector('[data-code="' + state.tvs[j].code + '"]');
+    if (b) b.focus();
 }
 
 function wire() {
-    $('pairForm').addEventListener('submit', e => { e.preventDefault(); submitPair(); });
-    $('pairCode').addEventListener('input', onCodeInput);
-    $('pairCancel').addEventListener('click', closePair);
-    $('toastClose').addEventListener('click', hideToast);
-    $('resultsClose').addEventListener('click', () => { $('results').hidden = true; });
-    $('castBtn').addEventListener('click', startCast);
-    $('castStop').addEventListener('click', stopCast);
-    $('castClose').addEventListener('click', () => { $('castPanel').hidden = true; });
-    window.addEventListener('pagehide', stopCast);
-
-    $('openForm').addEventListener('submit', e => {
-        e.preventDefault();
-        const url = toUrl($('url').value);
-        if (!url) {
-            toast('Type a link or website first.', 'bad');
-            $('url').focus();
-            return;
-        }
-        act('open', { url }, { btn: $('openForm').querySelector('button') });
-    });
-    $('ytForm').addEventListener('submit', e => {
-        e.preventDefault();
-        act('youtube', { q: $('yt').value.trim() }, { btn: $('ytForm').querySelector('button') });
-    });
-    for (const b of document.querySelectorAll('[data-url]')) {
-        b.addEventListener('click', () => act('open', { url: b.dataset.url }, { btn: b }));
-    }
-    for (const b of document.querySelectorAll('[data-key]')) {
-        b.addEventListener('click', () => act('key', { key: b.dataset.key }, { btn: b }));
-    }
-    $('vol').addEventListener('input', () => { $('volOut').textContent = $('vol').value + '%'; });
-    $('vol').addEventListener('change', () => act('volume', { percent: Number($('vol').value) }));
-
-    $('awake').addEventListener('change', async () => {
-        const el = $('awake');
-        const on = el.checked;
-        state.awakeBusy = true;
-        let res;
-        try {
-            res = await act('awake', { on }, { btn: null });
-        } finally {
-            state.awakeBusy = false;
-        }
-        let any = false;
-        for (const r of res) {
-            if (r.ack && r.ack.ok) {
-                any = true;
-                const s = statusOf(r.tv);
-                if (s) s.keepAwake = on;
-            }
-        }
-        if (!any) el.checked = !on;
+    $('setupForm').addEventListener('submit', onSetupSubmit);
+    $('code').addEventListener('input', onCodeInput);
+    $('setupBack').addEventListener('click', () => {
+        state.adding = false;
+        state.setupError = null;
+        setCodeError('');
         render();
+        $('shareBtn').focus();
     });
-
-    $('loadApps').addEventListener('click', async () => {
+    $('shareBtn').addEventListener('click', () => {
         const tv = selectedTv();
-        if (!tv) return;
-        const [r] = await act('apps', {}, { btn: $('loadApps'), timeoutMs: 20000, silent: true });
-        if (!r || !r.ack || !r.ack.ok) return;
-        const apps = (Array.isArray(r.ack.data.apps) ? r.ack.data.apps : [])
-            .filter(a => a && typeof a.pkg === 'string' && a.pkg)
-            .map(a => ({ label: cleanName(a.label) || a.pkg, pkg: a.pkg }));
-        state.apps.set(tv.code, apps);
-        renderApps();
-        if (!apps.length) toast(prefix(tv) + 'No apps found on the TV.', 'bad');
-        else if (r.ack.partial) toast(prefix(tv) + 'Only some apps arrived (' + apps.length + '). Press again for the full list.', 'bad');
-        else toast(prefix(tv) + apps.length + ' apps found. Tap one to open it on the TV.', 'ok');
+        if (tv) share(tv, false);
     });
-    $('appFilter').addEventListener('input', renderApps);
+    $('tvList').addEventListener('click', e => {
+        const b = e.target.closest('.tv');
+        if (b) select(b.dataset.code);
+    });
+    $('tvList').addEventListener('keydown', onTvListKey);
+    $('addBtn').addEventListener('click', () => {
+        state.adding = true;
+        state.notice = null;
+        state.setupError = null;
+        state.confirmForget = false;
+        $('setupForm').reset();
+        onCodeInput();
+        render();
+        $('code').focus();
+    });
+    $('forgetBtn').addEventListener('click', () => {
+        state.confirmForget = true;
+        render();
+        $('forgetNo').focus();
+    });
+    $('forgetNo').addEventListener('click', () => {
+        state.confirmForget = false;
+        render();
+        $('forgetBtn').focus();
+    });
+    $('forgetYes').addEventListener('click', forgetSelected);
+    $('stopBtn').addEventListener('click', () => stopSharing('user'));
+    // Closing or leaving the tab stops sharing (the TV hears it over the data channel).
+    window.addEventListener('pagehide', () => stopSharing('page'));
+    window.addEventListener('hashchange', () => {
+        const tv = handleFragment();
+        render();
+        if (tv && !state.session) ping(tv);
+    });
+}
 
-    $('file').addEventListener('change', () => {
-        const input = $('file');
-        const f = input.files && input.files[0];
-        sendFile(f).finally(() => { input.value = ''; });
-    });
-    const drop = $('drop');
-    const stop = e => { e.preventDefault(); e.stopPropagation(); };
-    drop.addEventListener('dragenter', e => { stop(e); drop.classList.add('drag'); });
-    drop.addEventListener('dragover', e => { stop(e); drop.classList.add('drag'); });
-    drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
-    drop.addEventListener('drop', e => {
-        stop(e);
-        drop.classList.remove('drag');
-        const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-        if (f) sendFile(f);
-    });
-    // A file dropped next to the box must not replace this page.
-    window.addEventListener('dragover', e => e.preventDefault());
-    window.addEventListener('drop', e => e.preventDefault());
-
-    $('refreshBtn').addEventListener('click', async () => {
-        const btn = $('refreshBtn');
-        const list = targets();
-        if (!list.length) return;
-        setBusy(btn, true);
-        const res = await Promise.all(list.map(pingTv));
-        setBusy(btn, false);
-        const textFor = ack => ack.msg || 'The TV is online.';
-        if (state.selected !== ALL) {
-            const r = res[0];
-            if (r.ack) toast(prefix(r.tv) + (r.ack.ok ? 'The TV is online.' : textFor(r.ack)), r.ack.ok ? 'ok' : 'bad');
-            else showError(r.tv, r.err);
-        } else {
-            showResults('All TVs: Refresh', res, ack => (ack.ok ? 'Online.' : textFor(ack)));
-            summaryToast(res, textFor);
-        }
-    });
-
-    $('liveBtn').addEventListener('click', startLiveScreen);
-
-    const renameDlg = $('renameDlg');
-    $('renameBtn').addEventListener('click', () => {
-        const tv = selectedTv();
-        if (!tv) return;
-        $('renameInput').value = tvName(tv);
-        $('renameErr').textContent = '';
-        openDialog(renameDlg);
-        $('renameInput').select();
-    });
-    $('renameCancel').addEventListener('click', () => closeDialog(renameDlg));
-    $('renameForm').addEventListener('submit', async e => {
-        e.preventDefault();
-        const tv = selectedTv();
-        const name = cleanName($('renameInput').value);
-        if (!name) {
-            $('renameErr').textContent = 'Type a name (1 to 40 characters).';
-            return;
-        }
-        closeDialog(renameDlg);
-        if (!tv) return;
-        const [r] = await act('rename', { name }, { btn: $('renameBtn'), silent: true });
-        if (r && r.ack && r.ack.ok) {
-            tv.name = cleanName((r.ack.data && r.ack.data.name) || name) || name;
-            saveTvs();
-            render();
-            toast('Renamed to ' + tv.name, 'ok');
-        }
-    });
-
-    const removeDlg = $('removeDlg');
-    $('removeBtn').addEventListener('click', () => {
-        const tv = selectedTv();
-        if (!tv) return;
-        $('removeText').textContent = 'Remove "' + tvName(tv) + '" from this browser? Nothing changes on the TV. '
-            + 'You will need the TV code to add it again.';
-        openDialog(removeDlg);
-    });
-    $('removeCancel').addEventListener('click', () => closeDialog(removeDlg));
-    $('removeOk').addEventListener('click', e => {
-        e.preventDefault();
-        closeDialog(removeDlg);
-        const tv = selectedTv();
-        if (!tv) return;
-        const name = tvName(tv);
-        const l = state.links.get(tv.code);
-        if (l) l.close();
-        state.links.delete(tv.code);
-        state.apps.delete(tv.code);
-        state.tvs = state.tvs.filter(t => t !== tv);
-        saveTvs();
-        state.appsShownFor = undefined;
-        select(state.tvs.length ? state.tvs[0].code : null);
-        toast('Removed ' + name + '.', 'ok');
-    });
-
-    // Arrow keys, PageUp/PageDown (and USB presenter clickers) change slides on the TV.
-    document.addEventListener('keydown', e => {
-        if (e.defaultPrevented || e.repeat || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
-        const key = { ArrowRight: 'next_slide', PageDown: 'next_slide', ArrowLeft: 'prev_slide', PageUp: 'prev_slide' }[e.key];
-        if (!key || $('controls').hidden || !targets().length) return;
-        const t = e.target;
-        if (t && t.closest && t.closest('input, textarea, select, [contenteditable], dialog')) return;
-        e.preventDefault();
-        act('key', { key }, { btn: document.querySelector('[data-key="' + key + '"]') });
-    });
-
-    let hiddenAt = 0;
-    document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') {
-            hiddenAt = Date.now();
-        } else if (hiddenAt && Date.now() - hiddenAt > VISIBLE_PING_MS) {
-            for (const tv of targets()) maybePing(tv, VISIBLE_PING_MS);
-        }
-    });
-    window.addEventListener('hashchange', handleFragment);
+function detectUnsupported() {
+    const ua = navigator.userAgent || '';
+    const mobile = (navigator.userAgentData && navigator.userAgentData.mobile === true)
+        || /Android.+Mobile|iPhone|iPod|Windows Phone/i.test(ua);
+    if (mobile || senderSupport(window) || typeof window.EventSource !== 'function' || typeof window.fetch !== 'function') return UNSUPPORTED_TEXT;
+    return '';
 }
 
 function start() {
-    if (!window.crypto || !window.crypto.subtle) {
-        fatal('This page only works over https. Open this link: ' + CONTROLLER_URL);
-        return;
-    }
-    if (typeof window.EventSource !== 'function' || typeof window.fetch !== 'function') {
-        fatal('This browser is too old. Please use a recent version of Chrome, Edge or Safari.');
-        return;
-    }
-    state.tvs = loadTvs();
-    $('storageNote').hidden = storage.ok;
-    const saved = storage.get(SELECTED_KEY);
-    if (saved === ALL && state.tvs.length > 1) state.selected = ALL;
-    else if (state.tvs.some(t => t.code === saved)) state.selected = saved;
-    else state.selected = state.tvs.length ? state.tvs[0].code : null;
-    for (const tv of state.tvs) linkFor(tv);
     wire();
-    render();
-    if (!handleFragment()) {
-        for (const tv of targets()) maybePing(tv, PING_FRESH_MS);
+    if (!window.crypto || !window.crypto.subtle) {
+        // Web Crypto only exists on https pages.
+        $('unsupTitle').textContent = 'Open the secure page';
+        $('unsupText').textContent = 'This page only works over https: ' + CONTROLLER_URL;
+        state.unsupported = 'https';
+        render();
+        return;
     }
+    state.unsupported = detectUnsupported();
+    if (state.unsupported) $('unsupText').textContent = state.unsupported;
+    state.tvs = loadTvs();
+    const saved = storage.get(SELECTED_KEY);
+    state.selected = state.tvs.some(t => t.code === saved) ? saved : state.tvs.length ? state.tvs[0].code : null;
+    handleFragment();
+    render();
+    if (!state.unsupported) for (const tv of state.tvs.slice(0, MAX_PINGS)) ping(tv);
 }
 
 start();

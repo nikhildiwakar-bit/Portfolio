@@ -9,7 +9,6 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.PrintStream;
 import java.security.KeyStore;
-import java.security.MessageDigest;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 
@@ -26,12 +25,13 @@ import javax.net.ssl.TrustManagerFactory;
  *   STATE {"state":..,"detail":..}    every state change
  *   CMD {"cmd":..,"args":..,"t":..}   every command that reached the handler
  * </pre>
- * Answers: ping/rename -&gt; status object, apps -&gt; 120 fake apps, file -&gt; fetchFile then
- * msg "&lt;name&gt; TV par khul gaya. (&lt;bytes&gt; bytes, sha256 &lt;hex&gt;)", everything else ok=true.
+ * Answers like Office TV 3.0 (screen sharing only): ping -&gt; status object; cast start (valid session) -&gt;
+ * ok; cast stop -&gt; ok; every other command -&gt; ok=false "This feature is not available on this TV app version."
  */
 public final class E2EHarness {
     private static final PrintStream OUT = utf8Out();
     private static volatile String name = "E2E Test TV";
+    private static volatile String casting = "";
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
@@ -78,48 +78,30 @@ public final class E2EHarness {
     static JSONObject answer(RelayClient c, String cmd, JSONObject a) throws Exception {
         switch (cmd) {
             case "ping":
-                return ok("TV online hai.").put("data", status());
-            case "rename": {
-                String n = a.optString("name", "").trim();
-                if (n.isEmpty() || n.length() > 40) return fail("Naam 1 se 40 akshar ka rakhein.");
-                name = n;
-                return ok("Naam badal gaya.").put("data", status());
-            }
-            case "apps": {
-                JSONArray apps = new JSONArray();
-                for (int i = 1; i <= 120; i++) {
-                    apps.put(new JSONObject().put("label", String.format("Office App %03d (Sample label)", i))
-                            .put("pkg", "com.example.office.app" + i));
+                return ok("The TV is online.").put("data", status());
+            case "cast": {
+                String session = a.optString("session", "");
+                if ("stop".equals(a.optString("action"))) {
+                    boolean was = session.equals(casting) || session.isEmpty();
+                    casting = "";
+                    return ok(was ? "Screen sharing stopped on the TV." : "Screen sharing was not running on the TV.");
                 }
-                return ok(apps.length() + " apps mili.").put("data", new JSONObject().put("apps", apps));
+                if (!session.matches("[a-z0-9]{12,32}")) {
+                    return fail("Invalid screen sharing session. Please reload the page and try again.");
+                }
+                casting = session;
+                return ok("The TV is ready to show your screen.").put("data", status());
             }
-            case "file": {
-                byte[] b = c.fetchFile(a);
-                String sha = T.hex(MessageDigest.getInstance("SHA-256").digest(b));
-                return ok(a.optString("name", "File") + " TV par khul gaya. (" + b.length + " bytes, sha256 " + sha + ")");
-            }
-            case "open":
-                return a.optString("url", "").trim().isEmpty() ? fail("Link khaali hai.") : ok("Link TV par khul gaya.");
-            case "youtube":
-                return ok("Link TV par khul gaya.");
-            case "key":
-                return ok("Done");
-            case "volume":
-                return ok("Volume " + a.optInt("percent", 30) + "%");
-            case "awake":
-                return ok(a.optBoolean("on", true) ? "Screen hamesha on rahegi." : "Screen normal time par band hogi.");
-            case "app":
-                return ok("App TV par khul gaya.");
             default:
-                return fail("Unknown: " + cmd);
+                return fail("This feature is not available on this TV app version.");
         }
     }
 
     static JSONObject status() {
-        return new JSONObject().put("name", name).put("model", "Dahua LPH65-ST420").put("android", "11")
-                .put("appVersion", "1.2").put("flavor", "full").put("accessibility", true).put("needsPermission", false)
-                .put("keepAwake", true).put("volume", 6).put("maxVolume", 15)
-                .put("lanUrls", new JSONArray().put("http://192.168.1.50:8080"));
+        return new JSONObject().put("name", name).put("model", "Dahua t982_ar301").put("android", "11")
+                .put("appVersion", "3.0").put("flavor", "full").put("features", new JSONArray().put("cast"))
+                .put("accessibility", true).put("needsPermission", false).put("keepAwake", true)
+                .put("webview", "120.0.6099.230").put("webviewOk", true).put("casting", !casting.isEmpty());
     }
 
     private static JSONObject ok(String msg) {

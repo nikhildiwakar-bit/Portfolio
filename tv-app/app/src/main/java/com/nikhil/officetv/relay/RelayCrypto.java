@@ -9,7 +9,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 /**
  * End-to-end envelope crypto (PROTOCOL.md sections 2, 3): AES-256-GCM, 12-byte IV, 128-bit tag,
- * AAD = topic for messages and topic + ":file" for file attachments. Thread-safe.
+ * AAD = topic. Thread-safe.
  */
 public final class RelayCrypto {
     public static final String PREFIX = "otv1.";
@@ -30,14 +30,12 @@ public final class RelayCrypto {
     private final String topic;
     private final SecretKeySpec key;
     private final byte[] aad;
-    private final byte[] fileAad;
 
     /** Derives topic and key from a normalized pairing code. */
     public RelayCrypto(String code) {
         topic = Pairing.topic(code);
         key = new SecretKeySpec(Pairing.key(code), "AES");
         aad = topic.getBytes(Pairing.UTF8);
-        fileAad = (topic + ":file").getBytes(Pairing.UTF8);
     }
 
     public String topic() {
@@ -74,23 +72,6 @@ public final class RelayCrypto {
         } catch (Exception e) {
             return null;
         }
-    }
-
-    /** Decrypts a file attachment (ciphertext || tag). Throws AEADBadTagException if tampered. */
-    public byte[] openFile(byte[] ciphertext, byte[] iv) throws GeneralSecurityException {
-        return openFile(ciphertext, 0, ciphertext == null ? 0 : ciphertext.length, iv);
-    }
-
-    byte[] openFile(byte[] buf, int off, int len, byte[] iv) throws GeneralSecurityException {
-        if (iv == null || iv.length != IV_BYTES) throw new GeneralSecurityException("The file IV is invalid.");
-        if (buf == null || len < TAG_BYTES) throw new GeneralSecurityException("The file is incomplete.");
-        return crypt(Cipher.DECRYPT_MODE, iv, fileAad, buf, off, len);
-    }
-
-    /** Encrypts file bytes the way the controller does (AAD topic + ":file"). Used by tests and tools. */
-    public byte[] sealFile(byte[] plaintext, byte[] iv) throws GeneralSecurityException {
-        if (iv == null || iv.length != IV_BYTES) throw new GeneralSecurityException("IV must be 12 bytes");
-        return crypt(Cipher.ENCRYPT_MODE, iv, fileAad, plaintext, 0, -1);
     }
 
     public static byte[] randomIv() {

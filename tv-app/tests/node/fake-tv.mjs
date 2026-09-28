@@ -1,109 +1,59 @@
 // A scripted fake Office TV for tests. It speaks the real protocol (tv/otv.js): it decrypts c2t
-// commands, checks freshness like the TV does, and publishes encrypted t2c acks.
-// Transport is injected: publish(topic, envelope) and getAttachment(url) -> Uint8Array.
+// commands, checks freshness like the TV does, and publishes encrypted t2c acks. The website uses only
+// 'ping' and 'cast'. Transport is injected: publish(topic, envelope).
 import * as otv from '../../../tv/otv.js';
 
 export async function createFakeTv({
     code,
     name = 'Fake TV',
     publish,
-    getAttachment,
     silent = false,
-    appsCount = 40,
-    appsPerPart = 15,
     delayMs = 15,
     status = {},
 } = {}) {
     const topic = await otv.deriveTopic(code);
     const key = await otv.deriveKey(code);
-    const apps = [];
-    for (let i = 1; i <= appsCount; i++) {
-        apps.push({ label: 'App ' + String(i).padStart(2, '0'), pkg: 'com.example.app' + i });
-    }
-    const initialStatus = Object.assign({
-        name, model: 'Fake LPH65', android: '11', appVersion: '1.2', flavor: 'full',
-        accessibility: true, needsPermission: false, keepAwake: true, volume: 6, maxVolume: 15,
-        lanUrls: ['http://192.168.1.50:8080'],
-    }, status);
+    const initialStatus = Object.assign({ name, model: 'Fake LPH65', android: '11', appVersion: '2.5', flavor: 'full' }, status);
     const tv = {
-        code, topic, key, apps, silent,
+        code, topic, key, silent,
         commands: [],      // decrypted c2t messages that passed the checks
-        files: [],         // {name, bytes} received through 'file'
         errors: [],        // protocol problems noticed by the fake TV
         acks: [],          // plaintext acks sent
         seen: new Set(),
         status: Object.assign({}, initialStatus),
+        castAck: null,     // optional override: (args) => {ok, msg, data}
+        oncast: null,      // (session) => void, like CastActivity opening the receiver
+        oncaststop: null,  // (session) => void
     };
 
     /** Forget everything received and restore the initial status (between tests). */
     tv.reset = () => {
         tv.commands.length = 0;
-        tv.files.length = 0;
         tv.errors.length = 0;
         tv.acks.length = 0;
+        tv.silent = silent;
+        tv.castAck = null;
+        tv.oncast = null;
+        tv.oncaststop = null;
         tv.status = Object.assign({}, initialStatus);
     };
 
     const result = (ok, msg, data) => ({ ok, msg, data: data || {} });
 
-    async function run(m) {
+    function run(m) {
         const a = m.args && typeof m.args === 'object' ? m.args : {};
         switch (m.cmd) {
-            case 'ping': return [result(true, 'The TV is online.', Object.assign({}, tv.status))];
-            case 'open':
-                if (!a.url) return [result(false, 'The link is empty.')];
-                return [result(true, 'Opened the link on the TV.')];
-            case 'youtube': return [result(true, 'Opened the link on the TV.')];
-            case 'key': return [result(true, a.key === 'play_pause' ? 'Play/Pause' : 'Done')];
-            case 'volume':
-                tv.status.volume = Math.round(a.percent * tv.status.maxVolume / 100);
-                return [result(true, 'Volume ' + a.percent + '%')];
-            case 'awake':
-                tv.status.keepAwake = !!a.on;
-                return [result(true, a.on ? 'The screen will stay on.' : 'The screen will turn off at the usual time.')];
-            case 'app': return [result(true, 'Opened the app on the TV.')];
-            case 'rename': {
-                const n = String(a.name || '').trim();
-                if (n.length < 1 || n.length > 40) return [result(false, 'The name must be 1 to 40 characters.')];
-                tv.status.name = n;
-                return [result(true, 'Renamed.', Object.assign({}, tv.status))];
-            }
-            case 'apps': {
-                const parts = [];
-                for (let i = 0; i < apps.length; i += appsPerPart) parts.push(apps.slice(i, i + appsPerPart));
-                if (!parts.length) parts.push([]);
-                return parts.map(list => result(true, apps.length + ' apps found.', { apps: list }));
-            }
-            case 'file': {
-                if (!getAttachment) return [result(false, 'The file could not be downloaded.')];
-                const parts = Array.isArray(a.chunks) ? a.chunks : [{ url: a.url, iv: a.iv }];
-                const pieces = [];
-                for (const c of parts) {
-                    const enc = await getAttachment(c.url);
-                    if (!enc) return [result(false, 'The file could not be downloaded.')];
-                    const dec = await otv.openFile(key, topic, c.iv, enc);
-                    if (!dec) {
-                        tv.errors.push('file did not decrypt');
-                        return [result(false, 'The file is damaged.')];
-                    }
-                    pieces.push(dec);
-                }
-                const bytes = new Uint8Array(pieces.reduce((n, p) => n + p.length, 0));
-                let off = 0;
-                for (const p of pieces) { bytes.set(p, off); off += p.length; }
-                if (bytes.length !== a.size) tv.errors.push('file size mismatch ' + bytes.length + ' != ' + a.size);
-                tv.files.push({ name: a.name, bytes });
-                return [result(true, 'Opened ' + a.name + ' on the TV.')];
-            }
-            case 'screen':
-                return [a.action === 'stop' ? result(true, 'Live Screen stopped.')
-                    : result(true, 'Tap “Start now” on the TV to share its screen.', Object.assign({}, tv.status))];
+            case 'ping': return result(true, 'The TV is online.', Object.assign({}, tv.status));
             case 'cast':
-                if (a.action === 'stop') return [result(true, 'Screen sharing stopped on the TV.')];
-                if (!/^[a-z0-9]{12,32}$/.test(String(a.session || ''))) return [result(false, 'Invalid screen sharing session.')];
+                if (a.action === 'stop') {
+                    if (typeof tv.oncaststop === 'function') tv.oncaststop(a.session);
+                    return result(true, 'Screen sharing stopped on the TV.');
+                }
+                if (!/^[a-z0-9]{12,32}$/.test(String(a.session || ''))) return result(false, 'Invalid screen sharing session.');
+                if (typeof tv.castAck === 'function') return tv.castAck(a);
                 if (typeof tv.oncast === 'function') tv.oncast(a.session);
-                return [result(true, 'The TV is ready to show your screen.')];
-            default: return [result(false, 'Unknown: ' + m.cmd)];
+                return result(true, 'The TV is ready to show your screen.');
+            default: return result(false, 'This TV app does not support that command. Please update Office TV on the TV.');
         }
     }
 
@@ -125,19 +75,13 @@ export async function createFakeTv({
         tv.seen.add(m.id);
         tv.commands.push(m);
         if (tv.silent) return;
-        const replies = await run(m);
-        // Parts go out in reverse order to prove the controller does not rely on ordering.
-        const order = replies.map((_, i) => i);
-        if (order.length > 1) order.reverse();
-        for (const i of order) {
-            await new Promise(r => setTimeout(r, delayMs));
-            const ack = Object.assign({ v: 1, dir: 't2c', id: otv.newId(), re: m.id, ts: Date.now() }, replies[i],
-                { part: i, parts: replies.length });
-            const env = await otv.seal(key, topic, ack);
-            if (env.length >= otv.MAX_ENVELOPE_BYTES) tv.errors.push('ack envelope too big: ' + env.length);
-            tv.acks.push(ack);
-            await publish(topic, env);
-        }
+        const reply = run(m);
+        await new Promise(r => setTimeout(r, delayMs));
+        const ack = Object.assign({ v: 1, dir: 't2c', id: otv.newId(), re: m.id, ts: Date.now() }, reply, { part: 0, parts: 1 });
+        const env = await otv.seal(key, topic, ack);
+        if (env.length >= otv.MAX_ENVELOPE_BYTES) tv.errors.push('ack envelope too big: ' + env.length);
+        tv.acks.push(ack);
+        await publish(topic, env);
     };
 
     /** Commands received so far with a given cmd. */

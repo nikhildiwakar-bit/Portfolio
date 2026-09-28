@@ -7,7 +7,7 @@ import android.os.Build;
 import java.security.SecureRandom;
 import java.util.Locale;
 
-/** Small settings store: PIN, pairing code, TV name, relay URL and the keep-screen-on switch. */
+/** Small settings store: pairing code, TV name, relay URL and the keep-screen-on switch. */
 final class Prefs {
     /** Crockford base32 (PROTOCOL.md section 1). */
     static final String PAIR_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -21,17 +21,6 @@ final class Prefs {
 
     private static SharedPreferences p(Context c) {
         return c.getSharedPreferences("cfg", Context.MODE_PRIVATE);
-    }
-
-    static synchronized String pin(Context c) {
-        String v = p(c).getString("pin", null);
-        return v != null && v.matches("\\d{4}") ? v : newPin(c);
-    }
-
-    static synchronized String newPin(Context c) {
-        String v = String.format(Locale.US, "%04d", RNG.nextInt(10000));
-        p(c).edit().putString("pin", v).apply();
-        return v;
     }
 
     static boolean keepAwake(Context c) {
@@ -51,7 +40,7 @@ final class Prefs {
         return v;
     }
 
-    /** Makes a new pairing code; every controller paired with the old one stops working. */
+    /** Makes a new pairing code; every laptop that used the old one has to enter the new one. */
     static synchronized String newPairCode(Context c) {
         char[] out = new char[PAIR_LENGTH];
         for (int i = 0; i < out.length; i++) out[i] = PAIR_ALPHABET.charAt(RNG.nextInt(PAIR_ALPHABET.length()));
@@ -99,16 +88,10 @@ final class Prefs {
         return n != null ? n : "Office TV";
     }
 
-    /** Relay base URL (PROTOCOL.md section 6). */
+    /** Relay base URL (PROTOCOL.md section 6): ntfy.sh unless prefs key relay_url overrides it. */
     static String relayUrl(Context c) {
         String v = p(c).getString("relay_url", null);
         return v == null || v.trim().isEmpty() ? DEFAULT_RELAY : v.trim();
-    }
-
-    /** Null or empty goes back to the default relay. */
-    static void setRelayUrl(Context c, String url) {
-        if (url == null || url.trim().isEmpty()) p(c).edit().remove("relay_url").apply();
-        else p(c).edit().putString("relay_url", url.trim()).apply();
     }
 
     /** Trimmed, single-spaced, no control characters, at most 40 chars; null if nothing is left. */

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Office TV smoke test on a running emulator/device (debug APK, it logs the OTV_TEST line).
+# Office TV smoke test on a running emulator/device (debug APK: it logs OTV_TEST lines and has a loopback test API).
 #
 #   smoke.sh <apk> <flavor: full|lite> <grant: a11y|overlay|both|none>
 #
-# grant: how the app is allowed to open screens from the background on Android 10+:
+# grant: how the app is allowed to open the cast screen from the background on Android 10+:
 #   a11y = enable RemoteA11yService (full only), overlay = "Display over other apps", both, none.
-# Env: OTV_OUT (default ci-out), ADB, OTV_WAIT (seconds to wait for the OTV_TEST line, default 60).
-# Writes $OTV_OUT/results.txt (PASS/FAIL/WARN lines), screenshots, logcat.txt and otv-test.env
-# (PIN, PORT, LPORT, CODE, ...) for the steps after it. Exit 0 only if no check failed.
+# Env: OTV_OUT (default ci-out), ADB, OTV_WAIT (seconds to wait for the OTV_TEST line, default 60),
+#      OTV_RELAY (default https://ntfy.sh), NODE (default node).
+# Checks: install, launch, home screen (code, link, no overlapping text), no crash/ANR, removed features answer
+# "not available", screen sharing from the background (open, one screen per session, Back, stop), the relay
+# reaches CONNECTED, a real encrypted ping + cast start/stop through ntfy.sh (relay-cast.mjs), restarts.
+# Writes $OTV_OUT/results.txt (PASS/FAIL/WARN lines), screenshots, UI dumps, logcat.txt and otv-test.env.
+# Exit 0 only if no check failed. Network problems and relay limits (HTTP 429) are warnings, not failures.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib.sh"
@@ -15,6 +19,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 APK=${1:-}
 FLAVOR=${2:-full}
 GRANT=${3:-a11y}
+RELAY=${OTV_RELAY:-https://ntfy.sh}
+NODE=${NODE:-node}
 usage() { echo "usage: smoke.sh <apk> <full|lite> <a11y|overlay|both|none>" >&2; exit 2; }
 [ -f "$APK" ] || { echo "APK not found: $APK" >&2; usage; }
 case $FLAVOR in full | lite) ;; *) usage ;; esac
@@ -40,20 +46,20 @@ finish() {
     exit 0
 }
 
-# The web server (and OTV_TEST line) must appear; stops the test if not.
-need_server() {
+# The test API (and its OTV_TEST line) must appear; stops the test if not.
+need_api() {
     if ! wait_otv "${OTV_WAIT:-60}" "${1:-}"; then
-        fail "$2: no 'OTV_TEST' log line within ${OTV_WAIT:-60} s (server did not start)"
+        fail "$2: no 'OTV_TEST port=' log line within ${OTV_WAIT:-60} s (background service did not start)"
         grep -E ' (OfficeTV|AndroidRuntime)' "$LOGCAT_FILE" | tail -n 30 | sed 's/^/      /'
-        screenshot "no-server"
+        screenshot "no-service"
         finish
     fi
-    log "OTV_TEST pid=$OTV_PID pin=$PIN port=$PORT code=$CODE"
+    log "OTV_TEST pid=$OTV_PID port=$PORT code=$CODE"
     forward "$PORT" || { fail "$2: adb forward to port $PORT failed"; finish; }
     if wait_until 20 server_up; then
-        pass "$2: LAN page answers on port $PORT (GET / has 'Office TV')"
+        pass "$2: test API answers on port $PORT"
     else
-        fail "$2: GET / on port $PORT did not return the 'Office TV' page"
+        fail "$2: GET /api/status on port $PORT did not answer"
         finish
     fi
 }
@@ -69,7 +75,32 @@ grant_a11y() {
     esac
     S settings put secure accessibility_enabled 1 >/dev/null
 }
-a11y_on() { [ "$(http GET /api/status)" = 200 ] && [ "$(jget "$HTTP_BODY" accessibility)" = true ]; }
+a11y_on() { [ "$(status_field accessibility)" = true ]; }
+relay_connected() { RELAY_STATE=$(status_field relay); [ "$RELAY_STATE" = CONNECTED ]; }
+
+# relay_step <step> [session] [expect]: runs relay-cast.mjs; sets RELAY_RC (0/1/2) and RELAY_OUT (RESULT json).
+relay_step() {
+    local out
+    out=$("$NODE" "$HERE/relay-cast.mjs" --relay "$RELAY" --code "$CODE" --step "$1" ${2:+--session "$2"} \
+        --expect "${3:-ok}" --timeout 45 2>&1)
+    RELAY_RC=$?
+    printf '%s\n' "$out" >> "$OUT/relay-cast.log"
+    RELAY_OUT=$(printf '%s\n' "$out" | grep '^RESULT ' | tail -n 1 | cut -c8-)
+    [ -n "$RELAY_OUT" ] || RELAY_OUT="$(printf '%s' "$out" | tail -n 3 | tr '\n' ' ')"
+}
+# relay_verdict <label>: PASS / WARN (network, 429, or the app itself rate limited) / FAIL from RELAY_RC.
+relay_verdict() {
+    case $RELAY_RC in
+        0) pass "$1 via $RELAY: $RELAY_OUT"; return 0 ;;
+        2) warn "$1 via $RELAY: relay unreachable or rate limited (not an app failure): $RELAY_OUT" ;;
+        *) if [ "$(status_field relay)" = RATE_LIMITED ]; then
+               warn "$1 via $RELAY: the TV is rate limited by the relay: $RELAY_OUT"
+           else
+               fail "$1 via $RELAY: $RELAY_OUT"
+           fi ;;
+    esac
+    return 1
+}
 
 # ---------------------------------------------------------------- device
 log "waiting for the device"
@@ -82,12 +113,13 @@ is_tv && IS_TV=1
 {
     echo "sdk=$SDK release=$(S getprop ro.build.version.release)"
     echo "model=$(S getprop ro.product.model) abi=$(S getprop ro.product.cpu.abi) tv=$IS_TV"
+    echo "screen=$(S wm size | tail -n 1) density=$(S wm density | tail -n 1)"
 } | tee "$OUT/device.txt"
 logcat_start
 wake_and_unlock
 S settings put global package_verifier_enable 0 >/dev/null
 detect_home
-info "device: API $SDK, Android $(S getprop ro.build.version.release), tv=$IS_TV, launcher: ${HOME_PKGS:-unknown}"
+info "device: API $SDK, Android $(S getprop ro.build.version.release), tv=$IS_TV, launcher: ${HOME_PKGS:-unknown}, $(S wm size | tail -n 1)"
 
 # ---------------------------------------------------------------- install
 S pm uninstall "$PKG" >/dev/null
@@ -108,6 +140,14 @@ printf '%s\n' "$pkgdump" > "$OUT/dumpsys-package.txt"
 if printf '%s\n' "$pkgdump" | grep -q 'RemoteA11yService'; then HAS_A11Y=1; else HAS_A11Y=0; fi
 if [ "$FLAVOR" = full ] && [ "$HAS_A11Y" = 0 ]; then fail "full APK must contain RemoteA11yService"; fi
 if [ "$FLAVOR" = lite ] && [ "$HAS_A11Y" = 1 ]; then fail "lite APK must not contain RemoteA11yService"; fi
+for gone in ViewerActivity ScreenCaptureActivity FilesProvider; do
+    if printf '%s\n' "$pkgdump" | grep -q "$gone"; then fail "removed component still in the APK: $gone"; fi
+done
+perms=$(printf '%s\n' "$pkgdump" | sed -n '/requested permissions:/,/install permissions:/p')
+for p in READ_EXTERNAL_STORAGE ACCESS_WIFI_STATE POST_NOTIFICATIONS QUERY_ALL_PACKAGES; do
+    if printf '%s\n' "$perms" | grep -q "android.permission.$p"; then fail "unexpected permission requested: $p"; fi
+done
+info "requested permissions: $(printf '%s\n' "$perms" | grep -oE 'android\.permission\.[A-Z_]+' | sed 's/android.permission.//' | sort -u | tr '\n' ' ')"
 
 # ---------------------------------------------------------------- permissions
 case $GRANT in
@@ -120,131 +160,204 @@ info "grant style: $GRANT"
 
 # ---------------------------------------------------------------- first start
 if launch_app; then pass "app starts from the launcher icon"; else fail "launcher could not start the app: $(tail -n 2 "$OUT/launch.log" | tr '\n' ' ')"; fi
-if wait_app_on_screen 30; then
-    pass "app screen shown: $RESUMED"
+if wait_app_on_screen 30 && resumed_is_main; then
+    pass "home screen shown: $RESUMED"
 else
-    fail "app screen not shown (resumed: ${RESUMED:-nothing})"
+    fail "home screen not shown (resumed: ${RESUMED:-nothing})"
     S dumpsys activity activities > "$OUT/dumpsys-activities-start.txt"
 fi
-sleep 2
-screenshot 01-app-start
-need_server "" "first start"
-FIRST_PIN=$PIN FIRST_CODE=$CODE
-if [ ${#CODE} = 10 ]; then pass "pairing code looks valid ($CODE)"; else fail "pairing code '$CODE' is not 10 characters"; fi
+need_api "" "first start"
+FIRST_CODE=$CODE
+if [ ${#CODE} = 10 ]; then pass "TV code looks valid ($CODE)"; else fail "TV code '$CODE' is not 10 characters"; fi
 save_env
 
-# ---------------------------------------------------------------- API basics
-code=$(http GET /api/status)
+# ---------------------------------------------------------------- status
+http GET /api/status >/dev/null
 cp "$HTTP_BODY" "$OUT/http/status-1.json"
-if [ "$code" = 200 ] && [ "$(jget "$HTTP_BODY" android)" != '!json' ]; then
-    pass "GET /api/status: $(head -c 300 "$HTTP_BODY")"
-else
-    fail "GET /api/status -> HTTP $code: $(head -c 200 "$HTTP_BODY")"
-fi
+ver=$(jget "$HTTP_BODY" appVersion)
+case $ver in '' | '!json') fail "status has no appVersion: $(head -c 300 "$HTTP_BODY")" ;; *) pass "status: $(head -c 400 "$HTTP_BODY")" ;; esac
 fl=$(jget "$HTTP_BODY" flavor)
-case $fl in
-    "$FLAVOR") pass "status flavor is $fl" ;;
-    "" | '!json') warn "status has no 'flavor' field" ;;
-    *) fail "status flavor is '$fl', expected $FLAVOR" ;;
-esac
-code=$(http GET /api/status "" 0000x)
-if [ "$code" = 401 ]; then pass "wrong PIN is refused (401)"; else fail "wrong PIN -> HTTP $code (expected 401)"; fi
+if [ "$fl" = "$FLAVOR" ]; then pass "status flavor is $fl"; else fail "status flavor is '$fl', expected $FLAVOR"; fi
+case ",$(jget "$HTTP_BODY" features)," in *,cast,*) pass "status lists the cast feature" ;; *) fail "status.features has no 'cast'" ;; esac
+WEBVIEW_OK=$(jget "$HTTP_BODY" webviewOk)
+info "web engine: $(jget "$HTTP_BODY" webview) (webviewOk=$WEBVIEW_OK)"
+code=$(http GET /api/status "" 0000)
+if [ "$code" = 401 ]; then pass "test API refuses a wrong token (401)"; else fail "wrong token -> HTTP $code (expected 401)"; fi
 
 case $GRANT in
     a11y | both)
         if wait_until 20 a11y_on; then pass "accessibility service connected"; else fail "accessibility service did not connect (status.accessibility != true)"; fi ;;
 esac
-http GET /api/status >/dev/null
-need=$(jget "$HTTP_BODY" needsPermission)
+need=$(status_field needsPermission)
 if [ "$SDK" -ge 29 ] && [ "$GRANT" = none ]; then
-    if [ "$need" = true ]; then pass "app says it needs a permission (Android 10+, nothing granted)"; else warn "needsPermission=$need with nothing granted on API $SDK"; fi
+    if [ "$need" = true ]; then pass "app says it needs the one-time setup (Android 10+, nothing granted)"; else warn "needsPermission=$need with nothing granted on API $SDK"; fi
 elif [ "$need" = false ]; then
     pass "needsPermission=false"
 else
     fail "needsPermission=$need although grant=$GRANT"
 fi
 
-for p in /api/apps /api/files; do
-    code=$(http GET "$p")
-    cp "$HTTP_BODY" "$OUT/http/$(basename "$p").json"
-    n=$(jlen "$HTTP_BODY")
-    if [ "$code" = 200 ] && [ "$n" -ge 0 ]; then pass "GET $p -> $n items"; else fail "GET $p -> HTTP $code: $(head -c 200 "$HTTP_BODY")"; fi
-    if [ "$p" = /api/apps ] && [ "$n" = 0 ]; then warn "/api/apps returned no apps"; fi
-done
-
-post_ok /api/key '{"key":"volume_up"}' "POST /api/key volume_up"
-
-# ---------------------------------------------------------------- open a link
-# Opening from the background needs the grant on Android 10+; before that it always works.
-EXPECT_OK=true
-[ "$SDK" -ge 29 ] && [ "$GRANT" = none ] && EXPECT_OK=false
-post_ok /api/open '{"url":"https://example.com"}' "POST /api/open https://example.com" "$EXPECT_OK"
-if [ "$EXPECT_OK" = false ]; then
-    info "link open not expected on API $SDK without a grant"
-elif wait_until 25 resumed_is_other; then
-    pass "link opened on screen: $(describe_other)"
-    case $RESUMED in android/*) warn "Android showed an app chooser; a real TV user would have to pick an app" ;; esac
-else
-    fail "link did not open (resumed: ${RESUMED:-nothing})"
-    S dumpsys activity activities > "$OUT/dumpsys-activities-open.txt"
-fi
-sleep 3
-screenshot 02-link-opened
-
-# ---------------------------------------------------------------- home key
-USE_A11Y_KEYS=0
-[ "$HAS_A11Y" = 1 ] && case $GRANT in a11y | both) a11y_on && USE_A11Y_KEYS=1 ;; esac
-if [ "$USE_A11Y_KEYS" = 1 ]; then
-    post_ok /api/key '{"key":"home"}' "POST /api/key home (accessibility)"
-    if wait_until 15 resumed_is_home; then pass "home key reached the launcher ($RESUMED)"; else fail "home key: launcher not shown (resumed: ${RESUMED:-nothing})"; fi
-else
-    http POST /api/key '{"key":"home"}' >/dev/null
-    info "home via accessibility not available here: $(jget "$HTTP_BODY" msg)"
-fi
-resumed_is_home || go_home || warn "could not get back to the launcher (resumed: ${RESUMED:-nothing})"
-screenshot 03-home
-
-# ---------------------------------------------------------------- upload files (app is in the background now)
-# Images and PDFs always open in our own ViewerActivity.
-upload_check() { # upload_check <file> <label> <shot-name>
-    local code ok
-    code=$(http POST /api/upload "@$1")
-    cp "$HTTP_BODY" "$OUT/http/upload-$2.json"
-    ok=$(jget "$HTTP_BODY" ok)
-    if [ "$code" = 200 ] && [ "$ok" = "$EXPECT_OK" ]; then
-        pass "POST /api/upload ($2) -> ok=$ok \"$(jget "$HTTP_BODY" msg)\""
+# ---------------------------------------------------------------- home screen
+sleep 2
+screenshot 01-home
+DISPLAY_CODE="${CODE:0:5}-${CODE:5:5}"
+if ui_dump home; then
+    problems=$(ui_check "$OUT/ui-home.xml" "$DISPLAY_CODE" "$SITE")
+    if [ -z "$problems" ]; then
+        pass "home screen shows the TV code $DISPLAY_CODE and the website; no overlapping text or buttons"
     else
-        fail "POST /api/upload ($2) -> HTTP $code: $(head -c 300 "$HTTP_BODY")"
+        fail "home screen: $(printf '%s' "$problems" | head -n 5 | tr '\n' ';')"
     fi
-    if [ "$EXPECT_OK" = true ]; then
-        if wait_until 25 resumed_is_viewer; then
-            pass "$2 opened in ViewerActivity"
+    # The settings row may be below the fold on small portrait screens (the page scrolls).
+    if ui_check "$OUT/ui-home.xml" "Rename TV" "New TV code" | grep -q missing; then
+        info "settings row not on the first screen (scrolls on this display)"
+    else
+        pass "settings row visible (Keep screen on, Rename TV, New TV code)"
+    fi
+    if [ "$SDK" -ge 29 ] && [ "$GRANT" = none ]; then
+        if ui_check "$OUT/ui-home.xml" "Allow Office TV to open automatically" | grep -q missing; then
+            fail "one-time setup row not shown although nothing is granted"
         else
-            fail "$2 did not open in $PKG/.ViewerActivity (resumed: ${RESUMED:-nothing})"
-            S dumpsys activity activities > "$OUT/dumpsys-activities-upload-$2.txt"
+            pass "one-time setup row shown (nothing granted)"
         fi
+    elif [ "$WEBVIEW_OK" = true ] && ! ui_check "$OUT/ui-home.xml" "ONE-TIME SETUP" | grep -q missing; then
+        fail "one-time setup card shown although nothing is missing"
     fi
-    sleep 3
-    screenshot "$3"
-    go_home >/dev/null || true
-}
-PNG="$OUT/OfficeTV-test.png"
-make_png "$PNG"
-upload_check "$PNG" png 04-viewer-png
-PDF="$OUT/OfficeTV-test.pdf"
-make_pdf "$PDF" "Office TV test"
-upload_check "$PDF" pdf 05-viewer-pdf
-code=$(http GET /api/files)
-if [ "$code" = 200 ] && grep -q 'OfficeTV-test' "$HTTP_BODY"; then pass "uploaded files are listed in /api/files"; else fail "uploaded files missing from /api/files: $(head -c 200 "$HTTP_BODY")"; fi
+else
+    warn "uiautomator dump failed; home screen text not checked"
+fi
 
-# ---------------------------------------------------------------- volume, keep awake
-post_ok /api/volume '{"percent":40}' "POST /api/volume 40%"
-post_ok /api/awake '{"on":false}' "POST /api/awake off"
-post_ok /api/awake '{"on":true}' "POST /api/awake on"
-http GET /api/status >/dev/null
-if [ "$(jget "$HTTP_BODY" keepAwake)" = true ]; then pass "status.keepAwake=true"; else fail "status.keepAwake is '$(jget "$HTTP_BODY" keepAwake)' after /api/awake on"; fi
+# ---------------------------------------------------------------- removed features
+for c in open youtube key volume apps app file screen awake rename; do
+    api_cmd "{\"cmd\":\"$c\",\"args\":{\"url\":\"https://example.com\",\"key\":\"home\"}}" "removed-$c"
+    if [ "$CMD_OK" = false ] && [ "$CMD_MSG" = "$NOT_AVAILABLE" ]; then
+        pass "'$c' -> not available"
+    else
+        fail "'$c' -> ok=$CMD_OK \"$CMD_MSG\" (expected ok=false \"$NOT_AVAILABLE\")"
+    fi
+done
+api_cmd '{"cmd":"ping","args":{}}' ping-local
+if [ "$CMD_OK" = true ]; then pass "ping -> \"$CMD_MSG\""; else fail "ping -> ok=$CMD_OK \"$CMD_MSG\""; fi
+
+# ---------------------------------------------------------------- relay
+if wait_until 90 relay_connected; then
+    pass "relay CONNECTED ($RELAY)"
+    RELAY_UP=1
+    logged 'relay=CONNECTED' && pass "debug log has 'OTV_TEST relay=CONNECTED'" || warn "no 'OTV_TEST relay=CONNECTED' log line"
+else
+    RELAY_UP=0
+    rc=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$RELAY/v1/health" 2>/dev/null)
+    if [ "$RELAY_STATE" = RATE_LIMITED ] || [ "$rc" != 200 ]; then
+        warn "relay not CONNECTED (state $RELAY_STATE, runner -> $RELAY/v1/health: HTTP ${rc:-none}); relay tests skipped"
+    else
+        fail "relay not CONNECTED after 90 s although the runner reaches $RELAY (state $RELAY_STATE: $(status_field relayDetail))"
+    fi
+fi
+
+# ---------------------------------------------------------------- screen sharing (local, from the background)
+# The app is in the background (launcher on screen), as when a laptop starts sharing during another app.
+EXPECT_OPEN=1
+[ "$SDK" -ge 29 ] && [ "$GRANT" = none ] && EXPECT_OPEN=0
+go_home || warn "could not get back to the launcher (resumed: ${RESUMED:-nothing})"
+S1=$(new_session)
+api_cmd "{\"cmd\":\"cast\",\"args\":{\"action\":\"start\",\"session\":\"$S1\"}}" cast-start-1
+if [ "$EXPECT_OPEN" = 0 ]; then
+    case $CMD_OK:$CMD_MSG in
+        false:*"one-time setup"* | false:*WebView*) pass "cast start without the setup -> \"$CMD_MSG\"" ;;
+        *) fail "cast start without the setup -> ok=$CMD_OK \"$CMD_MSG\" (expected the one-time setup message)" ;;
+    esac
+    sleep 2
+    if resumed_is_cast; then fail "cast screen opened from the background without the setup?"; fi
+elif [ "$WEBVIEW_OK" != true ]; then
+    # Old web engine (older emulator images): the TV explains it, then returns to the home screen by itself.
+    case $CMD_OK:$CMD_MSG in
+        false:*WebView*) pass "cast start with an old web engine -> \"$CMD_MSG\"" ;;
+        *) fail "cast start with an old web engine -> ok=$CMD_OK \"$CMD_MSG\"" ;;
+    esac
+    if wait_until 15 resumed_is_cast; then pass "cast screen shows the update message"; else fail "cast screen not shown (resumed: ${RESUMED:-nothing})"; fi
+    sleep 2
+    screenshot 02-cast-old-engine
+    if wait_until 25 resumed_is_main; then pass "back to the home screen by itself after the message"; else fail "not back home after the message (resumed: ${RESUMED:-nothing})"; fi
+else
+    if [ "$CMD_OK" = true ]; then pass "cast start (from the background) -> \"$CMD_MSG\""; else fail "cast start -> ok=$CMD_OK \"$CMD_MSG\""; fi
+    if wait_until 15 resumed_is_cast; then
+        pass "cast screen on top: $RESUMED"
+    else
+        fail "cast screen not shown (resumed: ${RESUMED:-nothing})"
+        S dumpsys activity activities > "$OUT/dumpsys-activities-cast.txt"
+    fi
+    if wait_until 40 logged "cast=page-loaded session=$S1"; then
+        pass "receiver page loaded from the website"
+    else
+        warn "receiver page did not load in 40 s: $(grep -oE 'OTV_TEST cast=message.*' "$LOGCAT_FILE" | tail -n 1)"
+    fi
+    sleep 2
+    screenshot 02-cast-waiting
+    [ "$(cast_count)" -le 1 ] || fail "more than one cast screen after one session"
+
+    # A second session replaces the first one in the same screen.
+    S2=$(new_session)
+    api_cmd "{\"cmd\":\"cast\",\"args\":{\"action\":\"start\",\"session\":\"$S2\"}}" cast-start-2
+    if [ "$CMD_OK" = true ] && wait_until 10 logged "cast=open session=$S2"; then
+        n=$(cast_count)
+        if [ "$n" -le 1 ]; then pass "new session reuses the one cast screen ($n open)"; else fail "$n cast screens open after a second session"; fi
+    else
+        fail "second cast start -> ok=$CMD_OK \"$CMD_MSG\""
+    fi
+    api_cmd "{\"cmd\":\"cast\",\"args\":{\"action\":\"stop\",\"session\":\"$S1\"}}" cast-stop-old
+    sleep 1
+    if [ "$CMD_OK" = true ] && resumed_is_cast; then pass "stop for an old session leaves the current one on screen"; else warn "stop(old session): ok=$CMD_OK \"$CMD_MSG\", resumed ${RESUMED:-nothing}"; fi
+
+    # Back on the remote ends the cast and shows Office TV's home screen.
+    S input keyevent 4 >/dev/null
+    if wait_until 10 resumed_is_main; then pass "Back ends the cast and returns to the home screen"; else fail "after Back: resumed ${RESUMED:-nothing}, expected $MAIN_ACT"; fi
+    wait_until 10 logged "cast=closed reason=back" || warn "no 'cast=closed reason=back' log line"
+
+    # The laptop's stop command closes it too.
+    go_home >/dev/null
+    S3=$(new_session)
+    api_cmd "{\"cmd\":\"cast\",\"args\":{\"action\":\"start\",\"session\":\"$S3\"}}" cast-start-3
+    if [ "$CMD_OK" = true ] && wait_until 15 resumed_is_cast; then
+        api_cmd "{\"cmd\":\"cast\",\"args\":{\"action\":\"stop\",\"session\":\"$S3\"}}" cast-stop-3
+        if [ "$CMD_OK" = true ] && wait_until 10 resumed_is_main; then
+            pass "cast stop -> \"$CMD_MSG\", home screen shown"
+        else
+            fail "cast stop -> ok=$CMD_OK \"$CMD_MSG\", resumed ${RESUMED:-nothing}"
+        fi
+    else
+        fail "third cast start -> ok=$CMD_OK \"$CMD_MSG\", resumed ${RESUMED:-nothing}"
+    fi
+    if [ "$(cast_count)" = 0 ]; then pass "no cast screen left behind"; else warn "cast screens still alive: $(cast_count)"; fi
+fi
+crash_scan "screen sharing"
+
+# ---------------------------------------------------------------- real relay: encrypted ping + cast via ntfy.sh
+if [ "$RELAY_UP" = 1 ]; then
+    relay_step ping
+    if relay_verdict "encrypted ping"; then
+        case $RELAY_OUT in *'"appVersion"'*) ;; *) fail "ping ack has no status object: $RELAY_OUT" ;; esac
+    fi
+    if [ "$RELAY_RC" != 2 ] && [ "$EXPECT_OPEN" = 1 ] && [ "$WEBVIEW_OK" = true ]; then
+        go_home >/dev/null
+        R1=$(new_session)
+        relay_step start "$R1"
+        if relay_verdict "encrypted cast start"; then
+            if wait_until 15 resumed_is_cast; then pass "cast screen opened by a relay command"; else fail "cast screen not shown after the relay start (resumed: ${RESUMED:-nothing})"; fi
+            sleep 3
+            screenshot 03-cast-relay
+            relay_step stop "$R1"
+            if relay_verdict "encrypted cast stop"; then
+                if wait_until 10 resumed_is_main; then pass "relay stop -> home screen shown"; else fail "after the relay stop: resumed ${RESUMED:-nothing}"; fi
+            fi
+        fi
+    elif [ "$RELAY_RC" != 2 ]; then
+        info "relay cast test skipped here (needs the setup and a new enough web engine)"
+    fi
+fi
+
+# ---------------------------------------------------------------- keep screen on
+if [ "$(status_field keepAwake)" = true ]; then pass "keep screen on is the default"; else fail "status.keepAwake is not true by default"; fi
 if S dumpsys power | grep -i 'officetv' | grep -qi 'wake'; then pass "screen wake lock held"; else warn "no officetv wake lock in 'dumpsys power'"; fi
-go_home >/dev/null
 
 # ---------------------------------------------------------------- process death
 crash_scan "before restarts"
@@ -255,11 +368,11 @@ if [ -z "$pid" ]; then
 else
     S run-as "$PKG" kill -9 "$pid" >/dev/null
     if wait_until 10 eval '! app_pids | grep -qx "$pid"'; then
-        # START_STICKY, the accessibility binding or ServiceJob should bring the server back without a user.
+        # START_STICKY, the accessibility binding or ServiceJob should bring it back without a user.
         if wait_otv 60 "$old" && forward "$PORT" && wait_until 20 server_up; then
-            pass "server came back by itself after the app process was killed (port $PORT)"
+            pass "background service came back by itself after the app process was killed"
         else
-            warn "server did not come back by itself within 60 s after the app process was killed"
+            warn "background service did not come back by itself within 60 s after the app process was killed"
         fi
     else
         warn "could not kill the app process (run-as); kill test skipped"
@@ -268,20 +381,17 @@ fi
 
 old=$(otv_last | cut -d' ' -f1)
 S am force-stop "$PKG" >/dev/null
-if wait_until 15 server_down; then pass "force-stop stopped the server"; else info "server still answered after force-stop"; fi
+if wait_until 15 server_down; then pass "force-stop stopped the app"; else info "test API still answered after force-stop"; fi
 [ "$GRANT" = a11y ] || [ "$GRANT" = both ] && grant_a11y  # Android disables a force-stopped app's service
 launch_app || fail "launcher could not start the app after force-stop"
-wait_app_on_screen 30 || fail "app screen not shown after force-stop (resumed: ${RESUMED:-nothing})"
-need_server "$old" "after force-stop + start"
-if [ "$PIN" = "$FIRST_PIN" ]; then pass "PIN kept after restart"; else fail "PIN changed after restart ($FIRST_PIN -> $PIN)"; fi
-if [ "$CODE" = "$FIRST_CODE" ]; then pass "pairing code kept after restart"; else fail "pairing code changed after restart ($FIRST_CODE -> $CODE)"; fi
-code=$(http GET /api/status)
-if [ "$code" = 200 ]; then pass "GET /api/status after restart"; else fail "GET /api/status after restart -> HTTP $code"; fi
+wait_app_on_screen 30 || fail "home screen not shown after force-stop (resumed: ${RESUMED:-nothing})"
+need_api "$old" "after force-stop + start"
+if [ "$CODE" = "$FIRST_CODE" ]; then pass "TV code kept after restart"; else fail "TV code changed after restart ($FIRST_CODE -> $CODE)"; fi
 case $GRANT in
     a11y | both) wait_until 20 a11y_on && pass "accessibility connected again after restart" || warn "accessibility not connected after restart" ;;
 esac
 sleep 2
-screenshot 06-after-restart
+screenshot 04-after-restart
 save_env
 KEEP_FORWARD=1
 

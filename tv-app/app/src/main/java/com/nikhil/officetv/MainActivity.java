@@ -5,20 +5,17 @@ import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Bitmap;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.ConnectivityManager;
-import android.net.LinkAddress;
-import android.net.LinkProperties;
-import android.net.Network;
+import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.InputFilter;
 import android.util.TypedValue;
@@ -32,519 +29,451 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.EncodeHintType;
-import com.google.zxing.WriterException;
-import com.google.zxing.common.BitMatrix;
-import com.google.zxing.qrcode.QRCodeWriter;
 import com.nikhil.officetv.relay.Pairing;
 import com.nikhil.officetv.relay.RelayClient;
 
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-import java.text.SimpleDateFormat;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
- * TV screen: the TV code + QR for the fixed controller website (no IP needed), the same-Wi-Fi
- * fallback link, connection status and the one-time permission buttons.
+ * The TV's home screen: the TV code and where to enter it, whether the TV is online, the one-time setup
+ * (only when something is missing) and three settings. Everything is built in code, scaled to the screen
+ * (see UiKit) and usable with the remote's D-pad or by touch.
  */
 public class MainActivity extends Activity {
-    private static final int BG = UiKit.BG;
-    private static final int FG = UiKit.FG;
-    private static final int MUTED = UiKit.MUTED;
-    private static final int OK = UiKit.OK;
-    private static final int WARN = UiKit.WARN;
-    private static final int BAD = UiKit.BAD;
-    private static final String SITE = "nikhildiwakar-bit.github.io/Portfolio/tv";
-
-    static volatile Context appContext;
+    static final String SITE = "nikhildiwakar-bit.github.io/Portfolio/tv";
+    private static final long TICK_MS = 5000;
+    /** A failed connection is shown as "Connecting" for this long first (short outages are normal). */
+    private static final long OFFLINE_GRACE_MS = 8000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
             refresh();
-            handler.postDelayed(this, 3000);
+            handler.postDelayed(this, TICK_MS);
         }
     };
+    private final Runnable relayChanged = this::refreshStatus;
 
     private UiKit ui;
-    private ImageView qr;
-    private TextView tvName, code, relay, lan, pin, a11y, overlay, diag, clock, date, relayDot;
-    private Button a11yBtn, overlayBtn, awakeBtn, renameBtn;
-    private View a11yRow, overlayRow, setupCard, tipCard;
-    private GradientDrawable relayPill;
-    private String lastQr;
-    private int qrPx;
-
-    // ---------- network helpers (also used by Commands for the status object) ----------
-
-    /** Interfaces that belong to the TV's own hotspot / screen-share, not the office network. */
-    private static boolean isHotspot(String name) {
-        return name.startsWith("ap") || name.startsWith("p2p") || name.startsWith("swlan")
-                || name.startsWith("softap") || name.startsWith("wlan1") || name.startsWith("rndis");
-    }
-
-    /** IPv4 of the network the TV actually uses for internet (the office Wi-Fi/LAN). */
-    static String ip() {
-        Context c = appContext;
-        if (c != null && Build.VERSION.SDK_INT >= 23) {
-            String a = activeNetworkIp(c);
-            if (a != null) return a;
-        }
-        List<String> all = allIps();
-        return all.isEmpty() ? null : all.get(0);
-    }
-
-    @android.annotation.TargetApi(23)
-    private static String activeNetworkIp(Context c) {
-        try {
-            ConnectivityManager cm = (ConnectivityManager) c.getSystemService(CONNECTIVITY_SERVICE);
-            Network n = cm == null ? null : cm.getActiveNetwork();
-            LinkProperties lp = n == null ? null : cm.getLinkProperties(n);
-            if (lp == null) return null;
-            for (LinkAddress la : lp.getLinkAddresses()) {
-                InetAddress a = la.getAddress();
-                if (a instanceof Inet4Address && !a.isLoopbackAddress()) return a.getHostAddress();
-            }
-        } catch (Exception ignored) {
-        }
-        return null;
-    }
-
-    /** Every IPv4 on the TV, office-network interfaces first, hotspot ones last. */
-    static List<String> allIps() {
-        List<String> main = new ArrayList<>(), hotspot = new ArrayList<>();
-        try {
-            for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (!ni.isUp() || ni.isLoopback()) continue;
-                for (InetAddress a : Collections.list(ni.getInetAddresses())) {
-                    if (!(a instanceof Inet4Address) || a.isLoopbackAddress()) continue;
-                    (isHotspot(ni.getName()) ? hotspot : main).add(a.getHostAddress());
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        main.addAll(hotspot);
-        return main;
-    }
-
-    /** Best address first (the active network), then every other one, without duplicates. */
-    static List<String> lanIps() {
-        List<String> out = new ArrayList<>();
-        String best = ip();
-        if (best != null) out.add(best);
-        for (String a : allIps()) if (!out.contains(a)) out.add(a);
-        return out;
-    }
-
-    static int port() {
-        int p = ControlService.port();
-        return p > 0 ? p : WebServer.PORT;
-    }
-
-    static String address() {
-        String ip = ip();
-        return ip == null ? "(not connected to Wi-Fi)" : "http://" + ip + ":" + port();
-    }
-
-
-    // ---------- UI ----------
-
-    private static final String UI_PREFS = "officetv_ui";
-    private static final String TIP_DONE = "chromeTipDismissed";
+    private boolean twoCols;
+    private TextView tvName, code, clock, date, statusDot, statusText, statusHint, diag;
+    private GradientDrawable statusPill;
+    private View setupCard, howCard, allowSection, engineSection;
+    private TextView allowText, allowHint, engineText;
+    private Button allowPrimary, allowSecondary, engineButton, awakeButton, renameButton, newCodeButton;
+    private long offlineSince;
+    private boolean engineStoreFailed, settingsFailed;
+    /** WebViewInfo.problem(), refreshed with the rest of the screen every few seconds. */
+    private String engineProblem;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        appContext = getApplicationContext();
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         ControlService.start(this);
         RelayManager.start(this);
         ui = new UiKit(this);
+        float vw = ui.widthDp / ui.scale;
+        twoCols = vw >= 820 && ui.widthDp > ui.heightDp * 1.2f;
+        int gap = ui.dp(18);
 
-        boolean twoCols = ui.widthDp >= 900 && ui.widthDp > ui.heightDp;
-        int gap = ui.dp(20);
-
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(ui.dp(36), ui.dp(24), ui.dp(36), ui.dp(24));
-
+        LinearLayout page = vbox();
+        page.setPadding(ui.dp(40), ui.dp(24), ui.dp(40), ui.dp(20));
         page.addView(header(), fill(0, 0, 0, gap));
+        // Spacers above and below the content: centred on big screens, no gap when the page has to scroll.
+        page.addView(new View(this), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        LinearLayout body = new LinearLayout(this);
-        body.setOrientation(twoCols ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        LinearLayout left = vbox(), right = vbox();
+        View hero = heroCard();
+        View settings = settingsRow(twoCols || vw >= 560);
+        setupCard = setupCard();
+        howCard = howCard();
         if (twoCols) {
-            LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            LinearLayout body = new LinearLayout(this);
+            body.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout left = vbox(), right = vbox();
+            left.addView(hero, fill(0, 0, 0, gap));
+            left.addView(settings, fill(0, 0, 0, 0));
+            right.addView(setupCard, fill(0, 0, 0, 0));
+            right.addView(howCard, fill(0, 0, 0, 0));
+            LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f);
             l.setMargins(0, 0, gap / 2, 0);
-            LinearLayout.LayoutParams r = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.1f);
+            LinearLayout.LayoutParams r = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
             r.setMargins(gap / 2, 0, 0, 0);
             body.addView(left, l);
             body.addView(right, r);
+            page.addView(body, fill(0, 0, 0, gap));
         } else {
-            body.addView(left, fill(0, 0, 0, 0));
-            body.addView(right, fill(0, 0, 0, 0));
+            page.addView(hero, fill(0, 0, 0, gap));
+            page.addView(setupCard, fill(0, 0, 0, gap));
+            page.addView(howCard, fill(0, 0, 0, gap));
+            page.addView(settings, fill(0, 0, 0, gap));
         }
-        page.addView(body, fill(0, 0, 0, 0));
 
-        // Left: how to connect (what people read from across the room).
-        left.addView(connectCard(twoCols), fill(0, 0, 0, gap));
-
-        // Right: tip, backup link, setup, settings.
-        tipCard = tipCard();
-        tipCard.setVisibility(View.GONE);
-        right.addView(tipCard, fill(0, 0, 0, gap));
-        right.addView(lanCard(), fill(0, 0, 0, gap));
-        setupCard = setupCard();
-        right.addView(setupCard, fill(0, 0, 0, gap));
-        right.addView(settingsCard(), fill(0, 0, 0, gap));
-
-        diag = ui.text("", 13, MUTED, false);
+        page.addView(new View(this), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        diag = ui.text("", 12, UiKit.MUTED, false);
+        diag.setAlpha(0.85f);
         page.addView(diag, fill(ui.dp(4), 0, ui.dp(4), 0));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
         scroll.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[] {UiKit.BG_TOP, BG}));
+                new int[] {UiKit.BG_TOP, UiKit.BG}));
         scroll.addView(page, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
         setContentView(scroll);
 
         refresh();
-        checkChrome();
-        scroll.post(() -> {
-            if (a11yBtn != null && a11yBtn.getVisibility() == View.VISIBLE && RemoteA11yService.instance == null) {
-                a11yBtn.requestFocus();
-            } else if (renameBtn != null) {
-                renameBtn.requestFocus();
-            }
-        });
+        scroll.post(this::focusDefault);
     }
+
+    // ---------- building the screen ----------
 
     private View header() {
         LinearLayout h = new LinearLayout(this);
         h.setOrientation(LinearLayout.HORIZONTAL);
         h.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView mark = ui.text("TV", 18, UiKit.ON_ACCENT, true);
-        mark.setGravity(Gravity.CENTER);
-        mark.setBackground(ui.rounded(UiKit.ACCENT, UiKit.ACCENT, 12, 0));
-        int m = ui.dp(48);
+        ImageView mark = new ImageView(this);
+        mark.setImageResource(R.drawable.ic_launcher);
+        int m = ui.dp(46);
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(m, m);
         mlp.setMargins(0, 0, ui.dp(14), 0);
         h.addView(mark, mlp);
 
         LinearLayout names = vbox();
-        names.addView(ui.text("Office TV", 26, FG, true));
-        tvName = ui.text("", 16, MUTED, false);
+        names.addView(ui.text("Office TV", 24, UiKit.FG, true));
+        tvName = ui.text("", 16, UiKit.MUTED, false);
+        tvName.setSingleLine(true);
+        tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
         names.addView(tvName);
         h.addView(names, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         LinearLayout time = vbox();
         time.setGravity(Gravity.END);
-        clock = ui.text("", 30, FG, true);
+        clock = ui.text("", 26, UiKit.FG, true);
         clock.setGravity(Gravity.END);
-        date = ui.text("", 14, MUTED, false);
+        date = ui.text("", 14, UiKit.MUTED, false);
         date.setGravity(Gravity.END);
         time.addView(clock);
         time.addView(date);
-        h.addView(time, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
+        h.addView(time, wrapLp());
         return h;
     }
 
-    private View connectCard(boolean twoCols) {
-        LinearLayout c = cardBox();
+    private View heroCard() {
+        LinearLayout c = cardBox(26, 22);
+        c.setBackground(ui.rounded(UiKit.CARD, UiKit.ACCENT_DARK, 20, 1.5f));
         c.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(eyebrow("CONNECT FROM YOUR LAPTOP"), fill(0, 0, 0, ui.dp(8)));
+        c.addView(center(eyebrow("SHARE YOUR LAPTOP SCREEN")), fill(0, 0, 0, ui.dp(12)));
+        c.addView(center(ui.text("On your laptop, open", 18, UiKit.FG, false)), fill(0, 0, 0, ui.dp(2)));
+        TextView site = center(ui.text(SITE, 22, UiKit.FG, true));
+        site.setSingleLine(true);
+        fitWidth(site);
+        c.addView(site, fill(0, 0, 0, ui.dp(2)));
+        c.addView(center(ui.text("and enter this code", 18, UiKit.FG, false)), fill(0, 0, 0, ui.dp(6)));
 
-        TextView label = ui.text("TV code", 16, MUTED, false);
-        label.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(label, fill(0, ui.dp(4), 0, 0));
-        code = ui.text("", 54, UiKit.ACCENT, true);
+        code = center(ui.text("", 64, UiKit.ACCENT, true));
         code.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        code.setLetterSpacing(0.08f);
+        code.setLetterSpacing(0.06f);
         code.setSingleLine(true);
-        code.setGravity(Gravity.CENTER_HORIZONTAL);
+        code.setIncludeFontPadding(false);
         fitWidth(code);
-        c.addView(code, fill(0, 0, 0, ui.dp(8)));
-
-        TextView how = ui.text("On your laptop, open", 17, FG, false);
-        how.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(how, fill(0, 0, 0, 0));
-        TextView site = ui.text(SITE, 19, FG, true);
-        site.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(site, fill(0, 0, 0, 0));
-        TextView how2 = ui.text("and enter this TV code.", 17, FG, false);
-        how2.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(how2, fill(0, 0, 0, ui.dp(14)));
-
-        // QR: capped by both screen dims so it never pushes the card off a 720p screen.
-        int side = Math.min(ui.dp(twoCols ? 210 : 190), Math.round(Math.min(
-                getResources().getDisplayMetrics().widthPixels, getResources().getDisplayMetrics().heightPixels) * 0.34f));
-        qrPx = Math.max(64, side - ui.dp(16));
-        qr = new ImageView(this);
-        qr.setBackground(ui.rounded(Color.WHITE, Color.WHITE, 14, 0));
-        qr.setPadding(ui.dp(8), ui.dp(8), ui.dp(8), ui.dp(8));
-        qr.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        LinearLayout.LayoutParams qlp = new LinearLayout.LayoutParams(side, side);
-        qlp.gravity = Gravity.CENTER_HORIZONTAL;
-        c.addView(qr, qlp);
-        TextView scan = ui.text("Or scan with a phone", 14, MUTED, false);
-        scan.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(scan, fill(0, ui.dp(8), 0, ui.dp(14)));
+        c.addView(code, fill(0, ui.dp(4), 0, ui.dp(16)));
 
         LinearLayout pill = new LinearLayout(this);
         pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10));
-        relayPill = ui.rounded(UiKit.CARD_HI, UiKit.LINE, 14, 1);
-        pill.setBackground(relayPill);
-        relayDot = ui.text("●", 16, WARN, true);
-        pill.addView(relayDot, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        relay = ui.text("", 15, FG, false);
-        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        rlp.setMargins(ui.dp(10), 0, 0, 0);
-        pill.addView(relay, rlp);
+        pill.setPadding(ui.dp(16), ui.dp(10), ui.dp(16), ui.dp(10));
+        statusPill = ui.rounded(UiKit.CARD_HI, UiKit.LINE, 14, 1);
+        pill.setBackground(statusPill);
+        statusDot = ui.text("●", 20, UiKit.WARN, true);
+        pill.addView(statusDot, wrapLp());
+        LinearLayout texts = vbox();
+        statusText = ui.text("", 16, UiKit.FG, true);
+        statusHint = ui.text("", 14, UiKit.MUTED, false);
+        texts.addView(statusText);
+        texts.addView(statusHint);
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        tlp.setMargins(ui.dp(12), 0, 0, 0);
+        pill.addView(texts, tlp);
         c.addView(pill, fill(0, 0, 0, 0));
         return c;
     }
 
-    private View tipCard() {
-        LinearLayout c = cardBox();
-        c.setBackground(ui.rounded(UiKit.CARD, UiKit.ACCENT_DARK, 18, 2));
-        c.addView(eyebrow("TIP · GOOGLE APPS"), fill(0, 0, 0, ui.dp(6)));
-        c.addView(ui.text("Sign in to your Google account once in Chrome on the TV, and turn on Desktop site "
-                + "(Chrome ⋮ → Settings → Site settings → Desktop site) for the full computer view.", 16, FG, false), fill(0, 0, 0, ui.dp(10)));
-        Button ok = ui.button("Got it", 15, false, v -> {
-            try {
-                getSharedPreferences(UI_PREFS, MODE_PRIVATE).edit().putBoolean(TIP_DONE, true).apply();
-            } catch (RuntimeException ignored) {
-            }
-            tipCard.setVisibility(View.GONE);
-            if (renameBtn != null) renameBtn.requestFocus();
-        });
-        c.addView(ok, wrapLp());
-        return c;
-    }
-
-    private View lanCard() {
-        LinearLayout c = cardBox();
-        c.addView(eyebrow("SAME WI-FI LINK (BACKUP)"), fill(0, 0, 0, ui.dp(6)));
-        lan = ui.text("", 17, FG, false);
-        c.addView(lan, fill(0, 0, 0, ui.dp(4)));
-        pin = ui.text("", 17, FG, true);
-        c.addView(pin, fill(0, 0, 0, 0));
-        return c;
-    }
-
     private View setupCard() {
-        LinearLayout c = cardBox();
+        LinearLayout c = cardBox(22, 18);
+        c.setBackground(ui.rounded(UiKit.CARD, UiKit.WARN, 18, 1.5f));
         c.addView(eyebrow("ONE-TIME SETUP"), fill(0, 0, 0, ui.dp(8)));
-        a11y = ui.text("", 15, MUTED, false);
-        a11yBtn = ui.button("Open Accessibility settings", 15, true,
-                v -> openSettings(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        a11yRow = setupRow(a11y, a11yBtn);
-        c.addView(a11yRow, fill(0, 0, 0, ui.dp(10)));
-        overlay = ui.text("", 15, MUTED, false);
-        overlayBtn = ui.button("Allow “Display over other apps”", 15, true, v -> openOverlaySettings());
-        overlayRow = setupRow(overlay, overlayBtn);
-        c.addView(overlayRow, fill(0, 0, 0, 0));
+
+        boolean lite = "lite".equals(BuildConfig.FLAVOR);
+        LinearLayout allow = vbox();
+        allow.addView(ui.text("Allow Office TV to open automatically", 18, UiKit.FG, true), fill(0, 0, 0, ui.dp(4)));
+        allowText = ui.text(lite
+                ? "Then your laptop screen appears on the TV by itself, even while another app is open. "
+                        + "Allow “Display over other apps” for Office TV."
+                : "Then your laptop screen appears on the TV by itself, even while another app is open. "
+                        + "Turn on Office TV in Accessibility settings.", 15, UiKit.MUTED, false);
+        allow.addView(allowText, fill(0, 0, 0, ui.dp(10)));
+        if (lite) {
+            allowPrimary = ui.button("Allow “Display over other apps”", 15, true, v -> openOverlaySettings());
+            allow.addView(allowPrimary, wrapLp());
+        } else {
+            allowPrimary = ui.button("Open Accessibility settings", 15, true,
+                    v -> openSettings(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+            allow.addView(allowPrimary, wrapLp());
+            allowSecondary = ui.button("Use “Display over other apps” instead", 15, false, v -> openOverlaySettings());
+            allow.addView(allowSecondary, wrapMargins(0, ui.dp(8), 0, 0));
+        }
+        allowHint = ui.text("", 13, UiKit.MUTED, false);
+        allowHint.setVisibility(View.GONE);
+        allow.addView(allowHint, fill(0, ui.dp(8), 0, 0));
+        allowSection = allow;
+        c.addView(allow, fill(0, 0, 0, 0));
+
+        LinearLayout engine = vbox();
+        engine.addView(ui.text("Update Android System WebView", 18, UiKit.FG, true), fill(0, 0, 0, ui.dp(4)));
+        engineText = ui.text("", 15, UiKit.MUTED, false);
+        engine.addView(engineText, fill(0, 0, 0, ui.dp(10)));
+        engineButton = ui.button("Open the app store", 15, true, v -> openEngineStore());
+        engine.addView(engineButton, wrapLp());
+        engineSection = engine;
+        c.addView(engine, fill(0, ui.dp(16), 0, 0));
         return c;
     }
 
-    /** Status text on top, its button below: never side by side, so long text can't squeeze the button. */
-    private View setupRow(TextView status, Button b) {
-        LinearLayout r = vbox();
-        r.addView(status, fill(0, 0, 0, ui.dp(6)));
-        r.addView(b, wrapLp());
-        return r;
+    private View howCard() {
+        LinearLayout c = cardBox(22, 18);
+        c.addView(eyebrow("HOW IT WORKS"), fill(0, 0, 0, ui.dp(10)));
+        String[] steps = {
+            "Open the website shown here on a laptop, Chromebook or MacBook.",
+            "Enter the TV code and choose what to share: a tab, a window or the whole screen.",
+            "It appears here. Stop from the laptop, or press Back on the remote.",
+        };
+        for (int i = 0; i < steps.length; i++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            TextView n = ui.text(String.valueOf(i + 1), 14, UiKit.ON_ACCENT, true);
+            n.setGravity(Gravity.CENTER);
+            n.setIncludeFontPadding(false);
+            n.setBackground(ui.rounded(UiKit.ACCENT, UiKit.ACCENT, 13, 0));
+            int d = ui.dp(26);
+            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(d, d);
+            nlp.setMargins(0, ui.dp(1), ui.dp(12), 0);
+            row.addView(n, nlp);
+            row.addView(ui.text(steps[i], 15, UiKit.FG, false),
+                    new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            c.addView(row, fill(0, 0, 0, i == steps.length - 1 ? 0 : ui.dp(10)));
+        }
+        return c;
     }
 
-    private View settingsCard() {
-        LinearLayout c = cardBox();
-        c.addView(eyebrow("SETTINGS"), fill(0, 0, 0, ui.dp(8)));
-        awakeBtn = ui.button("", 15, false, v -> {
+    /** Keep screen on, Rename TV, New TV code: one row when there is room, else stacked. */
+    private View settingsRow(boolean roomy) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(roomy ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        awakeButton = ui.button("", 15, false, v -> {
             boolean on = !Prefs.keepAwake(this);
             Prefs.setKeepAwake(this, on);
             ControlService svc = ControlService.instance;
             if (svc != null) svc.applyKeepAwake();
             refresh();
         });
-        c.addView(awakeBtn, wrapLp());
-
-        // Three actions share a row when there is room; each can wrap its label instead of overflowing.
-        LinearLayout row = new LinearLayout(this);
-        boolean roomy = ui.widthDp >= 600;
-        row.setOrientation(roomy ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        renameBtn = ui.button("Rename TV", 15, false, v -> renameDialog());
-        Button newCode = ui.button("New TV code", 15, false, v -> newCodeDialog());
-        Button newPin = ui.button("New PIN", 15, false, v -> {
-            Prefs.newPin(this);
-            refresh();
-        });
-        Button[] bs = {renameBtn, newCode, newPin};
+        renameButton = ui.button("Rename TV", 15, false, v -> renameDialog());
+        newCodeButton = ui.button("New TV code", 15, false, v -> newCodeDialog());
+        Button[] bs = {awakeButton, renameButton, newCodeButton};
         for (int i = 0; i < bs.length; i++) {
-            LinearLayout.LayoutParams lp = roomy
-                    ? new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    : fill(0, 0, 0, 0);
-            if (roomy) lp.setMargins(i == 0 ? 0 : ui.dp(6), 0, i == bs.length - 1 ? 0 : ui.dp(6), 0);
-            else lp.setMargins(0, i == 0 ? 0 : ui.dp(8), 0, 0);
+            LinearLayout.LayoutParams lp;
+            if (roomy) {
+                lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, i == 0 ? 1.35f : 1f);
+                lp.setMargins(i == 0 ? 0 : ui.dp(5), 0, i == bs.length - 1 ? 0 : ui.dp(5), 0);
+            } else {
+                lp = fill(0, i == 0 ? 0 : ui.dp(8), 0, 0);
+            }
             row.addView(bs[i], lp);
         }
-        c.addView(row, fill(0, ui.dp(12), 0, 0));
-        return c;
+        return row;
     }
 
-    /** Shows the Chrome tip if Chrome is installed; the check runs off the main thread. */
-    private void checkChrome() {
-        boolean done = false;
-        try {
-            done = getSharedPreferences(UI_PREFS, MODE_PRIVATE).getBoolean(TIP_DONE, false);
-        } catch (RuntimeException ignored) {
-        }
-        if (done) return;
-        final Context app = getApplicationContext();
-        new Thread(() -> {
-            boolean chrome = false;
-            try {
-                chrome = Actions.status(app).optBoolean("chrome");
-            } catch (Throwable ignored) {
-            }
-            if (!chrome) {
-                try {
-                    app.getPackageManager().getPackageInfo("com.android.chrome", 0);
-                    chrome = true;
-                } catch (Throwable ignored) {
-                }
-            }
-            final boolean show = chrome;
-            runOnUiThread(() -> {
-                if (show && !isFinishing() && tipCard != null) tipCard.setVisibility(View.VISIBLE);
-            });
-        }, "officetv-chrome-check").start();
-    }
+    // ---------- updating ----------
 
     @Override
     protected void onResume() {
         super.onResume();
         ControlService.start(this);
         RelayManager.start(this);
+        RelayManager.setListener(relayChanged);
+        handler.removeCallbacks(tick);
         handler.post(tick);
     }
 
     @Override
     protected void onPause() {
         handler.removeCallbacks(tick);
+        RelayManager.setListener(null);
         super.onPause();
     }
 
-    private void refresh() {
-        String c = Prefs.pairCode(this);
-        String name = Prefs.tvName(this);
-        tvName.setText(name);
-        code.setText(Pairing.display(c));
-
-        Date now = new Date();
-        clock.setText(android.text.format.DateFormat.getTimeFormat(this).format(now));
-        date.setText(new SimpleDateFormat("EEEE, d MMMM yyyy", Locale.getDefault()).format(now));
-
-        String qrText = Pairing.pairUrl(c, name, Prefs.relayUrl(this));
-        if (!qrText.equals(lastQr)) {
-            Bitmap b = qrCode(qrText, qrPx);
-            if (b != null) qr.setImageBitmap(b);
-            lastQr = qrText;
-        }
-
-        RelayClient.State s = RelayManager.state();
-        int col;
-        switch (s) {
-            case CONNECTED:
-                relay.setText("Online: control this TV from any laptop, anywhere");
-                col = OK;
-                break;
-            case RATE_LIMITED:
-                relay.setText("Today's free internet limit is used up. Use the same Wi-Fi link for now.");
-                col = WARN;
-                break;
-            case OFFLINE:
-                relay.setText("No internet, retrying… The same Wi-Fi link still works.");
-                col = BAD;
-                break;
-            default:
-                relay.setText("Connecting to the internet…");
-                col = WARN;
-                break;
-        }
-        relayDot.setTextColor(col);
-        relayPill.setStroke(Math.max(1, ui.dp(1)), col);
-
-        List<String> ips = lanIps();
-        StringBuilder sb = new StringBuilder();
-        if (ips.isEmpty()) {
-            sb.append("This TV is not on a network. Check Wi-Fi or the LAN cable in Settings.");
-        } else {
-            for (int i = 0; i < ips.size(); i++) {
-                sb.append(i == 0 ? "" : "\nor  ").append("http://").append(ips.get(i)).append(":").append(port());
-            }
-        }
-        lan.setText(sb);
-        pin.setText("PIN  " + Prefs.pin(this) + (ControlService.running() ? "" : "   (server starting…)"));
-
-        boolean lite = "lite".equals(BuildConfig.FLAVOR);
-        boolean a = RemoteA11yService.instance != null;
-        if (lite) {
-            a11yRow.setVisibility(View.GONE);
-        } else {
-            a11y.setText(a ? "✓  Accessibility is on (Back, Home and slide control work)"
-                    : "✗  Accessibility is off: Settings → Accessibility → Office TV → On");
-            a11y.setTextColor(a ? OK : WARN);
-        }
-        boolean overlayShown = Build.VERSION.SDK_INT >= 23;
-        if (overlayShown) {
-            boolean o = Settings.canDrawOverlays(this);
-            overlay.setText(o ? "✓  Display over other apps: on"
-                    : lite ? "✗  Display over other apps: off. Without it, links will not open on the TV."
-                    : "✗  Display over other apps: off (not needed while Accessibility is on)");
-            overlay.setTextColor(o ? OK : (lite || !a) ? WARN : MUTED);
-        } else {
-            overlayRow.setVisibility(View.GONE);
-        }
-        setupCard.setVisibility(lite && !overlayShown ? View.GONE : View.VISIBLE);
-
-        awakeBtn.setText(Prefs.keepAwake(this) ? "Keep screen on: On" : "Keep screen on: Off");
-
-        StringBuilder d = new StringBuilder();
-        d.append("Android ").append(Build.VERSION.RELEASE).append("  ·  ").append(Build.MANUFACTURER).append(' ')
-                .append(Build.MODEL).append("  ·  App ").append(BuildConfig.VERSION_NAME).append(" (")
-                .append(BuildConfig.FLAVOR).append(")");
-        String crash = CrashLog.last(this);
-        if (crash != null) d.append("\nLast error: ").append(firstLine(crash));
-        String detail = RelayManager.detail();
-        if (detail != null && s != RelayClient.State.CONNECTED) d.append("\nInternet: ").append(detail);
-        diag.setText(d);
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        refresh();
     }
 
+    private void refresh() {
+        put(tvName, Prefs.tvName(this));
+        put(code, Pairing.display(Prefs.pairCode(this)));
+
+        Date now = new Date();
+        boolean h24 = android.text.format.DateFormat.is24HourFormat(this);
+        put(clock, new SimpleDateFormat(h24 ? "HH:mm" : "h:mm a", Locale.ENGLISH).format(now));
+        put(date, new SimpleDateFormat("EEEE, d MMMM", Locale.ENGLISH).format(now));
+
+        boolean keepAwake = Prefs.keepAwake(this);
+        put(awakeButton, keepAwake ? "Keep screen on: On" : "Keep screen on: Off");
+        if (keepAwake) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        // One-time setup: only what is actually missing.
+        boolean needAllow = needsAllow();
+        allowSection.setVisibility(needAllow ? View.VISIBLE : View.GONE);
+        String hint = settingsFailed
+                ? "This TV has no shortcut to that setting. Open the TV's Settings and look for Accessibility, "
+                        + "or Apps → Office TV → Display over other apps."
+                : allowSecondary != null && Build.VERSION.SDK_INT >= 33
+                        ? "If Android says “Restricted setting”, use the second button instead." : "";
+        put(allowHint, hint);
+        allowHint.setVisibility(hint.isEmpty() ? View.GONE : View.VISIBLE);
+        String engine = WebViewInfo.problem(this);
+        engineProblem = engine;
+        engineSection.setVisibility(engine != null ? View.VISIBLE : View.GONE);
+        if (engine != null) {
+            put(engineText, engineStoreFailed ? engine + " If no app store opens here, ask IT to update it." : engine);
+            LinearLayout.LayoutParams elp = (LinearLayout.LayoutParams) engineSection.getLayoutParams();
+            int top = needAllow ? ui.dp(16) : 0;
+            if (elp.topMargin != top) {
+                elp.topMargin = top;
+                engineSection.setLayoutParams(elp);
+            }
+        }
+        boolean setup = needAllow || engine != null;
+        setupCard.setVisibility(setup ? View.VISIBLE : View.GONE);
+        // Two columns: the setup card takes the place of "How it works". One column: both, setup first.
+        howCard.setVisibility(twoCols && setup ? View.GONE : View.VISIBLE);
+
+        refreshStatus();
+
+        StringBuilder d = new StringBuilder();
+        String wv = WebViewInfo.version(this);
+        d.append("Android ").append(Build.VERSION.RELEASE).append("  ·  ").append(Build.MANUFACTURER).append(' ')
+                .append(Build.MODEL).append("  ·  Office TV ").append(BuildConfig.VERSION_NAME).append(" (")
+                .append(BuildConfig.FLAVOR).append(")  ·  WebView ").append(wv == null ? "unknown" : wv);
+        String crash = CrashLog.lastLine(this);
+        if (crash != null) d.append("\nLast crash: ").append(crash);
+        put(diag, d);
+
+        View f = getCurrentFocus();
+        if (f == null || !f.isShown()) focusDefault();
+    }
+
+    private boolean needsAllow() {
+        return Build.VERSION.SDK_INT >= 29 && !Actions.canOpenFromBackground(this);
+    }
+
+    /** The status pill: online / connecting / no internet, each with what to do about it. */
+    private void refreshStatus() {
+        if (statusText == null) return;
+        RelayClient.State s = RelayManager.state();
+        String detail = RelayManager.detail();
+        long now = SystemClock.elapsedRealtime();
+        if (s == RelayClient.State.OFFLINE) {
+            if (offlineSince == 0) offlineSince = now;
+        } else {
+            offlineSince = 0;
+        }
+        boolean offlineLong = offlineSince != 0 && now - offlineSince >= OFFLINE_GRACE_MS;
+        String text, hint = "";
+        int col;
+        if (s != RelayClient.State.CONNECTED && !networkConnected()) {
+            text = "No internet";
+            hint = "Connect the TV to Wi-Fi or a network cable. Office TV reconnects by itself.";
+            col = UiKit.BAD;
+        } else if (s == RelayClient.State.CONNECTED) {
+            if (needsAllow()) {
+                text = "Online · One-time setup needed";
+                hint = twoCols ? "Finish the setup on the right so shared screens can appear by themselves."
+                        : "Finish the setup below so shared screens can appear by themselves.";
+                col = UiKit.WARN;
+            } else if (engineProblem != null) {
+                text = "Online · Update needed";
+                hint = "Update Android System WebView to use screen sharing.";
+                col = UiKit.WARN;
+            } else {
+                text = "Online · Ready for screen sharing";
+                hint = "Waiting for a laptop.";
+                col = UiKit.OK;
+            }
+        } else if (s == RelayClient.State.RATE_LIMITED) {
+            text = "Busy right now";
+            hint = "The free connection service is at its limit. Office TV retries automatically.";
+            col = UiKit.WARN;
+        } else if (s == RelayClient.State.OFFLINE && offlineLong) {
+            if (detail != null && detail.contains("date and time")) {
+                text = "Can’t connect securely";
+                hint = "Check that the TV's date and time are correct.";
+            } else {
+                text = "Can’t reach the connection service";
+                hint = "Office TV keeps retrying. If this lasts, ask IT to allow ntfy.sh on the office network.";
+            }
+            col = UiKit.BAD;
+        } else {
+            text = "Connecting…";
+            col = UiKit.WARN;
+        }
+        put(statusText, text);
+        put(statusHint, hint);
+        statusHint.setVisibility(hint.isEmpty() ? View.GONE : View.VISIBLE);
+        statusDot.setTextColor(col);
+        statusPill.setStroke(Math.max(1, ui.dp(1)), col);
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean networkConnected() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo ni = cm == null ? null : cm.getActiveNetworkInfo();
+            return ni != null && ni.isConnected();
+        } catch (RuntimeException e) {
+            return true; // unknown: do not claim "no internet"
+        }
+    }
+
+    private void focusDefault() {
+        if (allowSection.isShown()) allowPrimary.requestFocus();
+        else if (engineSection.isShown() && engineButton.isShown()) engineButton.requestFocus();
+        else renameButton.requestFocus();
+    }
+
+    // ---------- settings ----------
+
     private void renameDialog() {
-        EditText input = new EditText(this);
+        final EditText input = new EditText(this);
         input.setSingleLine(true);
-        input.setFilters(new InputFilter[] {new InputFilter.LengthFilter(40)});
+        input.setFilters(new InputFilter[] {new InputFilter.LengthFilter(Prefs.NAME_MAX)});
         input.setText(Prefs.tvName(this));
         input.setSelection(input.getText().length());
+        input.setHint("e.g. Conference Room");
+        LinearLayout box = vbox();
+        box.setPadding(ui.dp(22), ui.dp(4), ui.dp(22), 0);
+        box.addView(input, fill(0, 0, 0, 0));
         try {
             new AlertDialog.Builder(this)
-                    .setTitle("TV name (e.g. Conference Room)")
-                    .setView(input)
+                    .setTitle("Rename this TV")
+                    .setMessage("Laptops see this name when they connect.")
+                    .setView(box)
                     .setPositiveButton("Save", (dlg, w) -> {
                         String n = input.getText().toString().trim();
                         if (!n.isEmpty()) Prefs.setTvName(this, n);
@@ -561,11 +490,12 @@ public class MainActivity extends Activity {
         try {
             new AlertDialog.Builder(this)
                     .setTitle("Create a new TV code?")
-                    .setMessage("Laptops paired with the old code will no longer control this TV. "
-                            + "They will need to enter the new code.")
-                    .setPositiveButton("Yes, new code", (dlg, w) -> {
+                    .setMessage("Laptops that saved the current code will need to enter the new one. "
+                            + "Use this if the code was shared with someone who should no longer use this TV.")
+                    .setPositiveButton("Create new code", (dlg, w) -> {
                         Prefs.newPairCode(this);
                         RelayManager.restart(this);
+                        DebugHooks.event("code=changed");
                         refresh();
                     })
                     .setNegativeButton("Cancel", null)
@@ -581,48 +511,48 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Opens a settings screen; falls back to the app's info page, then to Settings, and says so if all fail. */
     private void openSettings(Intent i) {
-        try {
-            startActivity(i);
-            return;
-        } catch (ActivityNotFoundException | SecurityException ignored) {
-        }
-        try {
-            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
-            return;
-        } catch (ActivityNotFoundException | SecurityException ignored) {
-        }
-        try {
-            startActivity(new Intent(Settings.ACTION_SETTINGS));
-        } catch (ActivityNotFoundException | SecurityException e) {
-            diag.setText("This settings screen could not be opened on this TV. Please find it in the TV's Settings.");
-        }
-    }
-
-    private static Bitmap qrCode(String text, int size) {
-        try {
-            Map<EncodeHintType, Object> hints = new HashMap<>();
-            hints.put(EncodeHintType.MARGIN, 1);
-            BitMatrix m = new QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints);
-            int[] px = new int[size * size];
-            for (int y = 0; y < size; y++) {
-                for (int x = 0; x < size; x++) px[y * size + x] = m.get(x, y) ? Color.BLACK : Color.WHITE;
+        Intent[] tries = {
+            i,
+            new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())),
+            new Intent(Settings.ACTION_SETTINGS),
+        };
+        for (Intent t : tries) {
+            try {
+                startActivity(t);
+                return;
+            } catch (ActivityNotFoundException | SecurityException ignored) {
             }
-            Bitmap b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-            b.setPixels(px, 0, size, 0, 0, size, size);
-            return b;
-        } catch (WriterException | RuntimeException e) {
-            return null;
         }
+        settingsFailed = true;
+        refresh();
     }
 
-    private static String firstLine(String s) {
-        int nl = s.indexOf('\n');
-        String line = nl < 0 ? s : s.substring(0, nl);
-        return line.length() > 160 ? line.substring(0, 160) + "…" : line;
+    private void openEngineStore() {
+        Intent[] tries = {
+            new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + WebViewInfo.UPDATE_PACKAGE)),
+            new Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id="
+                    + WebViewInfo.UPDATE_PACKAGE)),
+        };
+        for (Intent t : tries) {
+            try {
+                startActivity(t);
+                return;
+            } catch (ActivityNotFoundException | SecurityException ignored) {
+            }
+        }
+        engineStoreFailed = true;
+        engineButton.setVisibility(View.GONE);
+        refresh();
     }
 
     // ---------- small view helpers ----------
+
+    /** setText only when the text changed (the screen refreshes every few seconds; no needless relayouts). */
+    private static void put(TextView t, CharSequence text) {
+        if (!android.text.TextUtils.equals(t.getText(), text)) t.setText(text);
+    }
 
     /** Shrinks a single-line text (the TV code) until it fits its width, so it is never cut off. */
     private static void fitWidth(final TextView t) {
@@ -635,7 +565,7 @@ public class MainActivity extends Activity {
             p.setTextSize(size);
             String s = t.getText().toString();
             while (size > 12 && p.measureText(s) + p.getTextSize() * t.getLetterSpacing() * s.length() > avail) {
-                size *= 0.93f;
+                size *= 0.94f;
                 p.setTextSize(size);
             }
             if (Math.abs(size - t.getTextSize()) > 0.5f) {
@@ -651,16 +581,21 @@ public class MainActivity extends Activity {
         return l;
     }
 
-    private LinearLayout cardBox() {
+    private LinearLayout cardBox(float padH, float padV) {
         LinearLayout l = vbox();
         l.setBackground(ui.card());
-        l.setPadding(ui.dp(22), ui.dp(18), ui.dp(22), ui.dp(18));
+        l.setPadding(ui.dp(padH), ui.dp(padV), ui.dp(padH), ui.dp(padV));
         return l;
     }
 
     private TextView eyebrow(String s) {
         TextView t = ui.text(s, 13, UiKit.ACCENT, true);
-        t.setLetterSpacing(0.12f);
+        t.setLetterSpacing(0.14f);
+        return t;
+    }
+
+    private static TextView center(TextView t) {
+        t.setGravity(Gravity.CENTER_HORIZONTAL);
         return t;
     }
 
@@ -674,5 +609,11 @@ public class MainActivity extends Activity {
     private static LinearLayout.LayoutParams wrapLp() {
         return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
+    }
+
+    private static LinearLayout.LayoutParams wrapMargins(int l, int t, int r, int b) {
+        LinearLayout.LayoutParams lp = wrapLp();
+        lp.setMargins(l, t, r, b);
+        return lp;
     }
 }

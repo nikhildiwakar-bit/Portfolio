@@ -1,6 +1,5 @@
 package com.nikhil.officetv.relay;
 
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -18,14 +17,11 @@ import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.UnknownHostException;
-import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -54,12 +50,10 @@ public final class RelayClient {
     /** Every envelope must be strictly shorter than this (ntfy turns bigger bodies into attachments). */
     public static final int MAX_ENVELOPE = 3900;
     public static final long FRESH_WINDOW_MS = 300000L;
-    public static final int MAX_FILE_BYTES = 16 * 1024 * 1024;
 
     private static final long[] BACKOFF_S = {1, 2, 4, 8, 16, 30, 60};
     private static final int SEEN_MAX = 256;
     private static final int MAX_LINE = 64 * 1024;
-    private static final int PLACEHOLDER_PART = 99999;
     private static final String UA = "OfficeTV-relay/1";
     private static final String ID_CHARS = "0123456789abcdefghijklmnopqrstuvwxyz";
     private static final SecureRandom RNG = new SecureRandom();
@@ -70,7 +64,6 @@ public final class RelayClient {
     volatile long stableStreamMs = 15000;
     volatile int connectTimeoutMs = 15000;
     volatile int readTimeoutMs = 90000;
-    volatile int fileReadTimeoutMs = 60000;
 
     private final String relay;
     private final URL relayUrl;
@@ -507,8 +500,9 @@ public final class RelayClient {
     }
 
     /**
-     * Builds the encrypted ack(s) for a handler result. Each envelope is shorter than MAX_ENVELOPE:
-     * a big data.apps array is split over part/parts; anything else oversized drops data, then trims msg.
+     * Builds the encrypted ack for a handler result: one envelope shorter than MAX_ENVELOPE. An oversized
+     * result keeps ok, drops data, then trims msg (acks in Office TV 3.0 are small; this is a safety net).
+     * Returns a list so the protocol's part/parts can grow again without changing callers.
      */
     static List<String> buildAcks(RelayCrypto crypto, String re, JSONObject result, long now) {
         boolean ok = result.optBoolean("ok", false);
@@ -516,21 +510,15 @@ public final class RelayClient {
         JSONObject data = result.optJSONObject("data");
         if (data == null) data = new JSONObject();
         try {
-            JSONObject one = ack(re, now, ok, msg, data, 0, 1);
+            JSONObject one = ack(re, now, ok, msg, data);
             if (envLength(one) < MAX_ENVELOPE) return Collections.singletonList(crypto.seal(one.toString()));
-            JSONArray apps = data.optJSONArray("apps");
-            if (apps != null) {
-                List<String> parts = splitApps(crypto, re, now, ok, msg, data, apps);
-                if (parts != null) return parts;
-            }
             return Collections.singletonList(crypto.seal(shrink(re, now, ok, msg).toString()));
         } catch (JSONException e) {
             return Collections.singletonList(crypto.seal(result(ok, msg).toString()));
         }
     }
 
-    private static JSONObject ack(String re, long now, boolean ok, String msg, JSONObject data, int part, int parts)
-            throws JSONException {
+    private static JSONObject ack(String re, long now, boolean ok, String msg, JSONObject data) throws JSONException {
         JSONObject o = new JSONObject();
         o.put("v", 1);
         o.put("dir", "t2c");
@@ -540,8 +528,8 @@ public final class RelayClient {
         o.put("ok", ok);
         o.put("msg", msg);
         o.put("data", data);
-        o.put("part", part);
-        o.put("parts", parts);
+        o.put("part", 0);
+        o.put("parts", 1);
         return o;
     }
 
@@ -549,74 +537,10 @@ public final class RelayClient {
         return RelayCrypto.envelopeLength(o.toString().getBytes(Pairing.UTF8).length);
     }
 
-    private static List<String> splitApps(RelayCrypto crypto, String re, long now, boolean ok, String msg,
-                                          JSONObject data, JSONArray apps) throws JSONException {
-        JSONObject base = new JSONObject();
-        Iterator<String> keys = data.keys();
-        while (keys.hasNext()) {
-            String k = keys.next();
-            if (!"apps".equals(k)) base.put(k, data.get(k));
-        }
-        if (partLength(re, now, ok, msg, base, new ArrayList<Object>()) >= MAX_ENVELOPE) return null;
-
-        List<List<Object>> chunks = new ArrayList<>();
-        List<Object> cur = new ArrayList<>();
-        for (int i = 0; i < apps.length(); i++) {
-            Object item = apps.opt(i);
-            if (item == null) continue;
-            cur.add(item);
-            if (partLength(re, now, ok, msg, base, cur) < MAX_ENVELOPE) continue;
-            cur.remove(cur.size() - 1);
-            if (!cur.isEmpty()) {
-                chunks.add(cur);
-                cur = new ArrayList<>();
-            }
-            cur.add(item);
-            if (partLength(re, now, ok, msg, base, cur) >= MAX_ENVELOPE) {
-                cur.clear();
-                Object small = shrinkApp(item, re, now, ok, msg, base);
-                if (small != null) cur.add(small);
-            }
-        }
-        if (!cur.isEmpty() || chunks.isEmpty()) chunks.add(cur);
-
-        List<String> out = new ArrayList<>(chunks.size());
-        for (int i = 0; i < chunks.size(); i++) {
-            JSONObject d = copy(base);
-            d.put("apps", new JSONArray(chunks.get(i)));
-            out.add(crypto.seal(ack(re, now, ok, msg, d, i, chunks.size()).toString()));
-        }
-        return out;
-    }
-
-    private static int partLength(String re, long now, boolean ok, String msg, JSONObject base, List<Object> items)
-            throws JSONException {
-        JSONObject d = copy(base);
-        d.put("apps", new JSONArray(items));
-        return envLength(ack(re, now, ok, msg, d, PLACEHOLDER_PART, PLACEHOLDER_PART));
-    }
-
-    /** An app entry too big for one envelope: cut its label until it fits, or drop it (null). */
-    private static Object shrinkApp(Object item, String re, long now, boolean ok, String msg, JSONObject base)
-            throws JSONException {
-        if (!(item instanceof JSONObject)) return null;
-        JSONObject app = (JSONObject) item;
-        String label = app.optString("label", "");
-        List<Object> one = new ArrayList<>(1);
-        for (int n = label.length() / 2; ; n /= 2) {
-            JSONObject small = copy(app);
-            small.put("label", cut(label, n));
-            one.clear();
-            one.add(small);
-            if (partLength(re, now, ok, msg, base, one) < MAX_ENVELOPE) return small;
-            if (n == 0) return null;
-        }
-    }
-
-    /** Generic oversized ack: drop data, then trim msg until the envelope fits. */
+    /** Oversized ack: drop data, then trim msg until the envelope fits. */
     private static JSONObject shrink(String re, long now, boolean ok, String msg) throws JSONException {
         for (int n = msg.length(); ; n = n * 3 / 4) {
-            JSONObject o = ack(re, now, ok, cut(msg, n), new JSONObject(), 0, 1);
+            JSONObject o = ack(re, now, ok, cut(msg, n), new JSONObject());
             if (envLength(o) < MAX_ENVELOPE || n == 0) return o;
         }
     }
@@ -628,143 +552,10 @@ public final class RelayClient {
         return n <= 0 ? "" : s.substring(0, n) + "\u2026";
     }
 
-    private static JSONObject copy(JSONObject o) throws JSONException {
-        JSONObject c = new JSONObject();
-        Iterator<String> keys = o.keys();
-        while (keys.hasNext()) {
-            String k = keys.next();
-            c.put(k, o.get(k));
-        }
-        return c;
-    }
-
     static String newId() {
         char[] c = new char[12];
         for (int i = 0; i < c.length; i++) c[i] = ID_CHARS.charAt(RNG.nextInt(ID_CHARS.length()));
         return new String(c);
-    }
-
-    // ---------------------------------------------------------------- files
-
-    /**
-     * Downloads (https only, host must equal the relay host, max 16 MiB) and decrypts a 'file' command's
-     * attachment. args: {url, iv, size, name}. Plain http is accepted only when the relay itself is http
-     * (local test relay), and then only from the same host and port.
-     */
-    public byte[] fetchFile(JSONObject fileArgs) throws IOException, GeneralSecurityException {
-        if (fileArgs == null) throw new IOException("File details are missing.");
-        byte[] iv;
-        try {
-            iv = RelayCrypto.unb64url(fileArgs.optString("iv", ""));
-        } catch (IllegalArgumentException e) {
-            throw new GeneralSecurityException("The file IV is invalid.");
-        }
-        if (iv.length != RelayCrypto.IV_BYTES) throw new GeneralSecurityException("The file IV is invalid.");
-        long size = fileArgs.optLong("size", -1);
-        if (size > MAX_FILE_BYTES) throw new IOException("The file is larger than 16 MB.");
-        URL url = checkFileUrl(fileArgs.optString("url", ""));
-        Buf ct = download(url, MAX_FILE_BYTES + RelayCrypto.TAG_BYTES);
-        return crypto.openFile(ct.b, 0, ct.n, iv);
-    }
-
-    URL checkFileUrl(String raw) throws IOException {
-        URL u;
-        try {
-            u = new URL(raw == null ? "" : raw.trim());
-        } catch (MalformedURLException e) {
-            throw new IOException("The file link is invalid.");
-        }
-        String scheme = u.getProtocol().toLowerCase(Locale.ROOT);
-        String relayScheme = relayUrl.getProtocol().toLowerCase(Locale.ROOT);
-        if (!"https".equals(scheme) && !("http".equals(scheme) && "http".equals(relayScheme))) {
-            throw new IOException("Files can only be downloaded over https.");
-        }
-        if (u.getUserInfo() != null || !u.getHost().equalsIgnoreCase(relayUrl.getHost())
-                || port(u) != port(relayUrl)) {
-            throw new IOException("Files can only come from the relay server (" + relayUrl.getHost() + ").");
-        }
-        return u;
-    }
-
-    private static int port(URL u) {
-        return u.getPort() >= 0 ? u.getPort() : u.getDefaultPort();
-    }
-
-    private Buf download(URL url, int max) throws IOException {
-        URL cur = url;
-        for (int hop = 0; hop < 4; hop++) {
-            HttpURLConnection c = (HttpURLConnection) cur.openConnection();
-            if (ssl != null && c instanceof HttpsURLConnection) ((HttpsURLConnection) c).setSSLSocketFactory(ssl);
-            c.setInstanceFollowRedirects(false);
-            c.setConnectTimeout(connectTimeoutMs);
-            c.setReadTimeout(fileReadTimeoutMs);
-            c.setUseCaches(false);
-            c.setRequestProperty("Accept-Encoding", "identity");
-            c.setRequestProperty("User-Agent", UA);
-            try {
-                int code = c.getResponseCode();
-                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
-                    String loc = c.getHeaderField("Location");
-                    if (loc == null) throw new IOException("File download failed (HTTP " + code + ").");
-                    cur = checkFileUrl(new URL(cur, loc).toString());
-                    continue;
-                }
-                if (code == 429) {
-                    throw new IOException(relayUrl.getHost()
-                            + " rate limit reached (HTTP 429). Please try again shortly.");
-                }
-                if (code == 404) throw new IOException("The file is no longer on the relay (it may have expired).");
-                if (code != 200) throw new IOException("File download failed (HTTP " + code + ").");
-                long len = -1;
-                String cl = c.getHeaderField("Content-Length");
-                if (cl != null) {
-                    try {
-                        len = Long.parseLong(cl.trim());
-                    } catch (NumberFormatException ignored) {
-                    }
-                }
-                if (len > max) throw new IOException("The file is larger than 16 MB.");
-                InputStream in = c.getInputStream();
-                try {
-                    return readAll(in, len, max);
-                } finally {
-                    closeQuietly(in);
-                }
-            } finally {
-                c.disconnect();
-            }
-        }
-        throw new IOException("File download failed (too many redirects).");
-    }
-
-    private static Buf readAll(InputStream in, long len, int max) throws IOException {
-        Buf b = new Buf(len >= 0 ? (int) len : 64 * 1024);
-        byte[] tmp = new byte[64 * 1024];
-        int n;
-        while ((n = in.read(tmp)) != -1) {
-            if (b.n + n > max) throw new IOException("The file is larger than 16 MB.");
-            b.append(tmp, n);
-        }
-        return b;
-    }
-
-    private static final class Buf {
-        byte[] b;
-        int n;
-
-        Buf(int cap) {
-            b = new byte[Math.max(cap, 16)];
-        }
-
-        void append(byte[] src, int len) {
-            if (n + len > b.length) {
-                byte[] bigger = new byte[Math.max(n + len, b.length * 2)];
-                System.arraycopy(b, 0, bigger, 0, n);
-                b = bigger;
-            }
-            System.arraycopy(src, 0, b, n, len);
-            n += len;
-        }
     }
 
     // ---------------------------------------------------------------- helpers

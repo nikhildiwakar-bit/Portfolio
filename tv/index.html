@@ -4,635 +4,387 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0a1115" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c1013" media="(prefers-color-scheme: dark)">
 <meta name="referrer" content="no-referrer">
-<meta name="description" content="Control the office TVs from a laptop, Chromebook or phone. No IP address needed.">
-<title>Office TV Remote</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%2314b8a6'/%3E%3Cstop offset='1' stop-color='%230e7490'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Crect x='7' y='9' width='18' height='12' rx='2.5' fill='none' stroke='white' stroke-width='2.2'/%3E%3Cpath d='M12 25h8' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
+<meta name="description" content="Show your laptop screen on the office TV. Enter the TV code, pick what to share, and it appears on the big screen.">
+<title>Office TV · Share your laptop screen</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230e7c74'/%3E%3Crect x='6.5' y='8.5' width='19' height='12.5' rx='2.5' fill='none' stroke='white' stroke-width='2.2'/%3E%3Cpath d='M12 25h8' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
 :root {
-  --bg: #f4f6f8; --bg-glow-1: rgba(20, 184, 166, .16); --bg-glow-2: rgba(14, 116, 144, .10);
-  --surface: rgba(255, 255, 255, .86); --surface-solid: #ffffff; --surface-2: #f1f4f6; --surface-3: #e8edf0;
-  --text: #0c1a1f; --muted: #52636b; --faint: #7b8a91;
-  --border: #dde4e8; --border-strong: #c3ced4;
-  --primary: #0d7f78; --primary-strong: #09625d; --primary-soft: #e3f4f2; --on-primary: #ffffff;
-  --grad: linear-gradient(135deg, #14b8a6 0%, #0e7490 100%);
-  --ok: #15803d; --ok-soft: #e4f5ea; --bad: #b42318; --bad-soft: #fdecea;
-  --warn: #7a4a00; --warn-soft: #fff6df; --warn-border: #efd18d;
-  --info-soft: #e6f3fb; --info-border: #b9dcef; --info: #0b4f73;
-  --unknown: #98a6ad; --focus: #0e7490;
-  --toast-bg: #0c1a1f; --toast-text: #f3f7f8; --toast-bad: #b42318;
-  --shadow: 0 1px 2px rgba(12, 26, 31, .05), 0 8px 28px -8px rgba(12, 26, 31, .10);
-  --shadow-lg: 0 24px 60px -12px rgba(12, 26, 31, .35);
-  --radius: 18px; --radius-sm: 12px;
+  --bg: #f5f6f8; --surface: #ffffff; --surface-2: #f1f3f6; --surface-3: #e7ebef;
+  --text: #0f1419; --muted: #525d68; --faint: #7a8490;
+  --border: #e0e4e9; --border-strong: #c8cfd7;
+  --accent: #0e7c74; --accent-hover: #0a6a63; --accent-soft: #e2f3f0; --accent-ink: #0a5f58; --on-accent: #ffffff;
+  --ok: #15803d; --warn: #b45309; --bad: #b42318; --bad-soft: #fdeceb; --info-soft: #eef2f5;
+  --stop: #c42b1f; --stop-hover: #a82217;
+  --focus: #0e7c74; --glow: rgba(14, 124, 116, .12);
+  --art-screen: #e2f3f0; --art-line: #b9ddd8; --art-frame: #c8cfd7; --art-body: #ffffff; --art-base: #e7ebef;
+  --shadow: 0 1px 2px rgba(15, 20, 25, .04), 0 14px 36px -14px rgba(15, 20, 25, .16);
+  --radius: 20px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0a1115; --bg-glow-1: rgba(20, 184, 166, .14); --bg-glow-2: rgba(56, 189, 248, .07);
-    --surface: rgba(20, 30, 36, .82); --surface-solid: #141e24; --surface-2: #1b272e; --surface-3: #22313a;
-    --text: #e6eef1; --muted: #9aabb3; --faint: #72848c;
-    --border: #25343c; --border-strong: #34474f;
-    --primary: #2dd4bf; --primary-strong: #5eead4; --primary-soft: #11302f; --on-primary: #04211f;
-    --grad: linear-gradient(135deg, #2dd4bf 0%, #0ea5c6 100%);
-    --ok: #4ade80; --ok-soft: #0f2d1d; --bad: #fca5a5; --bad-soft: #3a1716;
-    --warn: #fcd34d; --warn-soft: #2e240b; --warn-border: #5a4613;
-    --info-soft: #0e2633; --info-border: #1d4a60; --info: #9fd8f5;
-    --unknown: #62757e; --focus: #5eead4;
-    --toast-bg: #e6eef1; --toast-text: #0a1115; --toast-bad: #b42318;
-    --shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 10px 30px -10px rgba(0, 0, 0, .6);
-    --shadow-lg: 0 24px 60px -12px rgba(0, 0, 0, .7);
+    --bg: #0c1013; --surface: #141a1e; --surface-2: #1a2126; --surface-3: #232b31;
+    --text: #e8edf0; --muted: #a1adb5; --faint: #76838c;
+    --border: #232c32; --border-strong: #35414a;
+    --accent: #2cc2b1; --accent-hover: #4fd6c6; --accent-soft: #0f2f2b; --accent-ink: #7fe0d4; --on-accent: #03201c;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #fca5a5; --bad-soft: #3a1817; --info-soft: #1a2126;
+    --stop: #e5484d; --stop-hover: #f0585d;
+    --focus: #4fd6c6; --glow: rgba(44, 194, 177, .10);
+    --art-screen: #0f2f2b; --art-line: #1f5a53; --art-frame: #35414a; --art-body: #141a1e; --art-base: #232b31;
+    --shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 18px 44px -18px rgba(0, 0, 0, .75);
   }
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; background-color: var(--bg); }
 body {
   margin: 0; min-height: 100vh; color: var(--text); background-color: var(--bg);
-  background-image: radial-gradient(900px 480px at 8% -120px, var(--bg-glow-1), transparent 70%),
-                    radial-gradient(760px 420px at 100% -80px, var(--bg-glow-2), transparent 70%);
+  background-image: radial-gradient(1100px 520px at 88% -220px, var(--glow), transparent 70%);
   background-repeat: no-repeat;
-  font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
-  -webkit-font-smoothing: antialiased; overflow-wrap: break-word;
+  font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased; overflow-wrap: break-word; overflow-x: hidden;
 }
 [hidden] { display: none !important; }
-a { color: var(--primary-strong); }
-.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+a { color: var(--accent-ink); }
 .ic { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.wrap { max-width: 1180px; margin: 0 auto; padding: 18px 16px 120px; }
-@media (min-width: 720px) { .wrap { padding: 30px 32px 120px; } }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.wrap { max-width: 1160px; margin: 0 auto; padding: 0 16px; }
+@media (min-width: 720px) { .wrap { padding: 0 32px; } }
 
 /* header */
-.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 4px; }
-.brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
-.logo {
-  width: 46px; height: 46px; border-radius: 14px; background: var(--grad); color: #fff; display: grid; place-items: center; flex: none;
-  box-shadow: 0 8px 20px -6px rgba(13, 127, 120, .55), inset 0 1px 0 rgba(255, 255, 255, .35);
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 72px; }
+.brand { display: inline-flex; align-items: center; gap: 12px; min-height: 44px; color: var(--text); text-decoration: none; font-weight: 750; font-size: 1.1rem; letter-spacing: -.01em; }
+.logo { width: 36px; height: 36px; border-radius: 11px; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; flex: none; }
+.logo .ic { width: 21px; height: 21px; }
+.top-link { color: var(--muted); font-weight: 600; font-size: .95rem; text-decoration: none; padding: 10px 12px; border-radius: 10px; }
+.top-link:hover { color: var(--text); background: var(--surface-2); }
+
+/* stage: hero + card */
+.stage { display: grid; gap: 28px; padding: 8px 0 48px; }
+@media (min-width: 960px) {
+  .stage { grid-template-columns: minmax(0, 1fr) minmax(380px, 440px); gap: 64px; align-items: center; padding: 28px 0 72px; }
 }
-.logo .ic { width: 25px; height: 25px; stroke-width: 2.1; }
-.brand-text { min-width: 0; }
-h1 { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 8px; font-size: 1.36rem; line-height: 1.2; margin: 0; letter-spacing: -.02em; font-weight: 750; }
-h1 .tag {
-  font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--primary-strong);
-  background: var(--primary-soft); padding: 2px 8px; border-radius: 999px; transform: translateY(-2px);
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 8px; margin: 0 0 18px; padding: 5px 12px; border-radius: 999px;
+  font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent-ink); background: var(--accent-soft);
 }
-.sub { margin: 3px 0 0; color: var(--muted); font-size: .88rem; }
-@media (max-width: 480px) { .sub { display: none; } }
-.help-link {
-  font-size: .9rem; font-weight: 600; white-space: nowrap; color: var(--muted); text-decoration: none; padding: 8px 14px;
-  border: 1px solid var(--border); border-radius: 999px; background: var(--surface); flex: none;
+.eyebrow .ic { width: 15px; height: 15px; }
+h1 { margin: 0; font-size: clamp(2rem, 1.3rem + 2.3vw, 3.3rem); line-height: 1.08; letter-spacing: -.03em; font-weight: 760; max-width: 15em; text-wrap: balance; }
+.lede { margin: 18px 0 0; font-size: 1.1rem; color: var(--muted); max-width: 32em; }
+.steps { list-style: none; margin: 28px 0 0; padding: 0; display: grid; gap: 12px; }
+.steps li { display: flex; align-items: center; gap: 14px; color: var(--text); font-weight: 550; }
+.steps .n {
+  width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; font-size: .88rem; font-weight: 750;
+  color: var(--accent-ink); background: var(--surface); border: 1px solid var(--border-strong);
 }
-.help-link:hover { color: var(--primary-strong); border-color: var(--primary); }
+.art { margin: 36px 0 0; max-width: 430px; }
+.art svg { display: block; width: 100%; height: auto; }
+@media (max-width: 959px) { .art { display: none; } .lede { font-size: 1.02rem; } .steps { margin-top: 22px; } .panel { max-width: 560px; } }
+body.unsupported .steps, body.unsupported .help { display: none; }
+
+/* cards */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px 20px; min-width: 0; }
+@media (min-width: 480px) { .card { padding: 30px 28px; } }
+.card h2 { margin: 0; font-size: 1.22rem; letter-spacing: -.015em; line-height: 1.3; }
+.card .sub { margin: 6px 0 22px; color: var(--muted); font-size: .95rem; text-wrap: pretty; }
+.field { display: grid; gap: 6px; margin: 0 0 16px; min-width: 0; }
+label { font-weight: 650; font-size: .92rem; }
+.opt { color: var(--faint); font-weight: 450; }
+input {
+  width: 100%; min-width: 0; height: 52px; padding: 0 14px; font: inherit; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: 12px; transition: border-color .15s, box-shadow .15s;
+}
+input:hover { border-color: var(--faint); }
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--glow), 0 0 0 1px var(--accent); }
+input::placeholder { color: var(--faint); opacity: 1; }
+input.code { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.28rem; letter-spacing: .12em; text-transform: uppercase; }
+input.code::placeholder { text-transform: none; }
+input[aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
+.hint { margin: 0; font-size: .86rem; color: var(--muted); min-height: 1.35em; }
+.hint.good { color: var(--ok); }
+.field-err { margin: 0; font-size: .88rem; color: var(--bad); font-weight: 550; }
+.fine { margin: 12px 0 0; font-size: .86rem; color: var(--muted); text-align: center; text-wrap: balance; }
 
 /* buttons */
-button, .btn {
-  font: inherit; font-weight: 600; border-radius: var(--radius-sm); border: 1px solid transparent; padding: 9px 16px;
-  min-height: 44px; cursor: pointer; touch-action: manipulation; display: inline-flex; align-items: center;
-  justify-content: center; gap: 8px; text-decoration: none; color: var(--text); background: var(--surface-2);
-  transition: background-color .14s, border-color .14s, color .14s, box-shadow .14s, transform .06s; position: relative;
-  -webkit-tap-highlight-color: transparent;
+.btn {
+  font: inherit; font-weight: 680; display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 48px;
+  padding: 0 20px; border-radius: 14px; border: 1px solid transparent; cursor: pointer; color: var(--text); background: var(--surface-2);
+  transition: background-color .15s, box-shadow .15s, transform .06s; -webkit-tap-highlight-color: transparent; text-align: center;
 }
-button:active:not(:disabled) { transform: scale(.97); }
-button:disabled { opacity: .5; cursor: not-allowed; }
-.btn-primary { background: var(--grad); color: #fff; box-shadow: 0 6px 16px -6px rgba(13, 127, 120, .6), inset 0 1px 0 rgba(255, 255, 255, .25); }
-@media (prefers-color-scheme: dark) { .btn-primary { color: var(--on-primary); } }
-.btn-primary:hover:not(:disabled) { filter: brightness(1.06); box-shadow: 0 8px 22px -6px rgba(13, 127, 120, .7); }
-.btn-soft { background: var(--primary-soft); color: var(--primary-strong); }
-.btn-soft:hover:not(:disabled) { border-color: var(--primary); }
-.btn-ghost { background: var(--surface-solid); border-color: var(--border-strong); }
-.btn-ghost:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-strong); }
-.btn-danger { background: var(--surface-solid); border-color: var(--border-strong); color: var(--bad); }
-.btn-danger:hover:not(:disabled) { border-color: var(--bad); background: var(--bad-soft); }
-.btn-danger-solid { background: #b42318; color: #fff; }
-.btn-danger-solid:hover { background: #99180f; }
-.btn-sm { min-height: 38px; padding: 6px 13px; font-size: .87rem; border-radius: 10px; }
-.btn-sm .ic { width: 17px; height: 17px; }
-:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
-button[aria-busy="true"] { cursor: progress; }
-button[aria-busy="true"]::after {
-  content: ""; position: absolute; top: 6px; right: 6px; width: 10px; height: 10px; border-radius: 50%;
-  border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; opacity: .8;
-}
+.btn:active:not(:disabled) { transform: scale(.985); }
+.btn:disabled { cursor: not-allowed; opacity: .6; }
+.btn[aria-busy="true"] { cursor: progress; opacity: 1; }
+.btn-primary { background: var(--accent); color: var(--on-accent); box-shadow: 0 10px 22px -12px var(--accent); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-big { width: 100%; min-height: 58px; padding: 0 16px; font-size: 1.06rem; border-radius: 15px; }
+@media (max-width: 400px) { .btn-big { font-size: 1rem; } .btn-big .ic { display: none; } .card { padding-left: 18px; padding-right: 18px; } }
+.btn-big .ic { width: 22px; height: 22px; }
+.btn-stop { background: var(--stop); color: #fff; min-width: 180px; }
+.btn-stop:hover:not(:disabled) { background: var(--stop-hover); }
+.btn-quiet { background: var(--surface); border-color: var(--border-strong); }
+.btn-quiet:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
+.spin { display: none; width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
+.btn[aria-busy="true"] .spin { display: inline-block; }
+.btn[aria-busy="true"] .ic { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* TV picker */
-.picker { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 12px; }
-.tv-chip {
-  min-height: 42px; padding: 6px 16px 6px 14px; border-radius: 999px; border: 1px solid var(--border-strong);
-  background: var(--surface-solid); font-weight: 600; max-width: 100%; min-width: 0;
+.link {
+  font: inherit; font-weight: 620; font-size: .94rem; color: var(--accent-ink); background: none; border: 0; padding: 8px 4px; min-height: 44px;
+  cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; border-radius: 8px;
 }
-.tv-chip:hover { border-color: var(--primary); }
-.tv-chip[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary-strong); border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
-.nowrap { white-space: nowrap; }
-.tv-chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 24ch; min-width: 0; }
-.tv-chip.add { border-style: dashed; color: var(--primary-strong); background: transparent; }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--unknown); flex: none; }
+.link:hover { text-decoration-color: currentColor; }
+.link.danger { color: var(--bad); }
+.text-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; margin-top: 10px; }
+
+/* saved TVs */
+.tvs { display: grid; gap: 10px; margin: 18px 0; }
+.tv {
+  display: flex; align-items: center; gap: 14px; width: 100%; min-height: 70px; padding: 12px 14px; text-align: left; font: inherit;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 15px; cursor: pointer;
+  transition: border-color .15s, background-color .15s;
+}
+.tv:hover { border-color: var(--accent); }
+.tv[aria-checked="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.tv-ic { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; flex: none; color: var(--muted); background: var(--surface-2); }
+.tv[aria-checked="true"] .tv-ic { background: var(--accent); color: var(--on-accent); }
+.tv-txt { display: grid; min-width: 0; flex: 1 1 auto; }
+.tv-name { font-weight: 680; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-meta { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: .86rem; color: var(--muted); white-space: nowrap; overflow: hidden; }
+.tv-meta .tv-code { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; letter-spacing: .04em; }
+.tv-check { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border-strong); display: grid; place-items: center; flex: none; color: transparent; }
+.tv-check .ic { width: 14px; height: 14px; stroke-width: 3; }
+.tv[aria-checked="true"] .tv-check { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.tvs.single .tv-check { display: none; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.online { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
-.dot.offline { background: var(--bad); }
+.dot.offline { background: var(--warn); }
+.dot.checking { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
 
-/* selected TV bar */
-.tvbar {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; background: var(--surface-solid);
-  border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow);
-}
-.tvbar .info { flex: 1 1 260px; min-width: 0; }
-.tvbar .title { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.08rem; min-width: 0; letter-spacing: -.01em; }
-.tvbar .title span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tvbar .meta { color: var(--muted); font-size: .86rem; margin-top: 2px; overflow-wrap: anywhere; }
-.tvbar .meta.bad { color: var(--bad); }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* notices */
+.notice { display: flex; gap: 12px; align-items: flex-start; margin: 0 0 16px; padding: 12px 14px; border-radius: 13px; background: var(--info-soft); font-size: .93rem; }
+.notice .ic { margin-top: 1px; color: var(--muted); }
+.notice.bad { background: var(--bad-soft); }
+.notice.bad .ic, .notice.bad strong { color: var(--bad); }
+.notice p { margin: 0; min-width: 0; }
+.notice strong { display: block; font-weight: 680; }
+.notice span { color: var(--muted); }
+.notice.bad span { color: var(--text); }
+.confirm { margin: 12px 0 0; padding: 14px; border-radius: 13px; border: 1px solid var(--border-strong); font-size: .93rem; }
+.confirm p { margin: 0 0 12px; }
+.confirm .row { display: flex; flex-wrap: wrap; gap: 10px; }
+.confirm .btn { min-height: 42px; padding: 0 16px; font-size: .92rem; }
+.btn-danger { background: var(--bad-soft); color: var(--bad); }
+.btn-danger:hover { border-color: var(--bad); }
 
-/* banners and notes */
-.banner {
-  display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm);
-  background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn-border); font-size: .92rem;
+/* live */
+body.is-live .hero, body.is-live .help, body.is-live .top-link { display: none; }
+body.is-live .stage { display: grid; grid-template-columns: minmax(0, 1fr); align-content: center; min-height: calc(100vh - 170px); padding-top: 12px; }
+.live {
+  display: grid; gap: 22px; max-width: 1040px; margin: 0 auto; padding: 18px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 26px; box-shadow: var(--shadow); min-width: 0;
 }
-.banner .ic { margin-top: 1px; }
-.banner p { margin: 0; min-width: 0; }
-.banner.cast { align-items: center; flex-wrap: wrap; background: var(--surface-solid); color: inherit; border-color: var(--border-strong); }
-.banner.cast p { flex: 1 1 240px; }
-.banner.cast.sharing { border-color: var(--ok, #0d7f78); }
-.banner.bad { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
-.tip {
-  display: flex; gap: 10px; align-items: flex-start; margin-top: 14px; padding: 10px 12px; border-radius: var(--radius-sm);
-  background: var(--info-soft); color: var(--info); border: 1px solid var(--info-border); font-size: .86rem;
+@media (min-width: 860px) { .live { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 40px; padding: 28px; align-items: center; } }
+.preview { position: relative; aspect-ratio: 16 / 9; border-radius: 16px; overflow: hidden; background: #05080a; min-width: 0; }
+.preview video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.veil { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(5, 8, 10, .6); color: #fff; }
+.veil .spin { display: inline-block; width: 30px; height: 30px; border-width: 3px; }
+.onair {
+  position: absolute; left: 12px; top: 12px; display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 999px;
+  background: rgba(5, 8, 10, .7); color: #fff; font-size: .74rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase;
 }
-.tip .ic { width: 18px; height: 18px; margin-top: 2px; }
-.tip p { margin: 0; min-width: 0; }
-.note { margin: 12px 0 0; font-size: .86rem; color: var(--muted); }
-.note.warn { color: var(--warn); }
-.inline-msg { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--bad-soft); color: var(--bad); font-size: .9rem; }
-.inline-msg p { margin: 0 0 8px; }
-.inline-msg p:last-child { margin: 0; }
-
-/* layout */
-.grid2 { display: grid; gap: 16px; margin-top: 16px; }
-@media (min-width: 920px) { .grid2 { grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); align-items: start; gap: 18px; } }
-.col { display: grid; gap: 16px; min-width: 0; }
-@media (min-width: 920px) { .col { gap: 18px; } }
-.card {
-  background: var(--surface-solid);
-  border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 16px; box-shadow: var(--shadow); min-width: 0;
-}
-@media (min-width: 720px) { .card { padding: 22px 24px; } }
-.card h2 { display: flex; align-items: center; gap: 10px; font-size: 1.04rem; margin: 0 0 14px; letter-spacing: -.01em; font-weight: 700; min-width: 0; }
-.card h2 .ic {
-  width: 32px; height: 32px; padding: 7px; border-radius: 10px; color: var(--primary-strong); background: var(--primary-soft);
-}
-.card h3 { font-size: .74rem; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); margin: 18px 0 8px; font-weight: 700; }
-.card h2 + h3 { margin-top: 4px; }
-
-/* forms */
-.field { display: grid; gap: 6px; margin-bottom: 14px; min-width: 0; }
-.lbl { font-weight: 600; font-size: .92rem; }
-.lbl .opt { font-weight: 400; color: var(--muted); }
-input[type=text], input[type=search] {
-  width: 100%; min-width: 0; min-height: 46px; padding: 10px 14px; font: inherit; color: var(--text);
-  background: var(--surface-solid); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  transition: border-color .14s, box-shadow .14s;
-}
-input[type=text]:hover, input[type=search]:hover { border-color: var(--primary); }
-input[type=text]:focus, input[type=search]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 22%, transparent); }
-input::placeholder { color: var(--faint); opacity: 1; }
-input[aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
-input.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; font-size: 1.06rem; }
-input.code::placeholder { text-transform: none; letter-spacing: .1em; }
-.row { display: flex; gap: 8px; min-width: 0; }
-.row > input { flex: 1 1 auto; }
-.row > button { flex: none; }
-.help { margin: 0; color: var(--muted); font-size: .85rem; }
-.help.good { color: var(--ok); font-weight: 600; }
-.err { margin: 0; color: var(--bad); font-size: .9rem; font-weight: 600; }
-.err:empty { display: none; }
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.onair::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .3); }
+.live-info { min-width: 0; }
 .chip {
-  min-height: 38px; padding: 6px 15px; border-radius: 999px; font-size: .9rem; font-weight: 550;
-  background: var(--surface-solid); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; gap: 8px; padding: 4px 11px; border-radius: 999px; font-size: .76rem; font-weight: 750;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
-.chip:hover:not(:disabled) { border-color: var(--primary); color: var(--primary-strong); background: var(--primary-soft); }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.2s ease-in-out infinite; }
+.chip.on { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.chip.on::before { animation: none; }
+.live h2 { margin: 14px 0 8px; font-size: clamp(1.3rem, 1rem + 1.1vw, 1.8rem); line-height: 1.25; letter-spacing: -.022em; }
+.timer { display: block; margin-top: 4px; font-size: .62em; font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 650; letter-spacing: .02em; }
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.live-text { margin: 0; color: var(--muted); }
+.live-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.live .fine { text-align: left; margin-top: 16px; }
 
-/* pairing */
-.pair { max-width: 640px; margin: 22px auto 0; }
-.pair.with-tvs { margin: 16px 0 0; max-width: none; }
-.steps { list-style: none; counter-reset: s; margin: 0 0 18px; padding: 0; display: grid; gap: 10px; color: var(--muted); font-size: .92rem; }
-.steps li { counter-increment: s; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: start; }
-.steps li::before {
-  content: counter(s); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
-  font-size: .78rem; font-weight: 700; color: var(--primary-strong); background: var(--primary-soft);
-}
-.steps b { color: var(--text); }
-.pair-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-
-/* remote */
-.keys { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.key {
-  flex-direction: column; gap: 5px; min-height: 70px; padding: 10px 6px; font-size: .85rem; font-weight: 550;
-  background: var(--surface-2); border-color: var(--border); text-align: center; line-height: 1.25;
-}
-.key:hover:not(:disabled) { border-color: var(--primary); background: var(--primary-soft); }
-.key .ic { width: 22px; height: 22px; color: var(--primary-strong); }
-.key.accent { background: var(--primary-soft); color: var(--primary-strong); border-color: color-mix(in srgb, var(--primary) 35%, transparent); }
-.vol { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.vol input[type=range] { flex: 1 1 auto; min-width: 0; accent-color: var(--primary); height: 32px; }
-.vol output { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: .9rem; font-weight: 600; }
-.icon-btn { width: 44px; padding: 0; flex: none; border-color: var(--border); }
-.icon-btn:hover:not(:disabled) { border-color: var(--primary); }
-
-/* file */
-.drop {
-  position: relative; display: grid; justify-items: center; gap: 4px; text-align: center; padding: 26px 16px;
-  border: 2px dashed var(--border-strong); border-radius: 14px; background: var(--surface-2); color: var(--muted); cursor: pointer;
-  transition: border-color .14s, background-color .14s;
-}
-.drop:hover, .drop.drag { border-color: var(--primary); color: var(--text); background: var(--primary-soft); }
-.drop:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
-.drop .ic { width: 30px; height: 30px; color: var(--primary); margin-bottom: 2px; }
-.drop strong { color: var(--text); font-weight: 650; }
-.drop span { font-size: .88rem; }
-.drop input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-.drop.busy { pointer-events: none; opacity: .7; }
-.progress-wrap { margin-top: 12px; }
-.progress-label { display: flex; justify-content: space-between; gap: 10px; font-size: .88rem; margin-bottom: 6px; }
-.progress-label span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.bar { height: 8px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
-.bar > span { display: block; height: 100%; width: 0; background: var(--grad); transition: width .15s; }
-
-/* apps */
-.apps-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.apps-tools input { flex: 1 1 180px; }
-.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 12px; max-height: 340px; overflow: auto; padding: 2px; }
-.apps:empty { display: none; }
-.apps button { display: block; text-align: left; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: .9rem; font-weight: 550; background: var(--surface-2); border-color: var(--border); min-width: 0; }
-.apps button:hover { border-color: var(--primary); }
-.apps .note { grid-column: 1 / -1; }
-
-/* screen */
-.switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 2px 0 6px; }
-.switch label { font-weight: 600; cursor: pointer; min-width: 0; }
-.switch .help { font-weight: 400; }
-.toggle {
-  -webkit-appearance: none; appearance: none; margin: 0; width: 50px; height: 30px; border-radius: 99px; flex: none;
-  background: var(--border-strong); position: relative; cursor: pointer; transition: background-color .15s;
-}
-.toggle::after {
-  content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%;
-  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3); transition: transform .15s;
-}
-.toggle:checked { background: var(--primary); }
-.toggle:checked::after { transform: translateX(20px); }
-.toggle:disabled { opacity: .5; }
-
-/* results */
-.results { margin-top: 14px; }
-.results .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
-.results h2 { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.results .head button { flex: none; white-space: nowrap; }
-.results ul { list-style: none; margin: 0; padding: 0; }
-.results li {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center;
-  padding: 9px 0; border-top: 1px solid var(--border); font-size: .92rem;
-}
-.results li b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.results li .msg { grid-column: 2; overflow-wrap: anywhere; color: var(--muted); }
-.results li.bad .msg { color: var(--bad); }
+/* unsupported */
+.card-ic { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; margin-bottom: 18px; background: var(--accent-soft); color: var(--accent-ink); }
+.card-ic .ic { width: 24px; height: 24px; }
+.url { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: .86rem; color: var(--text); word-break: break-all; }
 
 /* help */
-.helpbox { margin-top: 18px; }
-.helpbox details { border-top: 1px solid var(--border); padding: 12px 0; }
-.helpbox details:first-of-type { border-top: 0; padding-top: 4px; }
-.helpbox summary { cursor: pointer; font-weight: 600; }
-.helpbox summary:hover { color: var(--primary-strong); }
-.helpbox details p { margin: 8px 0 0; color: var(--muted); font-size: .92rem; max-width: 75ch; }
-.foot { margin-top: 22px; text-align: center; color: var(--faint); font-size: .82rem; }
-
-/* toast */
-.toast {
-  position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); z-index: 40;
-  width: min(580px, calc(100% - 32px)); transform: translate(-50%, 16px); opacity: 0; pointer-events: none;
-  display: flex; align-items: flex-start; gap: 8px; padding: 12px 8px 12px 16px; border-radius: 14px;
-  background: var(--toast-bg); color: var(--toast-text); box-shadow: var(--shadow-lg);
-  transition: opacity .18s, transform .18s; font-size: .94rem;
-}
-.toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
-.toast.bad { background: var(--toast-bad); color: #fff; }
-.toast .txt { flex: 1 1 auto; min-width: 0; padding-top: 4px; overflow-wrap: anywhere; }
-.toast .txt a {
-  display: flex; width: fit-content; margin-top: 8px; min-height: 32px; padding: 4px 12px; font-size: .86rem;
-  font-weight: 600; border-radius: 8px; color: inherit; border: 1px solid currentColor; text-decoration: none; align-items: center;
-}
-.toast .x { flex: none; width: 36px; min-height: 36px; padding: 0; background: transparent; color: inherit; border: 0; }
-
-/* dialog */
-dialog {
-  border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; background: var(--surface-solid); color: var(--text);
-  width: min(440px, calc(100% - 32px)); box-shadow: var(--shadow-lg);
-}
-dialog::backdrop { background: rgba(6, 14, 18, .55); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
-dialog h2 { margin: 0 0 8px; font-size: 1.12rem; letter-spacing: -.01em; }
-dialog p { margin: 0 0 14px; color: var(--muted); }
-.dlg-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+.help { border-top: 1px solid var(--border); padding: 36px 0 8px; }
+.help > h2 { margin: 0 0 18px; font-size: 1.05rem; letter-spacing: -.01em; }
+.help-grid { display: grid; gap: 20px 32px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); }
+.help h3 { margin: 0 0 4px; font-size: .95rem; }
+.help p { margin: 0; font-size: .92rem; color: var(--muted); }
+footer { display: flex; align-items: center; gap: 8px; padding: 28px 0 40px; color: var(--faint); font-size: .86rem; }
+footer .ic { width: 16px; height: 16px; }
+@media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
-  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4"/><path d="M10 9.5v5l4.5-2.5z"/></symbol>
-  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 17v-6M9.5 13.5 12 11l2.5 2.5"/></symbol>
-  <symbol id="i-remote" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="3"/><circle cx="12" cy="8" r="2"/><path d="M10 14h4M10 17.5h4"/></symbol>
-  <symbol id="i-apps" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
-  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
-  <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
-  <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
-  <symbol id="i-up" viewBox="0 0 24 24"><path d="M18 15l-6-6-6 6"/></symbol>
-  <symbol id="i-down" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
-  <symbol id="i-back" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></symbol>
-  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9v11h13V9"/></symbol>
-  <symbol id="i-recents" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="13" rx="2"/><path d="M7 4h10"/></symbol>
-  <symbol id="i-playpause" viewBox="0 0 24 24"><path d="M4 5v14l9-7z"/><path d="M16 5v14M20 5v14"/></symbol>
-  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M19 19 9 12l10-7z"/><path d="M5 5v14"/></symbol>
-  <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 5l10 7-10 7z"/><path d="M19 5v14"/></symbol>
-  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M22 9l-6 6M16 9l6 6"/></symbol>
-  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
-  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 4v6h-6"/><path d="M20.4 14.5A8.5 8.5 0 1 1 18.5 6L21 9"/></symbol>
-  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
-  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
-  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0M2 9a15 15 0 0 1 20 0M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.5h.01"/></symbol>
-  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
-  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><circle cx="12" cy="10" r="2.5"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/></symbol>
+  <symbol id="i-cast" viewBox="0 0 24 24"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><path d="M2 20h.01"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 11v5.5M12 7.5h.01"/></symbol>
-  <symbol id="i-all" viewBox="0 0 24 24"><rect x="2" y="3" width="13" height="9" rx="1.5"/><rect x="9" y="12" width="13" height="9" rx="1.5"/></symbol>
-  <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.7-2.5 2.2-2.5 4M12 17h.01"/></symbol>
-  <symbol id="i-cast" viewBox="0 0 24 24"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8M2 16a5 5 0 0 1 4 4M2 20h.01"/></symbol>
-  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 7.5v5.5M12 16.5h.01"/></symbol>
+  <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19.5h20"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></symbol>
 </svg>
 
 <div class="wrap">
   <header class="top">
-    <div class="brand">
-      <div class="logo" aria-hidden="true"><svg class="ic"><use href="#i-tv"/></svg></div>
-      <div class="brand-text">
-        <h1>Office TV <span class="tag">Remote</span></h1>
-        <p class="sub">Control the office TVs from any laptop or phone. No IP address needed.</p>
-      </div>
-    </div>
-    <a class="help-link" href="#help">Help</a>
+    <a class="brand" href="./" aria-label="Office TV home">
+      <span class="logo"><svg class="ic"><use href="#i-tv"/></svg></span>
+      <span>Office TV</span>
+    </a>
+    <a class="top-link" href="#help" id="helpLink">Help</a>
   </header>
 
-  <div class="banner bad" id="fatal" role="alert" hidden>
-    <svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg>
-    <p id="fatalText"></p>
-  </div>
+  <main class="stage" id="main">
+    <section class="hero" id="hero" aria-labelledby="heroTitle">
+      <p class="eyebrow"><svg class="ic"><use href="#i-cast"/></svg>Screen sharing</p>
+      <h1 id="heroTitle">Show your laptop screen on the office TV</h1>
+      <p class="lede">Enter the code shown on the TV and pick what to share. Your screen appears on the big screen in seconds, straight from your browser.</p>
+      <ol class="steps">
+        <li><span class="n">1</span>Open Office TV on the TV</li>
+        <li><span class="n">2</span>Enter the TV code</li>
+        <li><span class="n">3</span>Pick a screen, window or tab</li>
+      </ol>
+      <figure class="art" aria-hidden="true">
+        <svg viewBox="0 0 440 236" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="164" y="10" width="266" height="164" rx="14" fill="var(--art-body)" stroke="var(--art-frame)" stroke-width="2"/>
+          <rect x="176" y="22" width="242" height="140" rx="7" fill="var(--art-screen)"/>
+          <rect x="196" y="44" width="104" height="13" rx="6.5" fill="var(--accent)"/>
+          <rect x="196" y="70" width="148" height="7" rx="3.5" fill="var(--art-line)"/>
+          <rect x="196" y="84" width="118" height="7" rx="3.5" fill="var(--art-line)"/>
+          <rect x="196" y="98" width="132" height="7" rx="3.5" fill="var(--art-line)"/>
+          <rect x="352" y="112" width="12" height="32" rx="3" fill="var(--accent)" opacity=".45"/>
+          <rect x="370" y="98" width="12" height="46" rx="3" fill="var(--accent)" opacity=".7"/>
+          <rect x="388" y="80" width="12" height="64" rx="3" fill="var(--accent)"/>
+          <path d="M297 174v20M262 200h70" stroke="var(--art-frame)" stroke-width="4"/>
+          <rect x="14" y="108" width="128" height="84" rx="9" fill="var(--art-body)" stroke="var(--art-frame)" stroke-width="2"/>
+          <rect x="22" y="116" width="112" height="68" rx="4" fill="var(--art-screen)"/>
+          <rect x="32" y="128" width="52" height="7" rx="3.5" fill="var(--accent)"/>
+          <rect x="32" y="142" width="72" height="4" rx="2" fill="var(--art-line)"/>
+          <rect x="32" y="151" width="58" height="4" rx="2" fill="var(--art-line)"/>
+          <rect x="108" y="158" width="6" height="16" rx="1.5" fill="var(--accent)" opacity=".7"/>
+          <rect x="117" y="150" width="6" height="24" rx="1.5" fill="var(--accent)"/>
+          <path d="M4 200h148l-9 10H13z" fill="var(--art-base)" stroke="var(--art-frame)" stroke-width="2"/>
+          <circle cx="100" cy="100" r="4.5" fill="var(--accent)"/>
+          <path d="M102.8 84.2A16 16 0 0 1 115.2 95.1" stroke="var(--accent)" stroke-width="4.5"/>
+          <path d="M105.2 70.5A30 30 0 0 1 128.5 90.7" stroke="var(--accent)" stroke-width="4.5" opacity=".7"/>
+          <path d="M107.6 56.7A44 44 0 0 1 141.8 86.4" stroke="var(--accent)" stroke-width="4.5" opacity=".4"/>
+        </svg>
+      </figure>
+    </section>
 
-  <nav class="picker" id="picker" aria-label="Choose a TV" hidden></nav>
-
-  <section class="tvbar" id="tvBar" aria-label="Selected TV" hidden>
-    <div class="info">
-      <div class="title"><span class="dot" id="barDot" aria-hidden="true"></span><span id="barName"></span></div>
-      <div class="meta" id="barMeta"></div>
-    </div>
-    <div class="actions">
-      <button type="button" class="btn-primary btn-sm" id="castBtn" title="Show this computer's screen on the TV, like Chromecast."><svg class="ic" aria-hidden="true"><use href="#i-cast"/></svg>Share my screen</button>
-      <button type="button" class="btn-ghost btn-sm" id="refreshBtn"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg><span>Refresh</span></button>
-      <button type="button" class="btn-ghost btn-sm" id="liveBtn" title="Live Screen works when this laptop is on the same Wi-Fi as the TV."><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg>Live Screen</button>
-      <button type="button" class="btn-ghost btn-sm" id="renameBtn"><svg class="ic" aria-hidden="true"><use href="#i-edit"/></svg>Rename</button>
-      <a class="btn btn-ghost btn-sm" id="barLan" target="_blank" rel="noopener" hidden><svg class="ic" aria-hidden="true"><use href="#i-wifi"/></svg>Same Wi-Fi page</a>
-      <button type="button" class="btn-danger btn-sm" id="removeBtn"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>Remove</button>
-    </div>
-  </section>
-
-  <div class="banner cast" id="castPanel" role="status" aria-live="polite" hidden>
-    <svg class="ic" aria-hidden="true"><use href="#i-cast"/></svg>
-    <p><strong id="castState"></strong> <span id="castText"></span></p>
-    <button type="button" class="btn-danger btn-sm" id="castStop">Stop sharing</button>
-    <button type="button" class="btn-ghost btn-sm" id="castClose" hidden>Close</button>
-  </div>
-
-  <div class="banner" id="permBanner" role="status" hidden>
-    <svg class="ic" aria-hidden="true"><use href="#i-alert"/></svg>
-    <p id="permText"></p>
-  </div>
-  <p class="note warn" id="storageNote" hidden>
-    This browser cannot remember your TVs (it may be a private window). You will need to add the TV again after closing this page.
-  </p>
-
-  <section class="card pair" id="pairCard" aria-labelledby="pairTitle" hidden>
-    <h2 id="pairTitle"><svg class="ic" aria-hidden="true"><use href="#i-tv"/></svg>Add a TV</h2>
-    <ol class="steps">
-      <li><span>Open the <b>Office TV</b> app on the TV.</span></li>
-      <li><span>Type the <b>TV code</b> shown on the screen below (for example <span class="nowrap">7K3M9-QX2TD</span>).</span></li>
-      <li><span>On a phone, you can scan the QR code on the TV instead and it connects automatically.</span></li>
-    </ol>
-    <form id="pairForm" novalidate>
-      <div class="field">
-        <label class="lbl" for="pairName">TV name <span class="opt">(optional)</span></label>
-        <input type="text" id="pairName" maxlength="40" autocomplete="off" placeholder="For example: Conference room">
-      </div>
-      <div class="field">
-        <label class="lbl" for="pairCode">TV code</label>
-        <input type="text" id="pairCode" class="code" autocomplete="off" autocapitalize="characters" autocorrect="off"
-               spellcheck="false" inputmode="text" placeholder="7K3M9-QX2TD" aria-describedby="pairHelp pairErr">
-        <p class="help" id="pairHelp">10 characters. Upper or lower case, spaces and dashes are all fine.</p>
-        <p class="err" id="pairErr" role="alert"></p>
-      </div>
-      <div class="pair-actions">
-        <button class="btn-primary" id="pairSubmit">Add TV</button>
-        <button type="button" class="btn-ghost" id="pairCancel" hidden>Cancel</button>
-      </div>
-    </form>
-  </section>
-
-  <section class="card results" id="results" aria-labelledby="resultsTitle" hidden>
-    <div class="head">
-      <h2 id="resultsTitle">Results for all TVs</h2>
-      <button type="button" class="btn-ghost btn-sm" id="resultsClose">Close</button>
-    </div>
-    <ul id="resultsList"></ul>
-  </section>
-
-  <main class="grid2" id="controls" hidden>
-    <div class="col">
-      <section class="card" aria-labelledby="hLink">
-        <h2 id="hLink"><svg class="ic" aria-hidden="true"><use href="#i-link"/></svg>Open a link, meeting or website</h2>
-        <form class="row" id="openForm">
-          <label class="sr-only" for="url">Link or website</label>
-          <input type="text" id="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"
-                 placeholder="meet.google.com/abc-defg-hij or any website">
-          <button class="btn-primary">Open</button>
-        </form>
-        <p class="help" style="margin-top:8px">No need to type https://. A Meet code (abc-defg-hij) works too.</p>
-        <h3>Quick open</h3>
-        <div class="chips">
-          <button type="button" class="chip" data-url="https://www.youtube.com">YouTube</button>
-          <button type="button" class="chip" data-url="https://meet.google.com/landing?authuser=0">Google Meet</button>
-          <button type="button" class="chip" data-url="https://zoom.us/join">Zoom</button>
-          <button type="button" class="chip" data-url="https://teams.microsoft.com">Teams</button>
-          <button type="button" class="chip" data-url="https://www.google.com">Google</button>
-        </div>
-        <h3>Google apps</h3>
-        <div class="chips">
-          <button type="button" class="chip" data-url="https://mail.google.com/mail/u/0/">Gmail</button>
-          <button type="button" class="chip" data-url="https://drive.google.com/drive/u/0/my-drive">Drive</button>
-          <button type="button" class="chip" data-url="https://docs.google.com/spreadsheets/u/0/">Sheets</button>
-          <button type="button" class="chip" data-url="https://docs.google.com/document/u/0/">Docs</button>
-          <button type="button" class="chip" data-url="https://docs.google.com/presentation/u/0/">Slides</button>
-          <button type="button" class="chip" data-url="https://chat.google.com/u/0/">Chat</button>
-          <button type="button" class="chip" data-url="https://calendar.google.com/calendar/u/0/r">Calendar</button>
-        </div>
-        <p class="note">The first time, sign in to your Google account in the browser on the TV.</p>
-        <div class="tip" id="chromeTip" hidden>
-          <svg class="ic" aria-hidden="true"><use href="#i-info"/></svg>
-          <p>Tip: Sign in to your Google account once in Chrome on the TV, and turn on Desktop site (Chrome ⋮ → Settings → Site settings → Desktop site) for the full computer view.</p>
-        </div>
-      </section>
-
-      <section class="card" aria-labelledby="hYt">
-        <h2 id="hYt"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>YouTube</h2>
-        <form class="row" id="ytForm">
-          <label class="sr-only" for="yt">Video name or YouTube link</label>
-          <input type="text" id="yt" autocomplete="off" placeholder="Search videos or paste a YouTube link">
-          <button class="btn-primary">Play</button>
+    <div class="panel" id="panel">
+      <!-- First visit, or "Add another TV" -->
+      <section class="card" id="setupCard" aria-labelledby="setupTitle" hidden>
+        <h2 id="setupTitle" tabindex="-1">Connect to a TV</h2>
+        <p class="sub">Find it on the TV, in the Office TV app.</p>
+        <form id="setupForm" novalidate autocomplete="off">
+          <div class="field">
+            <label for="code">TV code</label>
+            <input id="code" class="code" name="code" type="text" inputmode="text" autocapitalize="characters" autocorrect="off" spellcheck="false"
+                   maxlength="120" placeholder="7K3M9-QX2TD" aria-describedby="codeHint codeErr">
+            <p class="hint" id="codeHint">10 letters and numbers, as shown on the TV.</p>
+            <p class="field-err" id="codeErr" role="alert" hidden></p>
+          </div>
+          <div class="field">
+            <label for="tvName">TV name <span class="opt">(optional)</span></label>
+            <input id="tvName" name="tvName" type="text" maxlength="40" placeholder="Conference Room">
+          </div>
+          <div class="notice bad" id="setupErr" role="alert" hidden>
+            <svg class="ic"><use href="#i-alert"/></svg><p><strong id="setupErrTitle"></strong><span id="setupErrText"></span></p>
+          </div>
+          <button class="btn btn-primary btn-big" id="connectBtn" type="submit">
+            <span class="spin" aria-hidden="true"></span><svg class="ic"><use href="#i-cast"/></svg><span id="connectLabel">Connect and share screen</span>
+          </button>
+          <p class="fine">Your browser will then ask what to share.</p>
+          <div class="text-actions" id="setupBackRow" hidden>
+            <button class="link" type="button" id="setupBack">Back to my TVs</button>
+          </div>
         </form>
       </section>
 
-      <section class="card" aria-labelledby="hFile">
-        <h2 id="hFile"><svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>Show a presentation, PDF, photo or video</h2>
-        <label class="drop" id="drop">
-          <input type="file" id="file" accept=".pdf,.ppt,.pptx,.pps,.ppsx,.doc,.docx,.xls,.xlsx,.odp,.odt,.ods,.txt,image/*,video/*,audio/*" aria-describedby="fileHint">
-          <svg class="ic" aria-hidden="true"><use href="#i-file"/></svg>
-          <strong id="fileLabel">Choose a file or drop it here</strong>
-          <span id="fileHint">It opens on the TV automatically. Up to 20 MB.</span>
-        </label>
-        <div class="progress-wrap" id="progWrap" hidden>
-          <div class="progress-label"><span id="progName"></span><span id="progPct">0%</span></div>
-          <div class="bar" role="progressbar" id="progBar" aria-label="File upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+      <!-- Returning visitor -->
+      <section class="card" id="homeCard" aria-labelledby="homeTitle" hidden>
+        <h2 id="homeTitle" tabindex="-1">Your TV</h2>
+        <div class="tvs" id="tvList" role="radiogroup" aria-labelledby="homeTitle"></div>
+        <div class="notice" id="offlineHint" hidden>
+          <svg class="ic"><use href="#i-info"/></svg><p><strong>The TV is not answering.</strong><span>Open the Office TV app on the TV once, then try again.</span></p>
         </div>
-        <div class="inline-msg" id="fileMsg" role="alert" hidden></div>
-        <p class="note">Larger than 20 MB? Put it on Google Drive and send the link above, or open the TV's page on the same Wi-Fi.</p>
-        <div class="actions" style="margin-top:10px">
-          <a class="btn btn-ghost btn-sm" id="fileLan" target="_blank" rel="noopener" hidden><svg class="ic" aria-hidden="true"><use href="#i-wifi"/></svg>Open the TV's Same Wi-Fi page</a>
+        <div class="notice" id="notice" role="status" hidden>
+          <svg class="ic"><use id="noticeIcon" href="#i-info"/></svg><p><strong id="noticeTitle"></strong><span id="noticeText"></span></p>
         </div>
-      </section>
-    </div>
-
-    <div class="col">
-      <section class="card" aria-labelledby="hRemote">
-        <h2 id="hRemote"><svg class="ic" aria-hidden="true"><use href="#i-remote"/></svg>Remote</h2>
-        <h3>Slides and pages</h3>
-        <div class="keys">
-          <button type="button" class="key accent" data-key="prev_slide"><svg class="ic" aria-hidden="true"><use href="#i-left"/></svg>Previous slide</button>
-          <button type="button" class="key" data-key="scroll_up"><svg class="ic" aria-hidden="true"><use href="#i-up"/></svg>Scroll up</button>
-          <button type="button" class="key accent" data-key="next_slide"><svg class="ic" aria-hidden="true"><use href="#i-right"/></svg>Next slide</button>
-          <button type="button" class="key" data-key="back"><svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>Back</button>
-          <button type="button" class="key" data-key="scroll_down"><svg class="ic" aria-hidden="true"><use href="#i-down"/></svg>Scroll down</button>
-          <button type="button" class="key" data-key="home"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg>Home</button>
+        <button class="btn btn-primary btn-big" id="shareBtn" type="button">
+          <span class="spin" aria-hidden="true"></span><svg class="ic"><use href="#i-cast"/></svg><span id="shareLabel">Share my screen</span>
+        </button>
+        <p class="fine">Your browser will then ask what to share.</p>
+        <div class="text-actions">
+          <button class="link" type="button" id="addBtn">Add another TV</button>
+          <button class="link danger" type="button" id="forgetBtn">Forget this TV</button>
         </div>
-        <p class="note" id="kbdHint">On a laptop, the &larr; &rarr; arrow keys also change slides.</p>
-        <p class="note warn" id="a11yNote" hidden>For Back, Home and the slide buttons, open the Office TV app on the TV and turn on Accessibility.</p>
-        <h3>Media</h3>
-        <div class="keys">
-          <button type="button" class="key" data-key="previous"><svg class="ic" aria-hidden="true"><use href="#i-prev"/></svg>Previous</button>
-          <button type="button" class="key" data-key="play_pause"><svg class="ic" aria-hidden="true"><use href="#i-playpause"/></svg>Play / Pause</button>
-          <button type="button" class="key" data-key="next"><svg class="ic" aria-hidden="true"><use href="#i-next"/></svg>Next</button>
+        <div class="confirm" id="forgetConfirm" hidden>
+          <p id="forgetText"></p>
+          <div class="row">
+            <button class="btn btn-danger" type="button" id="forgetYes">Forget</button>
+            <button class="btn btn-quiet" type="button" id="forgetNo">Keep</button>
+          </div>
         </div>
-        <h3>Volume</h3>
-        <div class="vol">
-          <button type="button" class="icon-btn" data-key="mute" aria-label="Mute"><svg class="ic" aria-hidden="true"><use href="#i-mute"/></svg></button>
-          <button type="button" class="icon-btn" data-key="volume_down" aria-label="Volume down"><svg class="ic" aria-hidden="true"><use href="#i-minus"/></svg></button>
-          <input type="range" id="vol" min="0" max="100" step="5" value="40" aria-label="Volume">
-          <button type="button" class="icon-btn" data-key="volume_up" aria-label="Volume up"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg></button>
-          <output id="volOut" for="vol">40%</output>
-        </div>
+        <p class="fine" id="storageNote" hidden>This browser will forget the TV when you close the tab.</p>
       </section>
 
-      <section class="card" aria-labelledby="hScreen">
-        <h2 id="hScreen"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg>Screen</h2>
-        <div class="switch">
-          <label for="awake">Keep the screen on<br><span class="help">The TV will not go to sleep on its own.</span></label>
-          <input type="checkbox" class="toggle" id="awake" role="switch" checked>
-        </div>
-        <div class="actions" style="margin-top:10px">
-          <button type="button" class="btn-soft" data-key="wake"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg>Wake screen</button>
-          <button type="button" class="btn-soft" data-key="recents"><svg class="ic" aria-hidden="true"><use href="#i-recents"/></svg>Recent apps</button>
-        </div>
+      <!-- Phones, tablets and browsers without screen sharing -->
+      <section class="card" id="unsupportedCard" aria-labelledby="unsupTitle" hidden>
+        <div class="card-ic"><svg class="ic"><use href="#i-laptop"/></svg></div>
+        <h2 id="unsupTitle">Use a laptop to share your screen</h2>
+        <p class="sub" id="unsupText">Screen sharing needs Chrome, Edge or Safari on a laptop, Chromebook or Mac.</p>
+        <p class="hint">Open this page on the laptop you want to show:<br><span class="url">nikhildiwakar-bit.github.io/Portfolio/tv</span></p>
       </section>
 
-      <section class="card" aria-labelledby="hApps">
-        <h2 id="hApps"><svg class="ic" aria-hidden="true"><use href="#i-apps"/></svg>TV apps</h2>
-        <div class="apps-tools">
-          <button type="button" class="btn-soft" id="loadApps">Show apps</button>
-          <label class="sr-only" for="appFilter">Search apps</label>
-          <input type="search" id="appFilter" placeholder="Search apps" autocomplete="off" hidden>
+      <!-- While sharing -->
+      <section class="live" id="livePanel" aria-labelledby="liveTitle" hidden>
+        <div class="preview">
+          <video id="preview" muted autoplay playsinline disablepictureinpicture aria-label="Preview of what the TV shows"></video>
+          <span class="onair" id="onAir" hidden>Live</span>
+          <div class="veil" id="veil"><span class="spin" aria-hidden="true"></span></div>
         </div>
-        <p class="note" id="appsNote" hidden>Choose a single TV above to see its apps.</p>
-        <div class="apps" id="apps" role="group" aria-label="TV apps"></div>
+        <div class="live-info">
+          <span class="chip" id="liveChip" aria-live="polite">Connecting</span>
+          <h2 id="liveTitle" tabindex="-1"><span id="liveLabel">Connecting…</span><span class="timer" id="liveTimer" hidden><span class="vh" id="liveSep"></span><span id="liveClock"></span></span></h2>
+          <p class="live-text" id="liveText"></p>
+          <div class="live-actions">
+            <button class="btn btn-stop" type="button" id="stopBtn"><svg class="ic" style="fill:currentColor;stroke:none"><use href="#i-stop"/></svg><span id="stopLabel">Stop sharing</span></button>
+          </div>
+          <p class="fine">Keep this tab open while you share. Closing it stops sharing.</p>
+        </div>
       </section>
     </div>
   </main>
 
-  <section class="card helpbox" id="help" aria-labelledby="hHelp">
-    <h2 id="hHelp"><svg class="ic" aria-hidden="true"><use href="#i-help"/></svg>Help</h2>
-    <details>
-      <summary>Where do I find the TV code?</summary>
-      <p>Open the Office TV app on the TV. The screen shows a 10-character TV code and a QR code. Scan the QR code with a phone and the TV connects automatically.</p>
-    </details>
-    <details>
-      <summary>The TV is not answering?</summary>
-      <p>Make sure the TV is on and connected to the internet. Open the Office TV app on the TV once. The date and time on your laptop must be correct. Then press Refresh above.</p>
-    </details>
-    <details>
-      <summary>My laptop and the TV are on different Wi-Fi networks?</summary>
-      <p>That is fine. This page sends commands to the TV over the internet, so you do not need an IP address or the same Wi-Fi.</p>
-    </details>
-    <details>
-      <summary>It says the daily limit was reached?</summary>
-      <p>Commands travel through the free ntfy.sh relay, which allows a limited number of messages per day for the whole office. Try again later, or open the TV's "Same Wi-Fi page" while on the TV's Wi-Fi.</p>
-    </details>
-    <details>
-      <summary>Is this safe?</summary>
-      <p>Every command is encrypted with the TV code. Without the code nobody can control the TV. Share the code only with people in the office. Choosing "New code" in the TV app turns off the old code.</p>
-    </details>
+  <section class="help" id="help" aria-labelledby="helpTitle">
+    <h2 id="helpTitle">Help</h2>
+    <div class="help-grid">
+      <div><h3>The TV shows as offline?</h3><p>Open the Office TV app on the TV once. It stays reachable after that.</p></div>
+      <div><h3>Smooth picture</h3><p>Works best when the laptop and TV are on the same Wi-Fi.</p></div>
+      <div><h3>First time on a Mac?</h3><p>macOS may ask you to allow Screen Recording for your browser in System Settings. Allow it, then reopen the browser.</p></div>
+      <div><h3>Sound</h3><p>To play sound on the TV, share a browser tab and keep “Also share tab audio” on.</p></div>
+    </div>
   </section>
-  <p class="foot">Office TV Remote</p>
+
+  <footer>
+    <svg class="ic"><use href="#i-lock"/></svg>
+    <span>End-to-end encrypted. Your screen goes straight from this browser to the TV.</span>
+  </footer>
 </div>
-
-<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true">
-  <div class="txt"><span id="toastText"></span><a id="toastLink" target="_blank" rel="noopener" hidden></a></div>
-  <button type="button" class="x" id="toastClose" aria-label="Dismiss message"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
-</div>
-
-<dialog id="renameDlg" aria-labelledby="renameTitle">
-  <form method="dialog" id="renameForm">
-    <h2 id="renameTitle">Rename TV</h2>
-    <p>The new name also shows on the TV.</p>
-    <label class="lbl" for="renameInput">New name</label>
-    <input type="text" id="renameInput" maxlength="40" autocomplete="off" style="margin-top:6px">
-    <p class="err" id="renameErr" role="alert" style="margin-top:6px"></p>
-    <div class="dlg-actions">
-      <button type="button" class="btn-ghost" id="renameCancel">Cancel</button>
-      <button class="btn-primary" id="renameOk" value="ok">Save</button>
-    </div>
-  </form>
-</dialog>
-
-<dialog id="removeDlg" aria-labelledby="removeTitle">
-  <form method="dialog">
-    <h2 id="removeTitle">Remove this TV?</h2>
-    <p id="removeText"></p>
-    <div class="dlg-actions">
-      <button type="button" class="btn-ghost" id="removeCancel">Cancel</button>
-      <button class="btn-danger-solid" id="removeOk" value="ok">Remove</button>
-    </div>
-  </form>
-</dialog>
-
-<noscript><p style="text-align:center;padding:16px">Please turn on JavaScript in your browser to use this page.</p></noscript>
-<script nomodule>
-  document.getElementById('fatal').hidden = false;
-  document.getElementById('fatalText').textContent = 'This browser is too old. Please use a recent version of Chrome, Edge or Safari.';
-</script>
-<script type="module" src="app.js?v=3"></script>
+<script type="module" src="app.js?v=4"></script>
 </body>
 </html>

@@ -1,15 +1,10 @@
 package com.nikhil.officetv.relay;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.IOException;
 import java.net.ServerSocket;
-import java.security.GeneralSecurityException;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -25,7 +20,6 @@ public final class RelayClientTest {
     static final class Recorder implements RelayClient.Handler {
         final List<String> commands = Collections.synchronizedList(new ArrayList<>());
         final List<String> states = Collections.synchronizedList(new ArrayList<>());
-        volatile RelayClient client;
         volatile CountDownLatch slow;
 
         int count(String tag) {
@@ -56,20 +50,19 @@ public final class RelayClientTest {
                         CountDownLatch l = slow;
                         if (l != null) l.await(10, TimeUnit.SECONDS);
                         break;
-                    case "apps":
-                        r.put("data", new JSONObject().put("apps", fakeApps(args.optInt("n", 300))));
-                        break;
-                    case "file":
-                        byte[] b = client.fetchFile(args);
-                        r.put("msg", "bytes=" + b.length + " sha256=" + sha256(b));
+                    case "big":
+                        // Far too big for one envelope: the client must drop data and cut msg.
+                        StringBuilder m = new StringBuilder();
+                        for (int i = 0; i < 10000; i++) m.append('M');
+                        StringBuilder blob = new StringBuilder();
+                        for (int i = 0; i < 5000; i++) blob.append('b');
+                        r.put("msg", m.toString()).put("data", new JSONObject().put("blob", blob.toString()));
                         break;
                     case "boom":
                         throw new IllegalStateException("handler bug");
                     default:
                         break;
                 }
-            } catch (IOException | GeneralSecurityException e) {
-                return new JSONObject().put("ok", false).put("msg", e.getMessage());
             } catch (InterruptedException e) {
                 return new JSONObject().put("ok", false).put("msg", "interrupted");
             }
@@ -79,23 +72,6 @@ public final class RelayClientTest {
         @Override
         public void onState(RelayClient.State state, String detail) {
             states.add(state + " " + detail);
-        }
-    }
-
-    static JSONArray fakeApps(int n) {
-        JSONArray a = new JSONArray();
-        for (int i = 0; i < n; i++) {
-            a.put(new JSONObject().put("label", "App number " + i + " with a fairly long label टीवी " + i)
-                    .put("pkg", "com.vendor.app" + i));
-        }
-        return a;
-    }
-
-    static String sha256(byte[] b) {
-        try {
-            return T.hex(MessageDigest.getInstance("SHA-256").digest(b));
-        } catch (Exception e) {
-            throw new IllegalStateException(e);
         }
     }
 
@@ -123,7 +99,6 @@ public final class RelayClientTest {
         String code = Pairing.newCode(new SecureRandom());
         Recorder h = new Recorder();
         RelayClient c = new RelayClient(fake.baseUrl() + "/", code, h, sf);
-        h.client = c;
         c.backoffUnitMs = 100;
         c.rateLimitMinMs = 700;
         TestController ctl = new TestController(fake.baseUrl(), code, sf);
@@ -220,68 +195,15 @@ public final class RelayClientTest {
         h.slow.countDown();
         T.ok(ctl.awaitAck(slowId, 5000) != null && ctl.awaitAck(fastId, 5000) != null, "both acked after the slow one finished");
 
-        T.section("apps are split into parts < 3900 bytes");
+        T.section("oversized ack -> one envelope < 3900 bytes");
         int sizes0 = ctl.ackSizes().size();
-        String appsId = ctl.send("apps", new JSONObject().put("n", 300));
-        List<JSONObject> parts = ctl.awaitParts(appsId, 8000);
+        String bigId = ctl.send("big", tag("big"));
+        JSONObject bigAck = ctl.awaitAck(bigId, 5000);
         List<Integer> sizes = ctl.ackSizes().subList(sizes0, ctl.ackSizes().size());
-        int n = parts.isEmpty() ? 0 : parts.get(0).optInt("parts");
-        List<String> labels = new ArrayList<>();
-        for (JSONObject p : parts) {
-            JSONArray a = p.getJSONObject("data").getJSONArray("apps");
-            for (int i = 0; i < a.length(); i++) labels.add(a.getJSONObject(i).getString("pkg"));
-        }
-        List<String> want = new ArrayList<>();
-        JSONArray all = fakeApps(300);
-        for (int i = 0; i < all.length(); i++) want.add(all.getJSONObject(i).getString("pkg"));
-        System.out.println("     apps ack: " + n + " parts, envelope sizes " + sizes);
-        T.ok(n > 1 && parts.size() == n, "all " + n + " parts arrived");
-        T.ok(!sizes.isEmpty() && Collections.max(sizes) < 3900, "every ack envelope on the wire < 3900 bytes");
-        T.eq(want, labels, "parts reassemble to the 300 apps");
-
-        T.section("fetchFile");
-        byte[] plain = new byte[1024 * 1024];
-        new SecureRandom().nextBytes(plain);
-        byte[] iv = RelayCrypto.randomIv();
-        byte[] sealed = new RelayCrypto(code).sealFile(plain, iv);
-        JSONObject up = ctl.upload(fake.baseUrl() + "/" + topic + "?filename=otv.bin&firebase=no", sealed);
-        String url = up.getJSONObject("attachment").getString("url");
-        JSONObject fargs = new JSONObject().put("url", url).put("iv", RelayCrypto.b64url(iv)).put("size", plain.length)
-                .put("name", "Sales.pptx");
-        T.ok(Arrays.equals(plain, c.fetchFile(fargs)), "1 MiB round trip: fetchFile returns identical bytes");
-        String fileId = ctl.send("file", fargs);
-        JSONObject fack = ctl.awaitAck(fileId, 10000);
-        T.ok(fack != null && fack.optBoolean("ok") && fack.optString("msg").equals("bytes=" + plain.length + " sha256=" + sha256(plain)),
-                "'file' command: handler fetched and decrypted it (" + (fack == null ? "no ack" : fack.optString("msg")) + ")");
-
-        byte[] bad = sealed.clone();
-        bad[bad.length / 2] ^= 1;
-        String badUrl = ctl.upload(fake.baseUrl() + "/" + topic + "?filename=otv.bin", bad).getJSONObject("attachment").getString("url");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", badUrl), GeneralSecurityException.class, "tampered file -> GeneralSecurityException");
-        expectFail(c, new JSONObject(fargs.toString()).put("iv", RelayCrypto.b64url(RelayCrypto.randomIv())),
-                GeneralSecurityException.class, "wrong IV -> GeneralSecurityException");
-        expectFail(c, new JSONObject(fargs.toString()).put("iv", "***"), GeneralSecurityException.class, "garbage IV -> GeneralSecurityException");
-        expectFail(c, new JSONObject(fargs.toString()).put("size", 16 * 1024 * 1024 + 1), IOException.class, "size > 16 MiB -> IOException");
-        byte[] huge = new byte[16 * 1024 * 1024 + 17];
-        String hugeUrl = ctl.upload(fake.baseUrl() + "/" + topic + "?filename=otv.bin", huge).getJSONObject("attachment").getString("url");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", hugeUrl).put("size", 1), IOException.class,
-                "download > 16 MiB + tag -> IOException");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", fake.baseUrl() + "/file/nope"), IOException.class, "404 -> IOException");
-
-        int reqs = fake.requests().size();
-        String hostPort = "127.0.0.1:" + fake.port();
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "http://" + hostPort + "/file/x"), IOException.class, "http:// rejected (https relay)");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "https://evil.example.com/file/x"), IOException.class, "foreign host rejected");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "https://localhost:" + fake.port() + "/file/x"), IOException.class,
-                "other host name for the same machine rejected");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "https://127.0.0.1:" + (fake.port() + 1) + "/file/x"), IOException.class,
-                "same host, other port rejected");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "https://u:p@" + hostPort + "/file/x"), IOException.class, "user info rejected");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "file:///etc/passwd"), IOException.class, "file:// rejected");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "not a url"), IOException.class, "malformed url rejected");
-        expectFail(c, new JSONObject().put("iv", RelayCrypto.b64url(iv)), IOException.class, "missing url rejected");
-        expectFail(c, null, IOException.class, "null args rejected");
-        T.eq(reqs, fake.requests().size(), "rejected urls were never requested");
+        T.ok(bigAck != null && bigAck.optBoolean("ok") && bigAck.optInt("parts") == 1 && bigAck.getJSONObject("data").length() == 0
+                && bigAck.optString("msg").startsWith("MMMM") && bigAck.optString("msg").length() < 10000,
+                "big result: ok kept, data dropped, msg cut");
+        T.ok(sizes.size() == 1 && sizes.get(0) < 3900, "exactly one ack envelope on the wire, < 3900 bytes " + sizes);
 
         T.section("stream drop -> reconnect with since= -> gap message delivered");
         c.backoffUnitMs = 500;
@@ -360,15 +282,6 @@ public final class RelayClientTest {
         fake.close();
     }
 
-    static void expectFail(RelayClient c, JSONObject args, Class<? extends Exception> type, String name) {
-        try {
-            c.fetchFile(args);
-            T.ok(false, name + " (no exception)");
-        } catch (Exception e) {
-            T.ok(type.isInstance(e), name + " [" + e.getClass().getSimpleName() + ": " + e.getMessage() + "]");
-        }
-    }
-
     // ------------------------------------------------------------------ plain http (local test relay)
 
     static void httpSuite() throws Exception {
@@ -377,23 +290,12 @@ public final class RelayClientTest {
         String code = Pairing.newCode(new SecureRandom());
         Recorder h = new Recorder();
         RelayClient c = new RelayClient(fake.baseUrl(), code, h, null);
-        h.client = c;
         TestController ctl = new TestController(fake.baseUrl(), code, null);
         ctl.subscribe(5000);
         c.start();
         T.ok(T.waitFor(5000, () -> c.state() == RelayClient.State.CONNECTED), "CONNECTED over http");
         String id = ctl.send("ping", tag("h1"));
         T.ok(ctl.awaitAck(id, 5000) != null, "ping acked over http");
-
-        byte[] plain = "%PDF-1.4 small test".getBytes("UTF-8");
-        byte[] iv = RelayCrypto.randomIv();
-        JSONObject up = ctl.upload(fake.baseUrl() + "/" + c.topic() + "?filename=otv.bin&firebase=no",
-                new RelayCrypto(code).sealFile(plain, iv));
-        JSONObject fargs = new JSONObject().put("url", up.getJSONObject("attachment").getString("url"))
-                .put("iv", RelayCrypto.b64url(iv)).put("size", plain.length);
-        T.ok(Arrays.equals(plain, c.fetchFile(fargs)), "http relay: same-host http attachment allowed");
-        expectFail(c, new JSONObject(fargs.toString()).put("url", "http://evil.example.com/file/x"), IOException.class,
-                "http relay: foreign host still rejected");
 
         Thread reader = c.readerThread();
         long s0 = System.nanoTime();

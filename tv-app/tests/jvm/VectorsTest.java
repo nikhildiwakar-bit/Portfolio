@@ -7,16 +7,13 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
-import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -63,13 +60,7 @@ public final class VectorsTest {
         T.eq(RelayCrypto.envelopeLength(m.getString("plaintext").getBytes(StandardCharsets.UTF_8).length),
                 envelope.length(), "envelopeLength formula");
 
-        JSONObject f = v.getJSONObject("file");
-        byte[] fileIv = T.unhex(f.getString("ivHex"));
-        byte[] fileCt = RelayCrypto.unb64url(f.getString("ciphertextB64u"));
-        T.eq(f.getString("plaintextHex"), T.hex(rc.openFile(fileCt, fileIv)), "openFile(vector)");
-        T.eq(f.getString("ciphertextB64u"), RelayCrypto.b64url(rc.sealFile(T.unhex(f.getString("plaintextHex")), fileIv)),
-                "sealFile == vector ciphertext");
-        T.eq(f.getString("aad"), rc.topic() + ":file", "file AAD");
+        // The "file" vector belongs to the website's own file code; Office TV 3.0 no longer receives files.
 
         T.section("tampering");
         int dot = envelope.lastIndexOf('.');
@@ -99,29 +90,6 @@ public final class VectorsTest {
         byte[] ct = c.doFinal(m.getString("plaintext").getBytes(StandardCharsets.UTF_8));
         T.eq(null, rc.open("otv1." + RelayCrypto.b64url(iv) + "." + RelayCrypto.b64url(ct)), "wrong-topic AAD -> null");
 
-        boolean threw = false;
-        try {
-            rc.openFile(RelayCrypto.unb64url(envelope.substring(dot + 1)), iv);
-        } catch (AEADBadTagException e) {
-            threw = true;
-        }
-        T.ok(threw, "openFile with message AAD -> AEADBadTagException");
-        byte[] flipped = fileCt.clone();
-        flipped[3] ^= 1;
-        threw = false;
-        try {
-            rc.openFile(flipped, fileIv);
-        } catch (GeneralSecurityException e) {
-            threw = true;
-        }
-        T.ok(threw, "tampered file -> GeneralSecurityException");
-        threw = false;
-        try {
-            rc.openFile(new byte[5], fileIv);
-        } catch (GeneralSecurityException e) {
-            threw = true;
-        }
-        T.ok(threw, "short file -> GeneralSecurityException");
     }
 
     static void base64() {
@@ -190,11 +158,11 @@ public final class VectorsTest {
         T.eq(base, Pairing.pairUrl("7K3M9QX2TD", "", ""), "pairUrl: empty name and relay omitted");
         T.eq(base + "&name=A&relay=https%3A%2F%2Frelay.example.com%2Fntfy",
                 Pairing.pairUrl("7K3M9QX2TD", "A", "https://relay.example.com/ntfy"), "pairUrl: custom relay encoded");
-        String hindi = "मीटिंग रूम & TV #2";
-        String url = Pairing.pairUrl("7K3M9QX2TD", hindi, null);
+        String intl = "Salle de réunion & TV #2 会议室";
+        String url = Pairing.pairUrl("7K3M9QX2TD", intl, null);
         String enc = url.substring(url.indexOf("&name=") + 6);
         T.ok(enc.matches("[A-Za-z0-9%._~-]+"), "pairUrl: name is fully percent-encoded");
-        T.eq(hindi, URLDecoder.decode(enc, "UTF-8"), "pairUrl: name decodes back");
+        T.eq(intl, URLDecoder.decode(enc, "UTF-8"), "pairUrl: name decodes back");
         T.eq("https://ntfy.sh", RelayClient.normalizeRelay(null), "normalizeRelay(null)");
         T.eq("https://ntfy.sh", RelayClient.normalizeRelay("ntfy.sh/"), "normalizeRelay adds https, strips /");
         T.eq("http://127.0.0.1:8080/x", RelayClient.normalizeRelay(" http://127.0.0.1:8080/x// "), "normalizeRelay keeps http + path");
@@ -220,81 +188,35 @@ public final class VectorsTest {
     }
 
     static void acks(String code) throws Exception {
-        T.section("ack building and apps chunking");
+        T.section("ack building");
         RelayCrypto rc = new RelayCrypto(code);
         long now = System.currentTimeMillis();
 
-        JSONObject small = new JSONObject().put("ok", true).put("msg", "Link TV par khul gaya.");
+        JSONObject small = new JSONObject().put("ok", true).put("msg", "The TV is ready to show your screen.");
         List<String> one = RelayClient.buildAcks(rc, "abc123", small, now);
         JSONObject a = new JSONObject(rc.open(one.get(0)));
         T.ok(one.size() == 1 && a.getInt("v") == 1 && "t2c".equals(a.getString("dir")) && "abc123".equals(a.getString("re"))
-                && a.getBoolean("ok") && "Link TV par khul gaya.".equals(a.getString("msg")) && a.getInt("part") == 0
+                && a.getBoolean("ok") && "The TV is ready to show your screen.".equals(a.getString("msg")) && a.getInt("part") == 0
                 && a.getInt("parts") == 1 && a.getLong("ts") == now && a.getJSONObject("data").length() == 0
                 && a.getString("id").matches("[0-9a-z]{12}"), "small ack: one envelope with all fields");
 
-        JSONObject status = new JSONObject().put("name", "Conference Dahua").put("volume", 6);
+        JSONObject status = new JSONObject().put("name", "Conference Dahua").put("appVersion", "3.0");
         JSONObject withData = new JSONObject().put("ok", false).put("msg", "x").put("data", status);
         JSONObject b = new JSONObject(rc.open(RelayClient.buildAcks(rc, "r", withData, now).get(0)));
         T.ok(!b.getBoolean("ok") && "Conference Dahua".equals(b.getJSONObject("data").getString("name")), "ack keeps ok=false and data");
 
-        // 300 apps with long, partly non-ASCII labels.
+        // 'apps' is not special any more (Office TV 3.0 has no app list): an oversized list is dropped, not split.
         JSONArray apps = new JSONArray();
         for (int i = 0; i < 300; i++) {
-            String label = "Office App " + i + " ऑफिस टीवी very long label for testing/"
-                    + "chunking " + "x".repeat(i % 50);
-            apps.put(new JSONObject().put("label", label).put("pkg", "com.example.vendor.product.app" + i));
+            apps.put(new JSONObject().put("label", "Office App " + i + " Réunion 会议室 long label").put("pkg", "com.example.app" + i));
         }
-        JSONObject res = new JSONObject().put("ok", true).put("msg", "300 apps mili.")
-                .put("data", new JSONObject().put("apps", apps).put("count", 300));
-        List<String> parts = RelayClient.buildAcks(rc, "apps01", res, now);
-        int max = 0;
-        boolean fields = true;
-        Set<String> ids = new HashSet<>();
-        List<String> got = new ArrayList<>();
-        for (int i = 0; i < parts.size(); i++) {
-            String env = parts.get(i);
-            max = Math.max(max, env.getBytes(StandardCharsets.UTF_8).length);
-            JSONObject p = new JSONObject(rc.open(env));
-            fields &= p.getInt("part") == i && p.getInt("parts") == parts.size() && "apps01".equals(p.getString("re"))
-                    && "t2c".equals(p.getString("dir")) && p.getBoolean("ok") && "300 apps mili.".equals(p.getString("msg"))
-                    && p.getJSONObject("data").getInt("count") == 300;
-            ids.add(p.getString("id"));
-            JSONArray chunk = p.getJSONObject("data").getJSONArray("apps");
-            for (int k = 0; k < chunk.length(); k++) {
-                got.add(chunk.getJSONObject(k).getString("label") + "|" + chunk.getJSONObject(k).getString("pkg"));
-            }
-        }
-        List<String> want = new ArrayList<>();
-        for (int i = 0; i < apps.length(); i++) {
-            want.add(apps.getJSONObject(i).getString("label") + "|" + apps.getJSONObject(i).getString("pkg"));
-        }
-        System.out.println("     300 apps -> " + parts.size() + " parts, largest envelope " + max + " bytes");
-        T.ok(parts.size() > 1, "300 apps are split into several parts");
-        T.ok(max < RelayClient.MAX_ENVELOPE, "every apps envelope < 3900 bytes");
-        T.ok(fields, "every part has part/parts/re/dir/ok/msg and the other data keys");
-        T.ok(ids.size() == parts.size(), "every part has its own id");
-        T.eq(want, got, "parts reassemble to the same app list, same order");
+        List<String> ap = RelayClient.buildAcks(rc, "apps01", new JSONObject().put("ok", true).put("msg", "Apps.")
+                .put("data", new JSONObject().put("apps", apps)), now);
+        JSONObject apk = new JSONObject(rc.open(ap.get(0)));
+        T.ok(ap.size() == 1 && ap.get(0).length() < RelayClient.MAX_ENVELOPE && apk.getInt("parts") == 1
+                && apk.getJSONObject("data").length() == 0 && "Apps.".equals(apk.getString("msg")),
+                "oversized data (300 apps): one envelope, data dropped, msg kept");
 
-        // One absurdly long label is shortened, not lost.
-        JSONArray huge = new JSONArray().put(new JSONObject().put("label", "L".repeat(8000)).put("pkg", "com.big"))
-                .put(new JSONObject().put("label", "Small").put("pkg", "com.small"));
-        List<String> hp = RelayClient.buildAcks(rc, "h", new JSONObject().put("ok", true).put("msg", "")
-                .put("data", new JSONObject().put("apps", huge)), now);
-        List<String> pk = new ArrayList<>();
-        boolean fits = true;
-        for (String env : hp) {
-            fits &= env.length() < RelayClient.MAX_ENVELOPE;
-            JSONArray arr = new JSONObject(rc.open(env)).getJSONObject("data").getJSONArray("apps");
-            for (int k = 0; k < arr.length(); k++) pk.add(arr.getJSONObject(k).getString("pkg"));
-        }
-        T.ok(fits && pk.contains("com.big") && pk.contains("com.small"), "an 8000-char label is shortened and kept");
-        JSONArray hugePkg = new JSONArray().put(new JSONObject().put("label", "X").put("pkg", "p".repeat(6000)))
-                .put(new JSONObject().put("label", "Small").put("pkg", "com.small"));
-        List<String> hpk = RelayClient.buildAcks(rc, "h2", new JSONObject().put("ok", true).put("msg", "")
-                .put("data", new JSONObject().put("apps", hugePkg)), now);
-        JSONArray kept = new JSONObject(rc.open(hpk.get(0))).getJSONObject("data").getJSONArray("apps");
-        T.ok(hpk.size() == 1 && kept.length() == 1 && "com.small".equals(kept.getJSONObject(0).getString("pkg")),
-                "an app whose pkg alone cannot fit is dropped (no endless loop)");
         String surrogates = "\uD83D\uDCFA".repeat(3000);
         List<String> sl = RelayClient.buildAcks(rc, "s", new JSONObject().put("ok", true).put("msg", surrogates), now);
         String cutMsg = new JSONObject(rc.open(sl.get(0))).getString("msg");

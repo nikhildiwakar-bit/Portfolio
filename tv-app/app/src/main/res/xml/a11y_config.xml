@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Only needed so Android 10+ lets Office TV open its cast screen from the background.
+     No window content, no gestures, and almost no events (announcements only). -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeAnnouncement"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:canPerformGestures="true"
     android:canRetrieveWindowContent="false"
     android:description="@string/a11y_desc"
-    android:notificationTimeout="100" />
+    android:notificationTimeout="1000" />

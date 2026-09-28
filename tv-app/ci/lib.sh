@@ -2,6 +2,10 @@
 # Env: ADB (default adb), OTV_OUT (output folder, default ci-out), ADB_TIMEOUT (seconds per adb call, default 90).
 
 PKG=com.nikhil.officetv
+MAIN_ACT="$PKG/$PKG.MainActivity"
+CAST_ACT="$PKG/$PKG.CastActivity"
+NOT_AVAILABLE='This feature is not available on this TV app version.'
+SITE='nikhildiwakar-bit.github.io/Portfolio/tv'
 ADB=${ADB:-adb}
 OUT=${OTV_OUT:-ci-out}
 RESULTS="$OUT/results.txt"
@@ -44,6 +48,9 @@ wake_and_unlock() {
     S svc power stayon true >/dev/null
 }
 
+# A random cast session id (12-32 chars of [a-z0-9], PROTOCOL.md section 8).
+new_session() { printf 'ci%s\n' "$(head -c 64 /dev/urandom | od -An -tx1 | tr -dc 'a-f0-9' | head -c 14)"; }
+
 # ---------- activities ----------
 
 # "pkg/.Cls" -> "pkg/pkg.Cls"
@@ -70,6 +77,12 @@ resumed_activity() {
     return 0
 }
 
+# Number of distinct CastActivity records alive (0, 1, ...). Must never be more than 1.
+cast_count() {
+    S dumpsys activity activities | grep -oE "ActivityRecord\{[0-9a-f]+ u[0-9]+ $PKG/(\.|$PKG\.)CastActivity" \
+        | awk '{print $1}' | sort -u | wc -l | tr -d ' '
+}
+
 RESUMED=""
 is_home() { # is_home <component>
     local p=${1%%/*} h
@@ -78,26 +91,10 @@ is_home() { # is_home <component>
 }
 # Condition helpers for wait_until; they leave the last seen activity in $RESUMED.
 resumed_any() { RESUMED=$(resumed_activity); [ -n "$RESUMED" ]; }
-resumed_is_viewer() { RESUMED=$(resumed_activity); [ "$RESUMED" = "$PKG/$PKG.ViewerActivity" ]; }
 resumed_is_ours() { RESUMED=$(resumed_activity); [ "${RESUMED%%/*}" = "$PKG" ]; }
+resumed_is_main() { RESUMED=$(resumed_activity); [ "$RESUMED" = "$MAIN_ACT" ]; }
+resumed_is_cast() { RESUMED=$(resumed_activity); [ "$RESUMED" = "$CAST_ACT" ]; }
 resumed_is_home() { RESUMED=$(resumed_activity); [ -n "$RESUMED" ] && is_home "$RESUMED"; }
-# Some other app, or our own ViewerActivity (used when no app on the TV can open the link/file).
-resumed_is_other() {
-    RESUMED=$(resumed_activity)
-    [ -n "$RESUMED" ] || return 1
-    case $RESUMED in
-        "$PKG/$PKG.ViewerActivity") return 0 ;;
-        "$PKG"/*) return 1 ;;
-    esac
-    ! is_home "$RESUMED"
-}
-describe_other() {
-    case $RESUMED in
-        "$PKG/$PKG.ViewerActivity") printf '%s (app ka apna viewer)' "$RESUMED" ;;
-        android/*ResolverActivity | android/*ChooserActivity) printf '%s (app chooser dialog)' "$RESUMED" ;;
-        *) printf '%s' "$RESUMED" ;;
-    esac
-}
 
 # Launcher packages: the one on screen after HOME, plus what the system resolves HOME to (Android 7+).
 detect_home() {
@@ -144,7 +141,7 @@ wait_app_on_screen() {
     return 1
 }
 
-# ---------- screenshots, logcat ----------
+# ---------- screenshots, UI dump, logcat ----------
 
 screenshot() { # screenshot <name>
     local f="$OUT/shots/$1.png"
@@ -154,6 +151,48 @@ screenshot() { # screenshot <name>
         A pull /data/local/tmp/otv-shot.png "$f" >/dev/null 2>&1 || rm -f "$f"
     fi
     [ -s "$f" ] && log "screenshot $f" || log "screenshot $1 failed"
+}
+
+# ui_dump <name>: the view tree on screen (uiautomator XML) into $OUT/ui-<name>.xml. Fails if unavailable.
+ui_dump() {
+    local f="$OUT/ui-$1.xml"
+    S uiautomator dump /data/local/tmp/otv-ui.xml >/dev/null
+    S cat /data/local/tmp/otv-ui.xml > "$f"
+    grep -q '<hierarchy' "$f"
+}
+
+# ui_check <xml> <must-contain...>: prints problems (missing texts, overlapping texts/buttons), one per line.
+ui_check() {
+    python3 - "$@" <<'PY'
+import re, sys
+import xml.etree.ElementTree as ET
+path, musts = sys.argv[1], sys.argv[2:]
+raw = open(path, encoding='utf-8', errors='replace').read()
+raw = raw[raw.find('<hierarchy'):raw.rfind('</hierarchy>') + len('</hierarchy>')]
+root = ET.fromstring(raw)
+nodes = []
+for n in root.iter('node'):
+    if n.get('package') != 'com.nikhil.officetv':
+        continue
+    text = (n.get('text') or '').strip()
+    m = re.match(r'\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]', n.get('bounds') or '')
+    if not text or not m or not n.get('class', '').endswith(('TextView', 'Button', 'EditText')):
+        continue
+    x1, y1, x2, y2 = map(int, m.groups())
+    if x2 - x1 > 2 and y2 - y1 > 2:
+        nodes.append((text, x1, y1, x2, y2))
+alltext = '\n'.join(t for t, *_ in nodes)
+for want in musts:
+    if want not in alltext:
+        print('missing text: %r' % want)
+for i in range(len(nodes)):
+    for j in range(i + 1, len(nodes)):
+        a, b = nodes[i], nodes[j]
+        w = min(a[3], b[3]) - max(a[1], b[1])
+        h = min(a[4], b[4]) - max(a[2], b[2])
+        if w > 3 and h > 3:
+            print('overlap: %r %s and %r %s' % (a[0][:40], a[1:], b[0][:40], b[1:]))
+PY
 }
 
 logcat_alive() { [ -f "$OUT/logcat.pid" ] && kill -0 "$(cat "$OUT/logcat.pid")" 2>/dev/null; }
@@ -172,29 +211,32 @@ logcat_stop() {
     rm -f "$OUT/logcat.pid"
 }
 
-# Last "OTV_TEST pin=.. port=.. code=.." line (debug builds log it after the server starts) as
-# "<pid> <pin> <port> <code>", or nothing.
+# Last "OTV_TEST port=.. token=.. code=.." line (debug builds log it when the test API starts) as
+# "<pid> <port> <token> <code>", or nothing.
 otv_last() {
     logcat_alive || logcat_start
-    grep 'OTV_TEST pin=' "$LOGCAT_FILE" 2>/dev/null | tail -n 1 \
-        | sed -nE 's/^[0-9-]+ [0-9:.]+ +([0-9]+) .*OTV_TEST pin=([0-9]+) port=([0-9]+) code=([0-9A-Za-z]+).*/\1 \2 \3 \4/p'
+    grep 'OTV_TEST port=' "$LOGCAT_FILE" 2>/dev/null | tail -n 1 \
+        | sed -nE 's/^[0-9-]+ [0-9:.]+ +([0-9]+) .*OTV_TEST port=([0-9]+) token=([0-9a-f]+) code=([0-9A-Za-z]+).*/\1 \2 \3 \4/p'
 }
 
-# wait_otv <seconds> [old-pid]: waits for an OTV_TEST line (from a process other than old-pid) and sets
-# OTV_PID PIN PORT CODE.
+# wait_otv <seconds> [old-pid]: waits for an OTV_TEST port line (from a process other than old-pid) and sets
+# OTV_PID PORT TOKEN CODE.
 wait_otv() {
     local end=$(( $(date +%s) + $1 )) old=${2:-} l
     while :; do
         l=$(otv_last)
         if [ -n "$l" ] && [ "${l%% *}" != "$old" ]; then
             set -- $l
-            OTV_PID=$1 PIN=$2 PORT=$3 CODE=$4
+            OTV_PID=$1 PORT=$2 TOKEN=$3 CODE=$4
             return 0
         fi
         [ "$(date +%s)" -ge "$end" ] && return 1
         sleep 1
     done
 }
+
+# logged <regex>: true if an "OTV_TEST <regex>" line is in the log.
+logged() { grep -qE "OTV_TEST $1" "$LOGCAT_FILE" 2>/dev/null; }
 
 # Pids of our app's main process (ps output differs: Android 8+ needs -A, older ps rejects it).
 app_pids() {
@@ -233,7 +275,7 @@ crash_scan() {
         | sed 's/^/INFO  blocked-start log: /' | tee -a "$RESULTS"
 }
 
-# ---------- HTTP (through adb forward) ----------
+# ---------- debug test API (loopback on the device, through adb forward) ----------
 
 HTTP_BODY="$OUT/http/last"
 
@@ -248,27 +290,21 @@ forward() { # forward <device-port>: sets LPORT
     LPORT=$p
 }
 
-# http <METHOD> <path> [json-body | @file-for-upload] [pin]: prints the HTTP status (000 = no answer);
-# the body is in $HTTP_BODY.
+# http <METHOD> <path> [json-body] [token]: prints the HTTP status (000 = no answer); the body is in $HTTP_BODY.
 http() {
-    local m=$1 path=$2 body=${3-} pin=${4-${PIN:-}} code
-    local args=(-sS --noproxy '*' -o "$HTTP_BODY" -w '%{http_code}' -m 30 -H "X-Pin: $pin")
-    case $m:$body in
-        POST:@*) local f=${body#@} t=application/octet-stream
-                 case $f in *.pdf) t=application/pdf ;; *.png) t=image/png ;; esac
-                 args+=(-F "file=@$f;type=$t") ;;
-        POST:*) args+=(-X POST -H 'Content-Type: application/json; charset=utf-8' --data-binary "$body") ;;
-    esac
+    local m=$1 path=$2 body=${3-} tok=${4-${TOKEN:-}} code
+    local args=(-sS --noproxy '*' -o "$HTTP_BODY" -w '%{http_code}' -m 30 -H "X-Token: $tok")
+    [ "$m" = POST ] && args+=(-X POST -H 'Content-Type: application/json; charset=utf-8' --data-binary "$body")
     : > "$HTTP_BODY"
     code=$(curl "${args[@]}" "http://127.0.0.1:$LPORT$path" 2>>"$OUT/http/curl.log") || true
     printf '%s' "${code:-000}"
 }
 
-server_up() { [ "$(http GET /)" = 200 ] && grep -q 'Office TV' "$HTTP_BODY"; }
-server_down() { [ "$(http GET /)" = 000 ]; }
+server_up() { [ "$(http GET /api/status)" = 200 ] && [ "$(jget "$HTTP_BODY" appVersion)" != '!json' ]; }
+server_down() { [ "$(http GET /api/status)" = 000 ]; }
 
-# jget <file> <key>: a top-level field of a JSON object (booleans as true/false, missing/null as empty).
-# Prints "!json" if the file is not a JSON object.
+# jget <file> <key>: a top-level field of a JSON object (booleans as true/false, missing/null as empty,
+# lists joined with commas). Prints "!json" if the file is not a JSON object.
 jget() {
     python3 - "$1" "$2" <<'PY'
 import json, sys
@@ -280,82 +316,34 @@ if not isinstance(o, dict):
     print('!json')
 else:
     v = o.get(sys.argv[2])
+    if isinstance(v, list):
+        v = ','.join(str(x) for x in v)
     print('true' if v is True else 'false' if v is False else '' if v is None else v)
 PY
 }
 
-# jlen <file>: items in a JSON array (or in the first array field of an object); -1 if there is none.
-jlen() {
-    python3 - "$1" <<'PY'
-import json, sys
-try:
-    o = json.load(open(sys.argv[1], encoding='utf-8'))
-except Exception:
-    o = None
-if isinstance(o, dict):
-    o = next((v for v in o.values() if isinstance(v, list)), None)
-print(len(o) if isinstance(o, list) else -1)
-PY
+# status_field <key>: a field of GET /api/status (empty if the call fails).
+status_field() {
+    [ "$(http GET /api/status)" = 200 ] || return 0
+    cp "$HTTP_BODY" "$OUT/http/status-last.json" 2>/dev/null
+    jget "$HTTP_BODY" "$1"
 }
 
-# post_ok <path> <json> <label> [expect-ok=true]: POST and check {ok, msg}. Leaves the answer in $HTTP_BODY.
-post_ok() {
-    local code ok msg
-    code=$(http POST "$1" "$2")
-    cp "$HTTP_BODY" "$OUT/http/$(printf '%s' "$1" | tr '/' '_').json" 2>/dev/null
-    ok=$(jget "$HTTP_BODY" ok)
-    msg=$(jget "$HTTP_BODY" msg)
-    if [ "$code" = 200 ] && [ "$ok" = "${4:-true}" ] && [ -n "$msg" ]; then
-        pass "$3 -> ok=$ok \"$msg\""
-        return 0
-    fi
-    fail "$3 -> HTTP $code, ok=$ok, msg=\"$msg\""
-    return 1
-}
-
-# make_png <file>: a valid 64x64 solid-colour PNG (python3 zlib, no extra tools).
-make_png() {
-    python3 - "$1" <<'PY'
-import struct, sys, zlib
-w = h = 64
-raw = b''.join(b'\x00' + b'\x20\x80\xe0' * w for _ in range(h))
-def chunk(t, d):
-    return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
-png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) \
-    + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
-open(sys.argv[1], 'wb').write(png)
-PY
-}
-
-# Minimal valid one-page PDF with correct xref offsets.
-make_pdf() {
-    local text=${2:-Office TV test} out i xref line
-    local -a obj off
-    local stream="BT /F1 48 Tf 72 640 Td ($text) Tj ET"
-    obj[1]='<< /Type /Catalog /Pages 2 0 R >>'
-    obj[2]='<< /Type /Pages /Kids [3 0 R] /Count 1 >>'
-    obj[3]='<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>'
-    obj[4]=$(printf '<< /Length %d >>\nstream\n%s\nendstream' "${#stream}" "$stream")
-    obj[5]='<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
-    out=$'%PDF-1.4\n'
-    for i in 1 2 3 4 5; do
-        off[i]=${#out}
-        out+="$i 0 obj"$'\n'"${obj[i]}"$'\n'"endobj"$'\n'
-    done
-    xref=${#out}
-    out+=$'xref\n0 6\n0000000000 65535 f \n'
-    for i in 1 2 3 4 5; do
-        printf -v line '%010d 00000 n \n' "${off[i]}"
-        out+=$line
-    done
-    out+=$'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n'"$xref"$'\n%%EOF\n'
-    printf '%s' "$out" > "$1"
+# api_cmd <json> <label>: runs a command through the test API exactly as if it came through the relay.
+# Sets CMD_OK and CMD_MSG; the answer stays in $HTTP_BODY (and $OUT/http/<label>.json).
+api_cmd() {
+    local code
+    code=$(http POST /api/cmd "$1")
+    cp "$HTTP_BODY" "$OUT/http/$(printf '%s' "$2" | tr -c 'A-Za-z0-9_-' '_').json" 2>/dev/null
+    CMD_OK=$(jget "$HTTP_BODY" ok)
+    CMD_MSG=$(jget "$HTTP_BODY" msg)
+    [ "$code" = 200 ] || CMD_OK="http-$code"
 }
 
 save_env() {
     cat > "$OUT/otv-test.env" <<EOF
-PIN=$PIN
 PORT=$PORT
+TOKEN=$TOKEN
 LPORT=$LPORT
 CODE=$CODE
 OTV_PID=$OTV_PID

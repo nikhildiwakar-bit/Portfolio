@@ -8,7 +8,7 @@ import android.os.Bundle;
 public class OfficeTvApp extends Application {
     private static volatile int started;
 
-    /** True while an Office TV screen is visible (Android then lets us open other apps and screens). */
+    /** True while an Office TV screen is visible (Android then lets us open the cast screen at any time). */
     static boolean inForeground() {
         return started > 0;
     }
@@ -17,11 +17,6 @@ public class OfficeTvApp extends Application {
     public void onCreate() {
         super.onCreate();
         CrashLog.install(this);
-        try {
-            // NanoHTTPD puts upload temp files here.
-            System.setProperty("java.io.tmpdir", getCacheDir().getAbsolutePath());
-        } catch (RuntimeException ignored) {
-        }
         registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
             @Override
             public void onActivityStarted(Activity a) {

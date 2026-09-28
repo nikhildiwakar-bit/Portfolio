@@ -6,21 +6,25 @@ import android.os.Build;
 
 import com.nikhil.officetv.relay.RelayClient;
 
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
-
-/** Runs commands that arrive through the relay (see PROTOCOL.md §5) using the same Actions as the LAN API. */
+/**
+ * Runs the commands that arrive through the relay (PROTOCOL.md section 5). Office TV 3.0 is screen
+ * sharing only, so there are two: "ping" (status) and "cast" (open or close the receiver). Every other
+ * command, including the ones older apps had, gets ok=false with {@link #NOT_AVAILABLE}.
+ */
 final class Commands implements RelayClient.Handler {
+    static final String NOT_AVAILABLE = "This feature is not available on this TV app version.";
+    static final String NEEDS_SETUP = "The TV needs a one-time setup before it can show your screen: on the TV, "
+            + "open Office TV and follow “Allow Office TV to open automatically”.";
+    /** How long "cast start" waits for the receiver screen to appear before it answers. */
+    private static final long OPEN_WAIT_MS = 4000;
+
     private final Context ctx;
 
     Commands(Context ctx) {
-        this.ctx = ctx.getApplicationContext();
+        this.ctx = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
     }
 
     @Override
@@ -29,43 +33,13 @@ final class Commands implements RelayClient.Handler {
         try {
             switch (cmd == null ? "" : cmd) {
                 case "ping": return withData(Actions.result(true, "The TV is online."), status(ctx));
-                case "open": return Actions.openUrl(ctx, args.optString("url"));
-                case "youtube": return Actions.youtube(ctx, args.optString("q"));
-                case "key": return Actions.key(ctx, args.optString("key"));
-                case "volume": return Actions.volume(ctx, args.optInt("percent", 30));
-                case "app": return Actions.openApp(ctx, args.optString("pkg"));
-                case "apps": {
-                    JSONObject data = new JSONObject();
-                    data.put("apps", Actions.apps(ctx));
-                    return withData(Actions.result(true, "List of apps."), data);
-                }
-                case "awake": {
-                    boolean on = args.optBoolean("on", true);
-                    Prefs.setKeepAwake(ctx, on);
-                    ControlService svc = ControlService.instance;
-                    if (svc != null) svc.applyKeepAwake();
-                    return Actions.result(true, on ? "The screen will stay on." : "The screen will turn off as usual.");
-                }
-                case "rename": {
-                    String name = args.optString("name").trim();
-                    if (name.isEmpty()) return Actions.result(false, "Please enter a name.");
-                    if (name.length() > 40) name = name.substring(0, 40);
-                    Prefs.setTvName(ctx, name);
-                    return withData(Actions.result(true, "TV renamed to " + name + "."), status(ctx));
-                }
-                case "file": return file(args);
-                case "screen": {
-                    boolean stop = "stop".equals(args.optString("action"));
-                    JSONObject r = stop ? ScreenCapture.requestStop(ctx) : ScreenCapture.requestStart(ctx);
-                    return withData(r, status(ctx));
-                }
                 case "cast": return cast(args);
-                default:
-                    return Actions.result(false, "This TV app does not support that command. Please update Office TV on the TV.");
+                default: return Actions.result(false, NOT_AVAILABLE);
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Never let a command take the relay client down; the laptop gets a message it can act on.
             CrashLog.note(ctx, "Relay command " + cmd + " failed: " + e);
-            return Actions.result(false, "Something went wrong on the TV: " + e.getMessage());
+            return Actions.result(false, "The TV could not do that right now. Please try again.");
         }
     }
 
@@ -74,78 +48,61 @@ final class Commands implements RelayClient.Handler {
         RelayManager.setState(state, detail);
     }
 
-    private JSONObject file(JSONObject args) throws JSONException {
-        RelayClient client = RelayManager.client();
-        if (client == null) return Actions.result(false, "The TV is not connected to the internet right now.");
-        byte[] bytes;
-        try {
-            JSONArray chunks = args.optJSONArray("chunks");
-            if (chunks == null) {
-                bytes = client.fetchFile(args);
-            } else {
-                // Big files arrive as several encrypted parts (the relay limits each attachment to 2 MB).
-                if (chunks.length() == 0 || chunks.length() > 12) return Actions.result(false, "The file is too large to send over the internet (20 MB max).");
-                java.io.ByteArrayOutputStream all = new java.io.ByteArrayOutputStream();
-                for (int i = 0; i < chunks.length(); i++) all.write(client.fetchFile(chunks.getJSONObject(i)));
-                bytes = all.toByteArray();
-            }
-        } catch (IOException e) {
-            return Actions.result(false, "The file did not reach the TV (network issue or expired link). Please send it again.");
-        } catch (java.security.GeneralSecurityException e) {
-            return Actions.result(false, "The file was damaged or sent with the wrong TV code.");
-        }
-        File dest = new File(FilesProvider.dir(ctx), safeName(args.optString("name")));
-        try (OutputStream out = new FileOutputStream(dest)) {
-            out.write(bytes);
-        } catch (IOException e) {
-            return Actions.result(false, "Could not save the file on the TV (storage may be full).");
-        }
-        FilesProvider.trim(ctx);
-        JSONObject r = Actions.openFile(ctx, dest);
-        r.put("name", dest.getName());
-        return r;
-    }
-
     /** Share my screen (PROTOCOL.md section 8): opens or closes the full-screen WebRTC receiver. */
-    private JSONObject cast(JSONObject args) {
+    private JSONObject cast(JSONObject args) throws JSONException {
         String session = args.optString("session", "");
         if ("stop".equals(args.optString("action"))) {
             boolean was = CastActivity.stop(session);
             return Actions.result(true, was ? "Screen sharing stopped on the TV." : "Screen sharing was not running on the TV.");
         }
-        if (!CastActivity.validSession(session)) return Actions.result(false, "Invalid screen sharing session. Please reload the page and try again.");
-        String code = Prefs.pairCode(ctx);
-        Intent i = CastActivity.intent(ctx, CastActivity.receiverUrl(session, code, Prefs.relayUrl(ctx)), session);
-        JSONObject r = Actions.openOwn(ctx, "the screen receiver", i);
-        if (r.optBoolean("ok")) {
-            try {
-                r.put("msg", "The TV is ready to show your screen.");
-            } catch (JSONException ignored) {
-            }
+        if (!CastActivity.validSession(session)) {
+            return Actions.result(false, "Invalid screen sharing session. Please reload the page and try again.");
         }
-        return r;
+        // An engine that is known to be too old still gets the cast screen, which explains it on the TV too.
+        String engine = WebViewInfo.problem(ctx);
+        String url = CastActivity.receiverUrl(session, Prefs.pairCode(ctx), Prefs.relayUrl(ctx));
+        Intent i = CastActivity.intent(ctx, url, session);
+        CastActivity.expect(session);
+        Actions.wake(ctx);
+        try {
+            ctx.startActivity(i);
+        } catch (RuntimeException e) {
+            CastActivity.cancelExpected(session);
+            CrashLog.note(ctx, "Cast screen did not start: " + e);
+            return Actions.result(false, "The TV could not open the screen sharing view. Please restart Office TV on the TV.");
+        }
+        if (engine != null) return Actions.result(false, engine);
+        boolean opened = CastActivity.awaitOpened(session, OPEN_WAIT_MS);
+        if (!opened && !Actions.canOpenFromBackground(ctx) && !OfficeTvApp.inForeground()) {
+            // Android 10+ silently refuses screens from background apps without the one-time setup.
+            CastActivity.cancelExpected(session);
+            return Actions.result(false, NEEDS_SETUP);
+        }
+        if (!opened && !CastActivity.awaitOpened(session, OPEN_WAIT_MS)) {
+            CastActivity.cancelExpected(session);
+            return Actions.result(false, "The TV did not open the screen sharing view. Open Office TV on the TV once, "
+                    + "then share again.");
+        }
+        return withData(Actions.result(true, "The TV is ready to show your screen."), status(ctx));
     }
 
-    /** Same rules as the LAN upload: a plain file name inside the uploads folder. */
-    static String safeName(String raw) {
-        String n = new File(raw == null ? "" : raw).getName().replaceAll("[^A-Za-z0-9._-]", "_");
-        if (n.isEmpty() || n.startsWith(".")) n = "file" + n;
-        if (n.length() > 120) n = n.substring(n.length() - 120);
-        return n;
-    }
-
-    /** Status object from PROTOCOL.md §5. */
+    /** Status object (PROTOCOL.md section 5). */
     static JSONObject status(Context c) throws JSONException {
-        JSONObject s = Actions.status(c);
-        s.put("model", Build.MANUFACTURER + " " + Build.MODEL);
-        s.put("name", Prefs.tvName(c));
-        JSONArray urls = new JSONArray();
-        int port = ControlService.port();
-        if (port > 0) {
-            for (String ip : MainActivity.lanIps()) urls.put("http://" + ip + ":" + port);
-        }
-        s.put("lanUrls", urls);
-        return s;
+        JSONObject o = new JSONObject();
+        String engine = WebViewInfo.version(c);
+        o.put("name", Prefs.tvName(c));
+        o.put("model", Build.MANUFACTURER + " " + Build.MODEL);
+        o.put("android", Build.VERSION.RELEASE);
+        o.put("appVersion", BuildConfig.VERSION_NAME);
+        o.put("flavor", BuildConfig.FLAVOR);
+        o.put("features", new org.json.JSONArray().put("cast"));
+        o.put("accessibility", Actions.accessibilityOn());
+        o.put("needsPermission", !Actions.canOpenFromBackground(c));
+        o.put("keepAwake", Prefs.keepAwake(c));
+        o.put("webview", engine == null ? "" : engine);
+        o.put("webviewOk", WebViewInfo.problem(c) == null);
+        o.put("casting", !CastActivity.currentSession().isEmpty());
+        return o;
     }
 
     private static JSONObject withData(JSONObject result, JSONObject data) throws JSONException {

@@ -5,6 +5,13 @@ on:
     paths:
       - 'tv-app/app/**'
       - 'tv-app/ci/**'
+      - 'tv-app/tests/jvm/**'
+      - 'tv-app/tests/compile-check.sh'
+      # The TV loads the receiver page and the CI relay test uses the website's protocol code.
+      - 'tv/otv.js'
+      - 'tv/cast.js'
+      - 'tv/receive.html'
+      - 'tv/receive.js'
       - '.github/workflows/tv-app-test.yml'
   workflow_dispatch:
 
@@ -13,6 +20,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  jvm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Relay client, vectors and the app's command contract (JVM)
+        run: |
+          mkdir -p jars
+          curl -sSfL -o jars/json-20240303.jar https://repo1.maven.org/maven2/org/json/json/20240303/json-20240303.jar
+          curl -sSfL -o jars/android-all-13-robolectric-9030017.jar \
+            https://repo1.maven.org/maven2/org/robolectric/android-all/13-robolectric-9030017/android-all-13-robolectric-9030017.jar
+          ORGJSON_JAR=$PWD/jars/json-20240303.jar ANDROID_ALL_JAR=$PWD/jars/android-all-13-robolectric-9030017.jar \
+            bash tv-app/tests/jvm/run.sh
+      - name: Compile check (all app sources, debug and release, API 21 rules)
+        run: JARS=$PWD/jars sh tv-app/tests/compile-check.sh
+
   build-debug:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -64,6 +91,10 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - uses: actions/checkout@v4
+      # relay-cast.mjs (the real ntfy.sh test) runs on the runner with the website's tv/otv.js.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: actions/download-artifact@v4
         with:
           name: debug-apks

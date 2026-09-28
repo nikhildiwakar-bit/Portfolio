@@ -18,6 +18,9 @@ test('exports and constants', () => {
         assert.equal(typeof otv[f], 'function', f);
     }
     assert.equal(typeof otv.TvLink, 'function');
+    // File sending was removed from the website; the file crypto stays for the protocol vectors.
+    assert.equal(otv.MAX_FILE_BYTES, undefined);
+    assert.equal(otv.CHUNK_BYTES, undefined);
 });
 
 test('normalizeCode vectors', () => {
@@ -196,13 +199,14 @@ test('pairLink round-trips through parsePairFragment', () => {
     assert.equal(otv.parsePairFragment(link2).relay, 'http://127.0.0.1:9');
 });
 
-test('mergeAcks joins multi-part apps in part order', () => {
+test('mergeAcks joins the parts of one ack in part order', () => {
     const r = otv.mergeAcks([
-        { part: 2, parts: 3, ok: true, msg: '', data: { apps: [{ label: 'E' }] } },
-        { part: 0, parts: 3, ok: true, msg: '5 apps', data: { apps: [{ label: 'A' }, { label: 'B' }] } },
-        { part: 1, parts: 3, ok: true, msg: '', data: { apps: [{ label: 'C' }, { label: 'D' }] } },
+        { part: 2, parts: 3, ok: true, msg: '', data: { c: 3, a: 'late' } },
+        { part: 0, parts: 3, ok: true, msg: 'The TV is online.', data: { a: 1 } },
+        { part: 1, parts: 3, ok: true, msg: '', data: { b: 2 } },
     ]);
-    assert.deepEqual(r, { ok: true, msg: '5 apps', data: { apps: ['A', 'B', 'C', 'D', 'E'].map(label => ({ label })) } });
+    assert.deepEqual(r, { ok: true, msg: 'The TV is online.', data: { a: 'late', b: 2, c: 3 } });
     assert.equal(otv.mergeAcks([{ ok: true }, { ok: false, part: 1 }]).ok, false);
     assert.deepEqual(otv.mergeAcks([{ ok: true, msg: 'x' }]), { ok: true, msg: 'x', data: {} });
+    assert.deepEqual(otv.mergeAcks([{ ok: true, data: [1, 2] }]).data, {});
 });

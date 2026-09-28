@@ -3,8 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as otv from '../../../tv/otv.js';
 import {
-    CastChannel, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, decodeSignal, encodeSignal, parseReceiverFragment,
-    receiverUrl, signalMessages, validSession,
+    CastChannel, CastSender, MAX_BITRATE, MAX_FPS, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, captureScreen, decodeSignal,
+    displayMediaOptions, encodeSignal, parseReceiverFragment, preferCodec, preferH264, receiverUrl, senderSupport, signalMessages,
+    tuneSender, validSession,
 } from '../../../tv/cast.js';
 
 const CODE = '7K3M9QX2TD';
@@ -157,7 +158,7 @@ test('two channels exchange offer and answer; others are ignored', async () => {
     assert.deepEqual(got.tx, [], 'own direction is ignored');
     const answer = await encodeSignal({ type: 'answer', sdp: fakeSdp('answer') });
     await rx.send('answer', answer);
-    await sleep(30);
+    for (let i = 0; i < 100 && !got.tx.length; i++) await sleep(10);
     assert.deepEqual(got.tx, [['answer', answer]]);
     assert.equal(got.rx.length, 1);
 
@@ -190,4 +191,285 @@ test('channel reports relay limits', async () => {
     await ch.init();
     await assert.rejects(ch.send('offer', 'jx'), e => e.code === 'rate_limit');
     ch.close();
+});
+
+// ---------- capture options, codecs, bitrate ----------
+
+test('getDisplayMedia options: ~1080p30, audio, own tab excluded, tab switching allowed', async () => {
+    const o = displayMediaOptions();
+    assert.deepEqual(o.video, { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30, max: 30 } });
+    assert.equal(o.audio, true);
+    assert.equal(o.selfBrowserSurface, 'exclude');
+    assert.equal(o.surfaceSwitching, 'include');
+    assert.equal(o.systemAudio, 'include');
+    assert.notEqual(displayMediaOptions(), o, 'a fresh object each time');
+    const calls = [];
+    const stream = { id: 's' };
+    const md = { getDisplayMedia: async c => { calls.push(c); return stream; } };
+    assert.equal(await captureScreen(md), stream);
+    assert.deepEqual(calls, [displayMediaOptions()]);
+    // A browser that rejects an option (TypeError) is asked again with the defaults.
+    const calls2 = [];
+    const old = {
+        getDisplayMedia(c) {
+            calls2.push(c);
+            if (calls2.length === 1) throw new TypeError('unknown member');
+            return Promise.resolve(stream);
+        },
+    };
+    assert.equal(await captureScreen(old), stream);
+    assert.deepEqual(calls2[1], { video: true, audio: true });
+    // The user closing the picker is passed through untouched.
+    const denied = { getDisplayMedia: async () => { const e = new Error('denied'); e.name = 'NotAllowedError'; throw e; } };
+    await assert.rejects(captureScreen(denied), e => e.name === 'NotAllowedError');
+    await assert.rejects(captureScreen({}), e => e.code === 'unsupported');
+    await assert.rejects(captureScreen(undefined), e => e.code === 'unsupported');
+    assert.equal(senderSupport({ navigator: {} }), 'display');
+    assert.equal(senderSupport({ navigator: { mediaDevices: md } }), 'webrtc');
+    assert.equal(senderSupport({ navigator: { mediaDevices: md }, RTCPeerConnection: function () {} }), null);
+});
+
+const CODECS = [
+    { mimeType: 'video/VP8', clockRate: 90000 },
+    { mimeType: 'video/rtx', clockRate: 90000 },
+    { mimeType: 'video/H264', clockRate: 90000, sdpFmtpLine: 'level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f' },
+    { mimeType: 'video/VP9', clockRate: 90000, sdpFmtpLine: 'profile-id=0' },
+    { mimeType: 'video/H264', clockRate: 90000, sdpFmtpLine: 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f' },
+    { mimeType: 'video/red', clockRate: 90000 },
+];
+
+test('preferCodec puts H.264 (packetization-mode=1 first) ahead and keeps the rest in order', () => {
+    const out = preferCodec(CODECS);
+    assert.deepEqual(out.map(c => c.mimeType + (c.sdpFmtpLine && c.mimeType === 'video/H264' ? /mode=1/.test(c.sdpFmtpLine) ? '/1' : '/0' : '')),
+        ['video/H264/1', 'video/H264/0', 'video/VP8', 'video/rtx', 'video/VP9', 'video/red']);
+    assert.equal(out.length, CODECS.length);
+    assert.deepEqual(preferCodec(CODECS.filter(c => c.mimeType !== 'video/H264')).map(c => c.mimeType), ['video/VP8', 'video/rtx', 'video/VP9', 'video/red']);
+    assert.deepEqual(preferCodec(null), []);
+});
+
+test('preferH264 only reorders when this browser can send H.264, and never throws', () => {
+    const tr = { prefs: null, setCodecPreferences(c) { this.prefs = c; } };
+    const caps = list => ({ getCapabilities: () => ({ codecs: list }) });
+    assert.equal(preferH264(tr, { RTCRtpReceiver: caps(CODECS), RTCRtpSender: caps(CODECS) }), true);
+    assert.equal(tr.prefs[0].mimeType, 'video/H264');
+    // Decode-only H.264 (not in the sender list) is left out, so the offer never promises it.
+    const noSend = CODECS.filter(c => c.mimeType !== 'video/H264');
+    const tr2 = { prefs: null, setCodecPreferences(c) { this.prefs = c; } };
+    assert.equal(preferH264(tr2, { RTCRtpReceiver: caps(CODECS), RTCRtpSender: caps(noSend) }), false);
+    assert.equal(tr2.prefs, null);
+    const boom = { setCodecPreferences() { throw new Error('InvalidModificationError'); } };
+    assert.equal(preferH264(boom, { RTCRtpReceiver: caps(CODECS), RTCRtpSender: caps(CODECS) }), false);
+    assert.equal(preferH264({}, {}), false);
+});
+
+test('tuneSender caps the encoder at 6 Mbps and 30 fps', async () => {
+    let params = { transactionId: 't1', encodings: [{ active: true }] };
+    const sender = { getParameters: () => JSON.parse(JSON.stringify(params)), setParameters: async p => { params = p; } };
+    assert.equal(await tuneSender(sender), true);
+    assert.equal(params.encodings[0].maxBitrate, MAX_BITRATE);
+    assert.equal(params.encodings[0].maxFramerate, MAX_FPS);
+    assert.equal(MAX_BITRATE, 6000000);
+    assert.equal(await tuneSender({ getParameters: () => ({ encodings: [] }), setParameters: async () => {} }), false);
+    assert.equal(await tuneSender(null), false);
+});
+
+// ---------- CastSender state machine with a scripted peer connection ----------
+
+class FakeTrack extends EventTarget {
+    constructor(kind) { super(); this.kind = kind; this.contentHint = ''; this.readyState = 'live'; }
+    stop() { this.readyState = 'ended'; }
+}
+
+class FakeStream {
+    constructor() { this.tracks = [new FakeTrack('video'), new FakeTrack('audio')]; }
+    getTracks() { return this.tracks.slice(); }
+    getVideoTracks() { return this.tracks.filter(t => t.kind === 'video'); }
+}
+
+class FakeDC extends EventTarget {
+    constructor() { super(); this.readyState = 'connecting'; this.sent = []; }
+    send(d) { this.sent.push(d); }
+    _open() { this.readyState = 'open'; this.dispatchEvent(new Event('open')); }
+    _close() { this.readyState = 'closed'; this.dispatchEvent(new Event('close')); }
+}
+
+class FakePC extends EventTarget {
+    constructor(cfg) {
+        super();
+        FakePC.last = this;
+        this.cfg = cfg;
+        this.connectionState = 'new';
+        this.iceGatheringState = 'new';
+        this.signalingState = 'stable';
+        this.transceivers = [];
+        this.offers = 0;
+        this.closed = false;
+    }
+    addTransceiver(track, init) {
+        let params = { encodings: JSON.parse(JSON.stringify(init.sendEncodings || [{}])) };
+        const sender = { track, getParameters: () => JSON.parse(JSON.stringify(params)), setParameters: async p => { params = p; } };
+        const tr = { sender, init, setCodecPreferences() {} };
+        this.transceivers.push(tr);
+        return tr;
+    }
+    createDataChannel() { this.dc = new FakeDC(); return this.dc; }
+    async createOffer(o) { this.offers++; return { type: 'offer', sdp: 'v=0\r\no=fake ' + this.offers + (o && o.iceRestart ? ' restart' : '') + '\r\n' }; }
+    async setLocalDescription(d) { this.localDescription = d; this.signalingState = 'have-local-offer'; this.iceGatheringState = 'complete'; }
+    async setRemoteDescription(d) { this.remoteDescription = d; this.signalingState = 'stable'; }
+    close() { this.closed = true; this.connectionState = 'closed'; }
+    _conn(s) { this.connectionState = s; this.dispatchEvent(new Event('connectionstatechange')); }
+}
+
+/** A TvLink, the fake TV and a scripted receiver that answers every offer over the relay. */
+async function castRig({ tvReplies = true } = {}) {
+    FakePC.last = null;
+    const { relay, FakeES, fetch } = makeRelay();
+    const topic = await otv.deriveTopic(CODE);
+    const { createFakeTv } = await import('./fake-tv.mjs');
+    const tv = await createFakeTv({ code: CODE, name: 'Board Room', publish: (t, env) => relay.publish(t, env), silent: !tvReplies });
+    if (!relay.subs.has(topic)) relay.subs.set(topic, new Set());
+    relay.subs.get(topic).add(ev => tv.handle(ev));
+    const offers = [];
+    tv.oncast = session => {
+        const rx = new CastChannel({ code: CODE, relay: RELAY, session, out: 'r2c', since: '5m', fetch, EventSource: FakeES });
+        rx.onsignal = async (cast, data) => {
+            if (cast !== 'offer') return;
+            const d = await decodeSignal(data);
+            offers.push(d.sdp);
+            await rx.send('answer', await encodeSignal({ type: 'answer', sdp: 'v=0\r\no=answer ' + offers.length + '\r\n' }));
+        };
+        rx.init();
+        tv.rx = rx;
+    };
+    const link = new otv.TvLink({ code: CODE, relay: RELAY, fetch, EventSource: FakeES });
+    const states = [];
+    const sender = new CastSender({
+        link, RTCPeerConnection: FakePC, window: {}, dropMs: 200, reconnectTimeoutMs: 600, ackTimeoutMs: 600,
+        onstate: (s, d) => states.push(d && (d.reason || d.code) ? s + ':' + (d.reason || d.code) : s),
+    });
+    return { relay, tv, link, sender, states, offers, stream: new FakeStream() };
+}
+
+async function untilTrue(fn, ms = 2000) {
+    const end = Date.now() + ms;
+    while (!fn()) {
+        if (Date.now() > end) throw new Error('timed out');
+        await sleep(5);
+    }
+}
+
+test('sender: cast start, offer, answer, sharing; stop says bye on the data channel', async () => {
+    const { relay, tv, link, sender, states, offers, stream } = await castRig();
+    sender.start(stream);
+    await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
+    const pc = FakePC.last;
+    assert.equal(stream.getVideoTracks()[0].contentHint, 'detail');
+    const [vt, at] = pc.transceivers;
+    assert.equal(vt.init.direction, 'sendonly');
+    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 6000000, maxFramerate: 30 }]);
+    assert.equal(at.init.sendEncodings, undefined);
+    assert.equal(sender.state, 'connecting');
+    pc.dc._open();
+    pc._conn('connected');
+    assert.equal(sender.state, 'sharing');
+    assert.deepEqual(states, ['starting', 'waiting', 'connecting', 'sharing']);
+    assert.equal(offers.length, 1);
+    assert.equal(tv.received('cast')[0].args.action, 'start');
+    const posts = relay.posts.length;
+    assert.equal(posts, 3, 'posted: cast command, offer, answer (the fake TV publishes its ack directly)');
+    assert.equal(tv.acks.length, 1);
+    sender.stop('user');
+    assert.deepEqual(pc.dc.sent, ['bye']);
+    assert.equal(states.slice(-1)[0], 'stopped:user');
+    assert.ok(stream.tracks.every(t => t.readyState === 'ended'), 'capture stopped');
+    await sleep(350);
+    assert.ok(pc.closed);
+    assert.equal(relay.posts.length, posts, 'stop used no relay message');
+    assert.equal(link.suspend(), true, 'the session let go of the link');
+    link.close();
+    tv.rx.close();
+});
+
+test('sender: a drop reconnects once (ICE restart over the relay); a second drop ends with "lost"', async () => {
+    const { relay, tv, link, sender, states, offers, stream } = await castRig();
+    sender.start(stream);
+    await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
+    const pc = FakePC.last;
+    pc.dc._open();
+    pc._conn('connected');
+    const before = relay.posts.length;
+    pc._conn('disconnected');
+    await sleep(20);
+    assert.equal(sender.state, 'sharing', 'a short hiccup is ignored');
+    await untilTrue(() => sender.state === 'reconnecting');
+    await untilTrue(() => offers.length === 2);
+    assert.match(offers[1], /restart/);
+    await untilTrue(() => pc.remoteDescription.sdp.includes('answer 2'));
+    pc._conn('connected');
+    assert.equal(sender.state, 'sharing');
+    assert.equal(relay.posts.length - before, 2, 'reconnect = offer + answer');
+    pc._conn('failed');
+    await untilTrue(() => sender.state === 'error');
+    assert.deepEqual(states, ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting', 'sharing', 'error:lost']);
+    assert.equal(sender.reconnects, 1);
+    link.close();
+    tv.rx.close();
+});
+
+test('sender: the TV closing the receiver ends with reason "tv"; a receiver bye before connecting is an error', async () => {
+    let { tv, link, sender, states, stream } = await castRig();
+    sender.start(stream);
+    await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
+    let pc = FakePC.last;
+    pc.dc._open();
+    pc._conn('connected');
+    pc.dc._close();
+    assert.equal(states.slice(-1)[0], 'stopped:tv');
+    assert.deepEqual(pc.dc.sent, [], 'no bye back to a TV that left');
+    link.close();
+    tv.rx.close();
+
+    ({ tv, link, sender, states, stream } = await castRig());
+    tv.oncast = session => {
+        const rx = new CastChannel({ code: CODE, relay: RELAY, session, out: 'r2c', since: '5m', fetch: link._fetch, EventSource: link._ES });
+        rx.onsignal = cast => { if (cast === 'offer') rx.send('bye', 'error'); };
+        rx.init();
+        tv.rx = rx;
+    };
+    sender.start(stream);
+    await untilTrue(() => sender.state === 'error');
+    assert.equal(states.slice(-1)[0], 'error:tv_error');
+    link.close();
+    tv.rx.close();
+});
+
+test('sender: no connection after the answer ends with "ice" in good time', async () => {
+    const { tv, link, states, stream } = await castRig();
+    const sender = new CastSender({ link, RTCPeerConnection: FakePC, window: {}, connectTimeoutMs: 300, onstate: (s, d) => states.push(d && d.code ? s + ':' + d.code : s) });
+    sender.start(stream);
+    await untilTrue(() => sender.state === 'error', 3000);
+    assert.deepEqual(states, ['starting', 'waiting', 'connecting', 'error:ice']);
+    link.close();
+    tv.rx.close();
+});
+
+test('sender: TV not answering times out; cancelling while the TV opens the receiver closes it again', async () => {
+    let { relay, tv, link, sender, states, stream } = await castRig({ tvReplies: false });
+    sender.start(stream);
+    await untilTrue(() => sender.state === 'error', 3000);
+    assert.equal(states.slice(-1)[0], 'error:timeout');
+    assert.equal(tv.received('cast').length, 1);
+    assert.equal(relay.posts.length, 1, 'no offer is published when the TV never answered');
+    link.close();
+
+    ({ relay, tv, link, sender, states, stream } = await castRig());
+    tv.oncast = () => {};
+    tv.delayMs = 50;
+    sender.start(stream);
+    await untilTrue(() => sender.state === 'waiting');
+    sender.stop('user');
+    assert.equal(states.slice(-1)[0], 'stopped:user');
+    await untilTrue(() => tv.received('cast').length === 2);
+    assert.deepEqual(tv.received('cast').map(c => c.args.action), ['start', 'stop']);
+    link.close();
 });

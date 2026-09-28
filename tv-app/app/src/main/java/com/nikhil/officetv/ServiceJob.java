@@ -9,7 +9,7 @@ import android.content.Context;
 
 import java.util.List;
 
-/** Watchdog: about every 15 minutes (and after reboots) makes sure the control service is running. */
+/** Watchdog: about every 15 minutes (and after reboots) makes sure the background service is running. */
 public class ServiceJob extends JobService {
     static final int JOB_ID = 8080;
     private static final long PERIOD_MS = 15L * 60 * 1000;

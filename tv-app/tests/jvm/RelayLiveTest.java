@@ -21,7 +21,7 @@ public final class RelayLiveTest {
                 System.out.println("TV got command: " + cmd);
                 JSONObject r = new JSONObject();
                 r.put("ok", true);
-                r.put("msg", "TV online hai.");
+                r.put("msg", "The TV is online.");
                 r.put("data", E2EHarness.status());
                 return r;
             }

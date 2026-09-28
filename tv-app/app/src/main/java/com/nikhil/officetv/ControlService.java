@@ -8,28 +8,23 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ServiceInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.SystemClock;
-import android.util.Log;
 
-import java.io.IOException;
-
-/** Keeps the web server running in the background and the screen/Wi-Fi awake. */
+/**
+ * Keeps Office TV ready for screen sharing in the background: a foreground service that holds the relay
+ * connection, a Wi-Fi lock (so the connection survives Wi-Fi power saving) and, if "Keep screen on" is
+ * enabled, a screen wake lock.
+ */
 public class ControlService extends Service {
-    private static final String TAG = "OfficeTV";
     private static final String CHANNEL = "control";
     private static final int NOTIFICATION_ID = 1;
-    /** Ports tried in order: WebServer.PORT, then the next ones up to this many. */
-    private static final int EXTRA_PORTS = 10;
-    private static final int READ_TIMEOUT_MS = 20000;
 
     static volatile ControlService instance;
 
-    private volatile WebServer server;
     private PowerManager.WakeLock screenLock;
     private WifiManager.WifiLock wifiLock;
     private boolean foreground;
@@ -59,46 +54,31 @@ public class ControlService extends Service {
     }
 
     static boolean running() {
-        ControlService s = instance;
-        WebServer w = s == null ? null : s.server;
-        return w != null && w.isAlive();
-    }
-
-    /** The port the LAN server actually listens on, or 0 if it is not running. */
-    static int port() {
-        ControlService s = instance;
-        WebServer w = s == null ? null : s.server;
-        if (w == null || !w.isAlive()) return 0;
-        int p = w.getListeningPort();
-        return p > 0 ? p : 0;
+        return instance != null;
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
-        MainActivity.appContext = getApplicationContext();
         // First, so Android 8+ sees startForeground() in time even if something below is slow.
         goForeground();
-        try {
-            System.setProperty("java.io.tmpdir", getCacheDir().getAbsolutePath());
-        } catch (RuntimeException ignored) {
-        }
-        startServer();
         acquireWifiLock();
         applyKeepAwake();
         RelayManager.start(this);
+        DebugHooks.start(this);
         ServiceJob.schedule(this);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         goForeground();
-        startServer();
+        RelayManager.start(this);
+        DebugHooks.start(this);
         return START_STICKY;
     }
 
-    /** Swiping the app away from recents must not stop the remote: ask Android to start us again. */
+    /** Swiping the app away from recents must not stop sharing: ask Android to start us again. */
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         try {
@@ -115,39 +95,6 @@ public class ControlService extends Service {
         }
         ServiceJob.schedule(this);
         super.onTaskRemoved(rootIntent);
-    }
-
-    private synchronized void startServer() {
-        if (server != null && server.isAlive()) return;
-        if (server != null) {
-            try {
-                server.stop();
-            } catch (Throwable ignored) {
-            }
-            server = null;
-        }
-        Throwable last = null;
-        for (int p = WebServer.PORT; p <= WebServer.PORT + EXTRA_PORTS; p++) {
-            WebServer s = new WebServer(this, p);
-            try {
-                s.start(READ_TIMEOUT_MS, false);
-                server = s;
-                if (p != WebServer.PORT) CrashLog.note(this, "Port " + WebServer.PORT + " was busy, using " + p + ".");
-                if (BuildConfig.DEBUG) {
-                    Log.i(TAG, "OTV_TEST pin=" + Prefs.pin(this) + " port=" + p + " code=" + Prefs.pairCode(this));
-                }
-                return;
-            } catch (IOException | RuntimeException e) {
-                last = e;
-                try {
-                    s.stop();
-                } catch (Throwable ignored) {
-                }
-            }
-        }
-        Log.e(TAG, "server start failed", last);
-        CrashLog.note(this, "Web server failed to start (ports " + WebServer.PORT + "-" + (WebServer.PORT + EXTRA_PORTS)
-                + "): " + last);
     }
 
     private void acquireWifiLock() {
@@ -186,17 +133,9 @@ public class ControlService extends Service {
 
     @Override
     public void onDestroy() {
-        try {
-            ScreenCapture.stop(this, null);
-        } catch (Throwable ignored) {
-        }
         RelayManager.stop();
+        DebugHooks.stop();
         synchronized (this) {
-            try {
-                if (server != null) server.stop();
-            } catch (Throwable ignored) {
-            }
-            server = null;
             try {
                 if (screenLock != null && screenLock.isHeld()) screenLock.release();
             } catch (Throwable ignored) {
@@ -230,42 +169,15 @@ public class ControlService extends Service {
         if (!foreground) CrashLog.note(this, "Foreground service failed: " + err);
     }
 
-    /**
-     * Android 10+: MediaProjection must run in a foreground service of type mediaProjection.
-     * Returns null on success, otherwise a message for the user. Never throws.
-     */
-    String goForegroundForProjection() {
-        if (Build.VERSION.SDK_INT < 29) return null;
-        Throwable err = null;
-        for (int attempt = 0; attempt < 2; attempt++) {
-            try {
-                startForeground(NOTIFICATION_ID, notification(attempt == 1),
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-                foreground = true;
-                return null;
-            } catch (Throwable t) {
-                err = t;
-            }
-        }
-        CrashLog.note(this, "Foreground (screen sharing) failed: " + err);
-        return "The TV did not allow screen sharing in the background (" + err + ").";
-    }
-
-    /** Live Screen stopped: go back to the normal foreground notification. */
-    void projectionEnded() {
-        if (Build.VERSION.SDK_INT < 29) return;
-        foreground = false;
-        goForeground();
-    }
-
     /** plain = the most basic notification possible, used if the normal one fails. */
+    @SuppressWarnings("deprecation")
     private Notification notification(boolean plain) {
         Notification.Builder b;
         if (Build.VERSION.SDK_INT >= 26) {
             try {
                 NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
                 if (nm != null) {
-                    nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Office TV control",
+                    nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Office TV",
                             NotificationManager.IMPORTANCE_LOW));
                 }
             } catch (RuntimeException e) {
@@ -276,10 +188,10 @@ public class ControlService extends Service {
             b = new Notification.Builder(this);
         }
         b.setSmallIcon(plain ? android.R.drawable.stat_notify_sync : R.drawable.ic_launcher)
-                .setContentTitle("Office TV is running")
+                .setContentTitle("Office TV is ready")
                 .setOngoing(true);
         if (!plain) {
-            b.setContentText("Ready to be controlled from a laptop or phone.");
+            b.setContentText("Laptops can share their screen to this TV.");
             try {
                 int flags = Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0;
                 b.setContentIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), flags));

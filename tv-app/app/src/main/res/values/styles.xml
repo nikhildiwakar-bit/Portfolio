@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="otv_bg">#FF0B1220</color>
+    <color name="otv_accent">#FF2DD4BF</color>
+
+    <!-- Home screen: the app's navy background from the first frame (no grey flash on start). -->
+    <style name="OfficeTv" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/otv_bg</item>
+        <item name="android:colorAccent">@color/otv_accent</item>
+        <item name="android:colorPrimaryDark">@color/otv_bg</item>
+        <item name="android:navigationBarColor">@color/otv_bg</item>
+    </style>
+
+    <!-- Cast screen: pure black, full screen, no preview window flash. -->
+    <style name="OfficeTv.Cast" parent="@android:style/Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorAccent">@color/otv_accent</item>
+        <item name="android:windowContentOverlay">@null</item>
+    </style>
+</resources>
