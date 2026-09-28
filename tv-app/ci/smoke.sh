@@ -178,8 +178,10 @@ post_ok /api/key '{"key":"volume_up"}' "POST /api/key volume_up"
 # Opening from the background needs the grant on Android 10+; before that it always works.
 EXPECT_OK=true
 [ "$SDK" -ge 29 ] && [ "$GRANT" = none ] && EXPECT_OK=false
-post_ok /api/open '{"url":"https://example.com"}' "POST /api/open https://example.com" true
-if wait_until 25 resumed_is_other; then
+post_ok /api/open '{"url":"https://example.com"}' "POST /api/open https://example.com" "$EXPECT_OK"
+if [ "$EXPECT_OK" = false ]; then
+    info "link open not expected on API $SDK without a grant"
+elif wait_until 25 resumed_is_other; then
     pass "link opened on screen: $(describe_other)"
     case $RESUMED in android/*) warn "Android showed an app chooser; a real TV user would have to pick an app" ;; esac
 else
@@ -202,24 +204,38 @@ fi
 resumed_is_home || go_home || warn "could not get back to the launcher (resumed: ${RESUMED:-nothing})"
 screenshot 03-home
 
-# ---------------------------------------------------------------- upload a file (app is in the background now)
+# ---------------------------------------------------------------- upload files (app is in the background now)
+# Images and PDFs always open in our own ViewerActivity.
+upload_check() { # upload_check <file> <label> <shot-name>
+    local code ok
+    code=$(http POST /api/upload "@$1")
+    cp "$HTTP_BODY" "$OUT/http/upload-$2.json"
+    ok=$(jget "$HTTP_BODY" ok)
+    if [ "$code" = 200 ] && [ "$ok" = "$EXPECT_OK" ]; then
+        pass "POST /api/upload ($2) -> ok=$ok \"$(jget "$HTTP_BODY" msg)\""
+    else
+        fail "POST /api/upload ($2) -> HTTP $code: $(head -c 300 "$HTTP_BODY")"
+    fi
+    if [ "$EXPECT_OK" = true ]; then
+        if wait_until 25 resumed_is_viewer; then
+            pass "$2 opened in ViewerActivity"
+        else
+            fail "$2 did not open in $PKG/.ViewerActivity (resumed: ${RESUMED:-nothing})"
+            S dumpsys activity activities > "$OUT/dumpsys-activities-upload-$2.txt"
+        fi
+    fi
+    sleep 3
+    screenshot "$3"
+    go_home >/dev/null || true
+}
+PNG="$OUT/OfficeTV-test.png"
+make_png "$PNG"
+upload_check "$PNG" png 04-viewer-png
 PDF="$OUT/OfficeTV-test.pdf"
 make_pdf "$PDF" "Office TV test"
-code=$(http POST /api/upload "@$PDF")
-cp "$HTTP_BODY" "$OUT/http/upload.json"
-ok=$(jget "$HTTP_BODY" ok)
-if [ "$code" = 200 ] && [ "$ok" = "$EXPECT_OK" ]; then
-    pass "POST /api/upload (PDF) -> ok=$ok \"$(jget "$HTTP_BODY" msg)\""
-else
-    fail "POST /api/upload (PDF) -> HTTP $code: $(head -c 300 "$HTTP_BODY")"
-fi
-if [ "$EXPECT_OK" = true ]; then
-    if wait_until 25 resumed_is_other; then pass "file opened on screen from the background: $(describe_other)"; else fail "uploaded file did not open (resumed: ${RESUMED:-nothing})"; S dumpsys activity activities > "$OUT/dumpsys-activities-upload.txt"; fi
-fi
-sleep 3
-screenshot 04-file-opened
+upload_check "$PDF" pdf 05-viewer-pdf
 code=$(http GET /api/files)
-if [ "$code" = 200 ] && grep -q 'OfficeTV-test' "$HTTP_BODY"; then pass "uploaded file is listed in /api/files"; else fail "uploaded file missing from /api/files: $(head -c 200 "$HTTP_BODY")"; fi
+if [ "$code" = 200 ] && grep -q 'OfficeTV-test' "$HTTP_BODY"; then pass "uploaded files are listed in /api/files"; else fail "uploaded files missing from /api/files: $(head -c 200 "$HTTP_BODY")"; fi
 
 # ---------------------------------------------------------------- volume, keep awake
 post_ok /api/volume '{"percent":40}' "POST /api/volume 40%"
@@ -265,7 +281,7 @@ case $GRANT in
     a11y | both) wait_until 20 a11y_on && pass "accessibility connected again after restart" || warn "accessibility not connected after restart" ;;
 esac
 sleep 2
-screenshot 05-after-restart
+screenshot 06-after-restart
 save_env
 KEEP_FORWARD=1
 

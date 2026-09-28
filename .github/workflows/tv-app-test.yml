@@ -1,0 +1,131 @@
+name: tv-app emulator tests
+
+on:
+  push:
+    paths:
+      - 'tv-app/app/**'
+      - 'tv-app/ci/**'
+      - '.github/workflows/tv-app-test.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: tv-app-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build debug APKs
+        working-directory: tv-app
+        run: gradle --no-daemon assembleFullDebug assembleLiteDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-apks
+          if-no-files-found: error
+          path: |
+            tv-app/app/build/outputs/apk/full/debug/app-full-debug.apk
+            tv-app/app/build/outputs/apk/lite/debug/app-lite-debug.apk
+
+  emulator:
+    needs: build-debug
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { api: 21, target: default,     arch: x86,    flavor: full, grant: a11y }
+          - { api: 24, target: default,     arch: x86,    flavor: full, grant: a11y }
+          - { api: 26, target: default,     arch: x86_64, flavor: full, grant: a11y }
+          - { api: 29, target: default,     arch: x86_64, flavor: full, grant: a11y }
+          - { api: 30, target: google_apis, arch: x86_64, flavor: full, grant: a11y }
+          - { api: 33, target: google_apis, arch: x86_64, flavor: full, grant: a11y }
+          - { api: 34, target: google_apis, arch: x86_64, flavor: full, grant: a11y }
+          - { api: 30, target: android-tv,  arch: x86,    flavor: full, grant: a11y }
+          - { api: 30, target: google_apis, arch: x86_64, flavor: lite, grant: overlay }
+          - { api: 34, target: google_apis, arch: x86_64, flavor: lite, grant: overlay }
+    name: api${{ matrix.api }}-${{ matrix.target }}-${{ matrix.arch }}-${{ matrix.flavor }}
+    env:
+      OTV_OUT: ci-out
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: debug-apks
+          path: apk
+      - name: List APKs
+        run: find apk -name '*.apk' -ls
+      - name: Smoke test on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash tv-app/ci/smoke.sh apk/${{ matrix.flavor }}/debug/app-${{ matrix.flavor }}-debug.apk ${{ matrix.flavor }} ${{ matrix.grant }}
+      - name: Upload ci-out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-out-api${{ matrix.api }}-${{ matrix.target }}-${{ matrix.arch }}-${{ matrix.flavor }}
+          path: ci-out
+          if-no-files-found: warn
+
+  screens:
+    needs: emulator
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ci-out-*
+          path: all
+      - name: Collect screenshots and results
+        run: |
+          mkdir -p pub
+          for d in all/ci-out-*; do
+            [ -d "$d" ] || continue
+            n=${d#all/ci-out-}
+            for f in "$d"/shots/*.png; do
+              [ -f "$f" ] && cp "$f" "pub/${n}__$(basename "$f")"
+            done
+            [ -f "$d/results.txt" ] && cp "$d/results.txt" "pub/${n}__results.txt"
+          done
+          ls -la pub
+      - name: Publish prerelease ci-screens
+        run: |
+          gh release delete ci-screens --yes --cleanup-tag || true
+          {
+            echo "Emulator screenshots from run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} (commit ${{ github.sha }})."
+            echo
+            for f in pub/*; do
+              [ -f "$f" ] || continue
+              echo "- ${{ github.server_url }}/${{ github.repository }}/releases/download/ci-screens/$(basename "$f")"
+            done
+          } > notes.md
+          gh release create ci-screens --prerelease --target "${{ github.sha }}" --title "CI screenshots" --notes-file notes.md
+          files=(pub/*)
+          if [ -f "${files[0]}" ]; then gh release upload ci-screens "${files[@]}" --clobber; fi
+          gh release view ci-screens --json assets --jq '.assets[].url'

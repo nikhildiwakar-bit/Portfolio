@@ -15,7 +15,7 @@ pass() { printf 'PASS  %s\n' "$*" | tee -a "$RESULTS"; }
 fail() { printf 'FAIL  %s\n' "$*" | tee -a "$RESULTS"; }
 warn() { printf 'WARN  %s\n' "$*" | tee -a "$RESULTS"; }
 info() { printf 'INFO  %s\n' "$*" | tee -a "$RESULTS"; }
-fail_count() { grep -c '^FAIL' "$RESULTS" 2>/dev/null || true; }
+fail_count() { local n; n=$(grep -c '^FAIL' "$RESULTS" 2>/dev/null); printf '%s\n' "${n:-0}"; }
 
 # adb with a hard timeout, so a stuck device cannot hang the job.
 A() { timeout "${ADB_TIMEOUT:-90}" "$ADB" "$@"; }
@@ -78,6 +78,7 @@ is_home() { # is_home <component>
 }
 # Condition helpers for wait_until; they leave the last seen activity in $RESUMED.
 resumed_any() { RESUMED=$(resumed_activity); [ -n "$RESUMED" ]; }
+resumed_is_viewer() { RESUMED=$(resumed_activity); [ "$RESUMED" = "$PKG/$PKG.ViewerActivity" ]; }
 resumed_is_ours() { RESUMED=$(resumed_activity); [ "${RESUMED%%/*}" = "$PKG" ]; }
 resumed_is_home() { RESUMED=$(resumed_activity); [ -n "$RESUMED" ] && is_home "$RESUMED"; }
 # Some other app, or our own ViewerActivity (used when no app on the TV can open the link/file).
@@ -253,7 +254,9 @@ http() {
     local m=$1 path=$2 body=${3-} pin=${4-${PIN:-}} code
     local args=(-sS --noproxy '*' -o "$HTTP_BODY" -w '%{http_code}' -m 30 -H "X-Pin: $pin")
     case $m:$body in
-        POST:@*) args+=(-F "file=@${body#@};type=application/pdf") ;;
+        POST:@*) local f=${body#@} t=application/octet-stream
+                 case $f in *.pdf) t=application/pdf ;; *.png) t=image/png ;; esac
+                 args+=(-F "file=@$f;type=$t") ;;
         POST:*) args+=(-X POST -H 'Content-Type: application/json; charset=utf-8' --data-binary "$body") ;;
     esac
     : > "$HTTP_BODY"
@@ -308,6 +311,20 @@ post_ok() {
     fi
     fail "$3 -> HTTP $code, ok=$ok, msg=\"$msg\""
     return 1
+}
+
+# make_png <file>: a valid 64x64 solid-colour PNG (python3 zlib, no extra tools).
+make_png() {
+    python3 - "$1" <<'PY'
+import struct, sys, zlib
+w = h = 64
+raw = b''.join(b'\x00' + b'\x20\x80\xe0' * w for _ in range(h))
+def chunk(t, d):
+    return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) \
+    + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+open(sys.argv[1], 'wb').write(png)
+PY
 }
 
 # Minimal valid one-page PDF with correct xref offsets.
