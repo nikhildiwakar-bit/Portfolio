@@ -221,7 +221,12 @@ if ui_dump home; then
             pass "one-time setup row shown (nothing granted)"
         fi
     elif [ "$WEBVIEW_OK" = true ] && ! ui_check "$OUT/ui-home.xml" "ONE-TIME SETUP" | grep -q missing; then
-        fail "one-time setup card shown although nothing is missing"
+        # 'uiautomator dump' suppresses other accessibility services while it runs, so with grant=a11y the app
+        # briefly (and correctly) sees Accessibility as off. The status API check above is the real signal.
+        case $GRANT in
+            a11y | both) info "setup card visible during the UI dump (uiautomator suspends Accessibility); status says needsPermission=false" ;;
+            *) fail "one-time setup card shown although nothing is missing" ;;
+        esac
     fi
 else
     warn "uiautomator dump failed; home screen text not checked"
