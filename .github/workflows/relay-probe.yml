@@ -1,0 +1,25 @@
+name: Relay probe
+on:
+  push:
+    paths: ['.github/workflows/relay-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - name: Attachment size limits on ntfy.sh
+        run: |
+          for kb in 100 500 1000 1900 2100 3000 5000; do
+            head -c $((kb*1024)) /dev/urandom > f.bin
+            code=$(curl -s -o r.json -w '%{http_code}' -X POST --data-binary @f.bin "https://ntfy.sh/otvprobe$RANDOM$RANDOM?filename=otv.bin&firebase=no")
+            echo "SIZE ${kb}KB -> HTTP $code $(head -c 200 r.json)"
+          done
+      - name: Live relay round trip (Java TV client)
+        run: |
+          curl -sSL -o json.jar https://repo1.maven.org/maven2/org/json/json/20240303/json-20240303.jar
+          ORGJSON_JAR=$PWD/json.jar bash tv-app/tests/jvm/run.sh live; echo "exit=$?"
