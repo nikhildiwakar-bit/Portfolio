@@ -27,7 +27,7 @@ public class ServiceJob extends JobService {
                     .setPeriodic(PERIOD_MS)
                     .setPersisted(true)
                     .build();
-            if (js.schedule(job) != JobScheduler.RESULT_SUCCESS) CrashLog.note(c, "Watchdog job schedule nahi hua.");
+            if (js.schedule(job) != JobScheduler.RESULT_SUCCESS) CrashLog.note(c, "Could not schedule the watchdog job.");
         } catch (Throwable t) {
             CrashLog.note(c, "Watchdog job: " + t);
         }

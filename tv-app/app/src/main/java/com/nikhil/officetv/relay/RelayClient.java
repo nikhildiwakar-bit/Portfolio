@@ -250,10 +250,10 @@ public final class RelayClient {
             try {
                 setState(g, State.CONNECTING, relayUrl.getHost());
                 stream(g, opened);
-                why = "Relay ne connection band kar diya.";
+                why = "The relay closed the connection.";
             } catch (RateLimitedException e) {
                 limited = true;
-                why = relayUrl.getHost() + " ki limit poori ho gayi (HTTP 429).";
+                why = relayUrl.getHost() + " rate limit reached (HTTP 429).";
             } catch (Throwable t) {
                 why = describe(t);
             } finally {
@@ -268,11 +268,11 @@ public final class RelayClient {
             if (limited) {
                 rateFailures = Math.min(rateFailures + 1, 5);
                 wait = Math.max(wait, rateLimitMinMs * rateFailures);
-                setState(g, State.RATE_LIMITED, why + " " + seconds(wait) + " baad dobara try.");
+                setState(g, State.RATE_LIMITED, why + " Retrying in " + seconds(wait) + ".");
             } else if (stable) {
                 setState(g, State.CONNECTING, relayUrl.getHost());
             } else {
-                setState(g, State.OFFLINE, why + " " + seconds(wait) + " baad dobara try.");
+                setState(g, State.OFFLINE, why + " Retrying in " + seconds(wait) + ".");
             }
             sleep(g, wait);
         }
@@ -427,9 +427,9 @@ public final class RelayClient {
             try {
                 result = handler.onCommand(cmd, args);
             } catch (Throwable t) {
-                result = result(false, "TV par error: " + t);
+                result = result(false, "Something went wrong on the TV: " + t);
             }
-            if (result == null) result = result(false, "TV se jawab nahi mila.");
+            if (result == null) result = result(false, "The TV did not respond.");
             if (!alive(g)) return;
             for (String env : buildAcks(crypto, id, result, System.currentTimeMillis())) {
                 if (!alive(g)) return;
@@ -447,7 +447,7 @@ public final class RelayClient {
                 if (code == 429) {
                     if (state == State.CONNECTED) {
                         setState(g, State.RATE_LIMITED,
-                                relayUrl.getHost() + " ki limit poori ho gayi (HTTP 429). Jawab nahi bhej paaye.");
+                                relayUrl.getHost() + " rate limit reached (HTTP 429). Could not send the reply.");
                     }
                     return;
                 }
@@ -652,16 +652,16 @@ public final class RelayClient {
      * (local test relay), and then only from the same host and port.
      */
     public byte[] fetchFile(JSONObject fileArgs) throws IOException, GeneralSecurityException {
-        if (fileArgs == null) throw new IOException("File ki details nahi mili.");
+        if (fileArgs == null) throw new IOException("File details are missing.");
         byte[] iv;
         try {
             iv = RelayCrypto.unb64url(fileArgs.optString("iv", ""));
         } catch (IllegalArgumentException e) {
-            throw new GeneralSecurityException("File ka IV galat hai.");
+            throw new GeneralSecurityException("The file IV is invalid.");
         }
-        if (iv.length != RelayCrypto.IV_BYTES) throw new GeneralSecurityException("File ka IV galat hai.");
+        if (iv.length != RelayCrypto.IV_BYTES) throw new GeneralSecurityException("The file IV is invalid.");
         long size = fileArgs.optLong("size", -1);
-        if (size > MAX_FILE_BYTES) throw new IOException("File 16 MB se badi hai.");
+        if (size > MAX_FILE_BYTES) throw new IOException("The file is larger than 16 MB.");
         URL url = checkFileUrl(fileArgs.optString("url", ""));
         Buf ct = download(url, MAX_FILE_BYTES + RelayCrypto.TAG_BYTES);
         return crypto.openFile(ct.b, 0, ct.n, iv);
@@ -672,16 +672,16 @@ public final class RelayClient {
         try {
             u = new URL(raw == null ? "" : raw.trim());
         } catch (MalformedURLException e) {
-            throw new IOException("File ka link galat hai.");
+            throw new IOException("The file link is invalid.");
         }
         String scheme = u.getProtocol().toLowerCase(Locale.ROOT);
         String relayScheme = relayUrl.getProtocol().toLowerCase(Locale.ROOT);
         if (!"https".equals(scheme) && !("http".equals(scheme) && "http".equals(relayScheme))) {
-            throw new IOException("File sirf https link se aa sakti hai.");
+            throw new IOException("Files can only be downloaded over https.");
         }
         if (u.getUserInfo() != null || !u.getHost().equalsIgnoreCase(relayUrl.getHost())
                 || port(u) != port(relayUrl)) {
-            throw new IOException("File sirf relay server (" + relayUrl.getHost() + ") se aa sakti hai.");
+            throw new IOException("Files can only come from the relay server (" + relayUrl.getHost() + ").");
         }
         return u;
     }
@@ -705,16 +705,16 @@ public final class RelayClient {
                 int code = c.getResponseCode();
                 if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
                     String loc = c.getHeaderField("Location");
-                    if (loc == null) throw new IOException("File download nahi hui (HTTP " + code + ").");
+                    if (loc == null) throw new IOException("File download failed (HTTP " + code + ").");
                     cur = checkFileUrl(new URL(cur, loc).toString());
                     continue;
                 }
                 if (code == 429) {
                     throw new IOException(relayUrl.getHost()
-                            + " ki limit poori ho gayi (HTTP 429). Thodi der baad try karein.");
+                            + " rate limit reached (HTTP 429). Please try again shortly.");
                 }
-                if (code == 404) throw new IOException("File relay par nahi mili (shayad purani ho kar hat gayi).");
-                if (code != 200) throw new IOException("File download nahi hui (HTTP " + code + ").");
+                if (code == 404) throw new IOException("The file is no longer on the relay (it may have expired).");
+                if (code != 200) throw new IOException("File download failed (HTTP " + code + ").");
                 long len = -1;
                 String cl = c.getHeaderField("Content-Length");
                 if (cl != null) {
@@ -723,7 +723,7 @@ public final class RelayClient {
                     } catch (NumberFormatException ignored) {
                     }
                 }
-                if (len > max) throw new IOException("File 16 MB se badi hai.");
+                if (len > max) throw new IOException("The file is larger than 16 MB.");
                 InputStream in = c.getInputStream();
                 try {
                     return readAll(in, len, max);
@@ -734,7 +734,7 @@ public final class RelayClient {
                 c.disconnect();
             }
         }
-        throw new IOException("File download nahi hui (bahut redirects).");
+        throw new IOException("File download failed (too many redirects).");
     }
 
     private static Buf readAll(InputStream in, long len, int max) throws IOException {
@@ -742,7 +742,7 @@ public final class RelayClient {
         byte[] tmp = new byte[64 * 1024];
         int n;
         while ((n = in.read(tmp)) != -1) {
-            if (b.n + n > max) throw new IOException("File 16 MB se badi hai.");
+            if (b.n + n > max) throw new IOException("The file is larger than 16 MB.");
             b.append(tmp, n);
         }
         return b;
@@ -771,14 +771,14 @@ public final class RelayClient {
 
     private String describe(Throwable t) {
         String host = relayUrl.getHost();
-        if (t instanceof HttpStatusException) return "Relay ne HTTP " + ((HttpStatusException) t).code + " diya.";
-        if (t instanceof UnknownHostException) return "Internet nahi mil raha (" + host + " nahi mila).";
-        if (t instanceof SocketTimeoutException) return "Relay se jawab nahi aaya (timeout).";
-        if (t instanceof ConnectException) return "Relay (" + host + ") se connection nahi hua.";
+        if (t instanceof HttpStatusException) return "The relay returned HTTP " + ((HttpStatusException) t).code + ".";
+        if (t instanceof UnknownHostException) return "No internet connection (" + host + " not found).";
+        if (t instanceof SocketTimeoutException) return "The relay did not respond (timeout).";
+        if (t instanceof ConnectException) return "Could not connect to the relay (" + host + ").";
         if (t instanceof SSLException) {
-            return "Secure connection nahi bana (" + t.getClass().getSimpleName() + "). TV ki date/time check karein.";
+            return "Secure connection failed (" + t.getClass().getSimpleName() + "). Check the TV's date and time.";
         }
-        return "Relay se connection toot gaya (" + t.getClass().getSimpleName() + ").";
+        return "Lost connection to the relay (" + t.getClass().getSimpleName() + ").";
     }
 
     private static void closeAsync(final HttpURLConnection c, final TrackingFactory f) {

@@ -12,8 +12,6 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.StateListDrawable;
 import android.graphics.pdf.PdfRenderer;
 import android.media.ExifInterface;
 import android.net.Uri;
@@ -75,12 +73,13 @@ public class ViewerActivity extends Activity {
 
     static final String WPS_PACKAGE = "cn.wps.moffice_eng";
 
-    private static final int BG = Color.parseColor("#0F172A");
-    private static final int PANEL = Color.parseColor("#1E293B");
-    private static final int FG = Color.parseColor("#E5E7EB");
-    private static final int MUTED = Color.parseColor("#94A3B8");
-    private static final int ACCENT = Color.parseColor("#4F46E5");
-    private static final int SCRIM = Color.parseColor("#B3000000");
+    private static final int BG = UiKit.BG;
+    private static final int FG = UiKit.FG;
+    private static final int MUTED = UiKit.MUTED;
+    private static final int SCRIM = UiKit.SCRIM;
+    /** Desktop Chrome, so Gmail / Drive / Sheets and other sites render their full computer layout. */
+    static final String DESKTOP_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            + "Chrome/124.0.0.0 Safari/537.36";
     private static final int MAX_TEXT_BYTES = 512 * 1024;
     private static final long SEEK_MS = 10000;
 
@@ -182,10 +181,10 @@ public class ViewerActivity extends Activity {
         boolean media = MODE_VIDEO.equals(m) || MODE_AUDIO.equals(m);
         boolean paged = MODE_PDF.equals(m);
         switch (key == null ? "" : key) {
-            case "next_slide": next(); return paged ? "Agla page" : "Aage";
-            case "prev_slide": prev(); return paged ? "Pichhla page" : "Peeche";
-            case "scroll_down": scroll(true); return "Neeche";
-            case "scroll_up": scroll(false); return "Upar";
+            case "next_slide": next(); return paged ? "Next page" : "Forward";
+            case "prev_slide": prev(); return paged ? "Previous page" : "Back";
+            case "scroll_down": scroll(true); return "Scrolled down";
+            case "scroll_up": scroll(false); return "Scrolled up";
             case "back": back(); return "Back";
             case "play_pause":
                 if (!media) return null;
@@ -262,6 +261,7 @@ public class ViewerActivity extends Activity {
     @Override
     public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
+        kit = null;
         // The screen size may have changed: re-render the PDF page to fit.
         if (MODE_PDF.equals(mode) && pages > 0) root.post(() -> showPage(page));
     }
@@ -360,7 +360,7 @@ public class ViewerActivity extends Activity {
         String path = i == null ? null : i.getStringExtra(EXTRA_PATH);
         try {
             if (uri == null && !MODE_OFFICE.equals(mode)) {
-                showMessage("Kuch dikhane ko nahi mila", "Link ya file dobara bhejein.");
+                showMessage("Nothing to show", "Please send the link or file again.");
                 return;
             }
             switch (mode) {
@@ -375,7 +375,7 @@ public class ViewerActivity extends Activity {
         } catch (Throwable t) {
             CrashLog.note(this, "Viewer " + mode + ": " + t);
             teardown();
-            showMessage("Yeh TV par nahi khul saka", "Kuch gadbad hui. Link ya file dobara bhej kar dekhein.");
+            showMessage("This could not be opened on the TV", "Something went wrong. Try sending the link or file again.");
         }
     }
 
@@ -457,7 +457,7 @@ public class ViewerActivity extends Activity {
             w = new WebView(this);
         } catch (Throwable t) {
             // No WebView provider installed / disabled / being updated: explain instead of crashing.
-            CrashLog.note(this, "WebView nahi bana: " + t);
+            CrashLog.note(this, "WebView could not be created: " + t);
             noWebView();
             return;
         }
@@ -465,9 +465,8 @@ public class ViewerActivity extends Activity {
         try {
             setUpWeb(w);
             root.addView(w, match());
-            progress = label("Khul raha hai…", 20, FG, false);
-            progress.setBackgroundColor(SCRIM);
-            progress.setPadding(dp(12), dp(6), dp(12), dp(6));
+            progress = label("Loading…", 18, FG, false);
+            chip(progress);
             root.addView(progress, wrap(Gravity.TOP | Gravity.END, 16));
             w.requestFocus();
             w.loadUrl(uri.toString());
@@ -479,14 +478,15 @@ public class ViewerActivity extends Activity {
     }
 
     private void noWebView() {
-        showMessage("Web page nahi khul saka",
-                "Is TV par web page dikhane wala system (Android System WebView) nahi hai ya band hai.\n\n"
-                        + "TV ke Play Store se 'Android System WebView' ya koi browser (jaise Chrome) install karein.");
+        showMessage("Web page could not be opened",
+                "This TV does not have the component that shows web pages (Android System WebView), or it is turned off.\n\n"
+                        + "Install \u201cAndroid System WebView\u201d or a browser such as Chrome from the TV's Play Store.");
     }
 
     private void setUpWeb(WebView w) {
         WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);
+        s.setUserAgentString(DESKTOP_UA);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
@@ -511,7 +511,7 @@ public class ViewerActivity extends Activity {
         w.setWebViewClient(new Client());
         w.setWebChromeClient(new Chrome());
         w.setDownloadListener((url, agent, disposition, mime, length) -> openOutside(url, null,
-                "Is TV par download nahi ho sakta. File Office TV se bhejein."));
+                "Downloads are not possible on this TV. Send the file through Office TV instead."));
     }
 
     /** Sends a key press to the page (or its fullscreen video), e.g. PageDown for the next slide. */
@@ -538,7 +538,7 @@ public class ViewerActivity extends Activity {
                 i = new Intent(Intent.ACTION_VIEW, u).addCategory(Intent.CATEGORY_BROWSABLE);
             }
         } catch (Throwable t) {
-            hint("Yeh link TV par nahi khul sakta.");
+            hint("This link cannot be opened on the TV.");
             return true;
         }
         if (tryStart(i)) return true;
@@ -548,7 +548,7 @@ public class ViewerActivity extends Activity {
         } else if (scheme.equals("market") && u.getEncodedQuery() != null) {
             v.loadUrl("https://play.google.com/store/apps/details?" + u.getEncodedQuery());
         } else {
-            hint("Is link ke liye TV par app nahi hai.");
+            hint("No app on this TV can open this link.");
         }
         return true;
     }
@@ -579,7 +579,7 @@ public class ViewerActivity extends Activity {
         @Override
         public void onPageStarted(WebView v, String url, Bitmap favicon) {
             if (progress != null) {
-                progress.setText("Khul raha hai…");
+                progress.setText("Loading…");
                 progress.setVisibility(View.VISIBLE);
             }
         }
@@ -594,7 +594,7 @@ public class ViewerActivity extends Activity {
         @SuppressWarnings("deprecation")
         public void onReceivedError(WebView v, int code, String description, String failingUrl) {
             if (v != web) return;
-            showOverlay("Page nahi khula", "Internet check karein, phir 'Dobara try karein' dabayein."
+            showOverlay("Page did not load", "Check the internet connection, then press \u201cTry again\u201d."
                     + (description == null ? "" : "\n\n(" + description + ")"), true);
         }
 
@@ -602,15 +602,15 @@ public class ViewerActivity extends Activity {
         public void onReceivedSslError(WebView v, SslErrorHandler handler, SslError error) {
             handler.cancel();
             if (v != web) return;
-            showOverlay("Website ki security check fail hui",
-                    "TV ki date aur time sahi hai? TV Settings mein check karke 'Dobara try karein' dabayein.", true);
+            showOverlay("Website security check failed",
+                    "Is the TV's date and time correct? Check it in the TV Settings, then press \u201cTry again\u201d.", true);
         }
 
         /** Without this, a crashed web renderer takes the whole app down on Android 8+. */
         @Override
         @TargetApi(26)
         public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail detail) {
-            CrashLog.note(ViewerActivity.this, "WebView renderer band hua (crash=" + detail.didCrash() + ")");
+            CrashLog.note(ViewerActivity.this, "WebView renderer stopped (crash=" + detail.didCrash() + ")");
             if (v == web) {
                 web = null;
                 try {
@@ -621,9 +621,9 @@ public class ViewerActivity extends Activity {
                 ui.post(() -> {
                     if (destroyed) return;
                     teardown();
-                    LinearLayout col = showMessage("Page band ho gaya",
-                            "TV par memory kam thi. 'Dobara try karein' dabayein.");
-                    col.addView(button("Dobara try karein", x -> show(getIntent())), 2);
+                    LinearLayout col = showMessage("The page stopped",
+                            "The TV ran low on memory. Press \u201cTry again\u201d.");
+                    col.addView(button("Try again", x -> show(getIntent())), 2);
                     focusFirst(col);
                 });
             } else {
@@ -644,7 +644,7 @@ public class ViewerActivity extends Activity {
                 progress.setVisibility(View.GONE);
             } else {
                 progress.setVisibility(View.VISIBLE);
-                progress.setText("Khul raha hai… " + p + "%");
+                progress.setText("Loading… " + p + "%");
             }
         }
 
@@ -710,13 +710,13 @@ public class ViewerActivity extends Activity {
         root.addView(pageView, match());
         attachSwipe(pageView);
 
-        indicator = label("", 26, Color.WHITE, true);
-        indicator.setBackgroundColor(SCRIM);
-        indicator.setPadding(dp(16), dp(6), dp(16), dp(6));
+        indicator = label("", 22, Color.WHITE, true);
+        chip(indicator);
+        indicator.setPadding(kit().dp(18), kit().dp(8), kit().dp(18), kit().dp(8));
         indicator.setVisibility(View.GONE);
         root.addView(indicator, wrap(Gravity.BOTTOM | Gravity.END, 16));
 
-        loading = label("PDF khul rahi hai…", 28, FG, false);
+        loading = label("Opening PDF…", 28, FG, false);
         root.addView(loading, wrap(Gravity.CENTER, 0));
         addCloseChip();
 
@@ -727,7 +727,7 @@ public class ViewerActivity extends Activity {
     private void showPage(int index) {
         if (pager == null || pages <= 0) return;
         if (index < 0 || index >= pages) {
-            hint(index < 0 ? "Yeh pehla page hai." : "Yeh aakhri page hai.");
+            hint(index < 0 ? "This is the first page." : "This is the last page.");
             return;
         }
         page = index;
@@ -749,11 +749,11 @@ public class ViewerActivity extends Activity {
         pages = count;
         if (count <= 0) {
             teardown();
-            showMessage("PDF khaali hai", "Is PDF mein koi page nahi hai.");
+            showMessage("The PDF is empty", "This PDF has no pages.");
             return;
         }
         showPage(0);
-        if (count > 1) hint("Remote ke Left/Right button se, ya swipe karke page badlein.");
+        if (count > 1) hint("Use Left / Right on the remote, or swipe, to change pages.");
     }
 
     private void onPdfPage(int gen, int index, Bitmap b) {
@@ -775,7 +775,7 @@ public class ViewerActivity extends Activity {
     private void onPdfError(int gen, String msg) {
         if (gen != generation || destroyed) return;
         teardown();
-        showMessage("PDF nahi khul saki", msg);
+        showMessage("PDF could not be opened", msg);
     }
 
     /** Owns the PdfRenderer; all rendering happens on its own thread, newest request wins. */
@@ -809,12 +809,12 @@ public class ViewerActivity extends Activity {
                     final int n = renderer.getPageCount();
                     ui.post(() -> onPdfOpened(gen, n));
                 } catch (SecurityException e) {
-                    fail("Yeh PDF password se band hai. Bina password wali PDF bhejein.");
+                    fail("This PDF is password-protected. Please send a PDF without a password.");
                 } catch (FileNotFoundException e) {
-                    fail("PDF file nahi mili. Dobara bhejein.");
+                    fail("The PDF file was not found. Please send it again.");
                 } catch (Throwable e) {
                     CrashLog.note(ViewerActivity.this, "PDF open: " + e);
-                    fail("Yeh PDF khul nahi rahi (file kharab ho sakti hai). Dobara bhej kar dekhein.");
+                    fail("This PDF will not open (the file may be damaged). Try sending it again.");
                 }
             });
         }
@@ -838,13 +838,13 @@ public class ViewerActivity extends Activity {
                 try {
                     b = renderPage(index, 0.5f);
                 } catch (Throwable t) {
-                    fail("TV par memory kam hai, yeh page nahi dikh saka.");
+                    fail("The TV is low on memory, so this page could not be shown.");
                     return;
                 }
             } catch (Throwable t) {
                 if (!closed) {
                     CrashLog.note(ViewerActivity.this, "PDF page " + index + ": " + t);
-                    fail("Yeh PDF page nahi dikh saka (file kharab ho sakti hai).");
+                    fail("This PDF page could not be shown (the file may be damaged).");
                 }
                 return;
             }
@@ -934,7 +934,7 @@ public class ViewerActivity extends Activity {
         pageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
         pageView.setBackgroundColor(Color.BLACK);
         root.addView(pageView, match());
-        loading = label("Photo khul rahi hai…", 28, FG, false);
+        loading = label("Opening photo…", 28, FG, false);
         root.addView(loading, wrap(Gravity.CENTER, 0));
         addCloseChip();
 
@@ -947,12 +947,12 @@ public class ViewerActivity extends Activity {
             String err = null;
             try {
                 b = decodeImage(uri, path, tw, th, maxPx);
-                if (b == null) err = "Yeh photo TV par nahi khul saki (format support nahi). JPG ya PNG photo bhejein.";
+                if (b == null) err = "This photo format is not supported on the TV. Please send a JPG or PNG.";
             } catch (OutOfMemoryError e) {
-                err = "Photo bahut badi hai, TV par nahi khul saki. Chhoti photo bhejein.";
+                err = "This photo is too large for the TV. Please send a smaller one.";
             } catch (Throwable t) {
                 CrashLog.note(ViewerActivity.this, "Image: " + t);
-                err = "Yeh photo TV par nahi khul saki. JPG ya PNG photo bhejein.";
+                err = "This photo could not be opened on the TV. Please send a JPG or PNG.";
             }
             final Bitmap out = b;
             final String error = err;
@@ -967,7 +967,7 @@ public class ViewerActivity extends Activity {
         }
         if (b == null) {
             teardown();
-            showMessage("Photo nahi khul saki", error);
+            showMessage("Photo could not be opened", error);
             return;
         }
         if (loading != null) {
@@ -1032,7 +1032,7 @@ public class ViewerActivity extends Activity {
 
     private void showMedia(Uri uri, String title, final boolean audio) {
         if (audio) {
-            TextView name = label("Audio chal raha hai\n" + (title == null ? "" : title), 32, FG, true);
+            TextView name = label("Now playing\n" + (title == null ? "" : title), 32, FG, true);
             root.addView(name, wrap(Gravity.CENTER, 0));
         }
         final VideoView v = new VideoView(this);
@@ -1042,7 +1042,7 @@ public class ViewerActivity extends Activity {
                 : new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER);
         root.addView(v, lp);
-        loading = label(audio ? "Audio khul raha hai…" : "Video khul raha hai…", 28, FG, false);
+        loading = label(audio ? "Opening audio…" : "Opening video…", 28, FG, false);
         root.addView(loading, wrap(audio ? Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL : Gravity.CENTER, 48));
         addCloseChip();
 
@@ -1063,16 +1063,16 @@ public class ViewerActivity extends Activity {
             ui.post(() -> {
                 if (gen != generation || destroyed) return;
                 teardown();
-                showMessage(audio ? "Audio nahi chal paaya" : "Video nahi chal paaya", audio
-                        ? "Yeh audio TV par nahi chal paaya. MP3 file bhej kar dekhein."
-                        : "Yeh video TV par nahi chal paaya (format support nahi). MP4 (H.264) file bhejein, "
-                                + "ya YouTube / Google Drive ka link bhejein.");
+                showMessage(audio ? "Audio could not be played" : "Video could not be played", audio
+                        ? "This audio could not be played on the TV. Try sending an MP3 file."
+                        : "This video format is not supported on the TV. Send an MP4 (H.264) file, "
+                                + "or a YouTube / Google Drive link.");
             });
             return true; // true = no system "Can't play this video" dialog
         });
         v.setOnCompletionListener(mp -> {
             if (gen != generation || destroyed) return;
-            hint("Khatam. Dobara chalane ke liye Play dabayein.");
+            hint("Finished. Press Play to watch again.");
             showController(0);
         });
         v.setFocusable(true);
@@ -1119,7 +1119,7 @@ public class ViewerActivity extends Activity {
         textScroll = sv;
         sv.setBackgroundColor(BG);
         sv.setFocusable(true);
-        final TextView t = label("Khul raha hai…", 24, FG, false);
+        final TextView t = label("Loading…", 22, FG, false);
         t.setGravity(Gravity.START);
         t.setPadding(dp(48), dp(32), dp(48), dp(32));
         sv.addView(t);
@@ -1136,9 +1136,9 @@ public class ViewerActivity extends Activity {
                 int n;
                 while ((n = in.read(buf)) > 0 && out.size() < MAX_TEXT_BYTES) out.write(buf, 0, n);
                 text = out.toString("UTF-8");
-                if (out.size() >= MAX_TEXT_BYTES) text += "\n\n… (file bahut lambi hai, baaki hissa nahi dikhaya)";
+                if (out.size() >= MAX_TEXT_BYTES) text += "\n\n… (the file is very long; the rest is not shown)";
             } catch (Throwable e) {
-                text = "File nahi padh paaye. Dobara bhejein.";
+                text = "The file could not be read. Please send it again.";
             }
             final String s = text;
             ui.post(() -> {
@@ -1150,13 +1150,13 @@ public class ViewerActivity extends Activity {
     // ---------------------------------------------------------------- office / no app
 
     private void showOffice(String title) {
-        String name = title == null || title.trim().isEmpty() ? "Is file" : "\"" + title + "\"";
-        LinearLayout col = showMessage("Is file ke liye TV par app nahi hai",
-                name + " ko kholne ke liye TV par PPT / Word / Excel wali app chahiye.\n\n"
-                        + "1. Neeche button se WPS Office install karein, phir file dobara bhejein.\n\n"
-                        + "2. Ya file Google Drive / Google Slides par rakh kar uska link bhejein. "
-                        + "Link seedha TV par khul jayega.");
-        col.addView(button("WPS Office install karein", v -> installWps()), 2);
+        String name = title == null || title.trim().isEmpty() ? "This file" : "\u201c" + title + "\u201d";
+        LinearLayout col = showMessage("No app on this TV can open this file",
+                name + " needs a PowerPoint / Word / Excel app on the TV.\n\n"
+                        + "1. Install WPS Office with the button below, then send the file again.\n\n"
+                        + "2. Or put the file on Google Drive / Google Slides and send its link. "
+                        + "The link opens directly on the TV.");
+        col.addView(button("Install WPS Office", v -> installWps()), 2);
         focusFirst(col);
     }
 
@@ -1166,7 +1166,7 @@ public class ViewerActivity extends Activity {
                 Uri.parse("https://play.google.com/store/apps/details?id=" + WPS_PACKAGE)))) {
             return;
         }
-        hint("Is TV par Play Store nahi mila. WPS Office ka APK pen drive se install karein.");
+        hint("No Play Store on this TV. Install the WPS Office APK from a USB drive.");
     }
 
     /** startActivity that never throws; false if no real app (not just an Android TV stub) handled it. */
@@ -1193,7 +1193,7 @@ public class ViewerActivity extends Activity {
     private LinearLayout showMessage(String title, String body) {
         View v = messageView(title, body, false);
         root.addView(v, match());
-        LinearLayout col = (LinearLayout) ((ScrollView) v).getChildAt(0);
+        LinearLayout col = (LinearLayout) ((FrameLayout) ((ScrollView) v).getChildAt(0)).getChildAt(0);
         focusFirst(col);
         return col;
     }
@@ -1202,9 +1202,9 @@ public class ViewerActivity extends Activity {
     private void showOverlay(String title, String body, boolean retry) {
         removeOverlay();
         View v = messageView(title, body, true);
-        LinearLayout col = (LinearLayout) ((ScrollView) v).getChildAt(0);
+        LinearLayout col = (LinearLayout) ((FrameLayout) ((ScrollView) v).getChildAt(0)).getChildAt(0);
         if (retry) {
-            col.addView(button("Dobara try karein", x -> {
+            col.addView(button("Try again", x -> {
                 removeOverlay();
                 if (web != null) {
                     web.reload();
@@ -1227,17 +1227,29 @@ public class ViewerActivity extends Activity {
     private View messageView(String title, String body, boolean overlayStyle) {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(56), dp(40), dp(56), dp(40));
-        col.addView(label(title, 34, Color.WHITE, true));
-        TextView b = label(body, 24, FG, false);
-        b.setLineSpacing(0, 1.15f);
-        col.addView(b, margins(0, dp(20), 0, dp(12)));
-        col.addView(button("Band karein", x -> finish()), margins(0, dp(12), 0, 0));
-        col.setGravity(Gravity.CENTER);
+        UiKit k = kit();
+        col.setPadding(k.dp(56), k.dp(40), k.dp(56), k.dp(40));
+        col.setBackground(k.card());
+        TextView tt = label(title, 28, Color.WHITE, true);
+        tt.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.addView(tt, margins(0, 0, 0, 0));
+        TextView b = label(body, 19, FG, false);
+        b.setLineSpacing(0, 1.2f);
+        b.setGravity(Gravity.CENTER_HORIZONTAL);
+        col.addView(b, margins(0, k.dp(18), 0, k.dp(10)));
+        col.addView(button("Close", x -> finish()), margins(0, k.dp(12), 0, 0));
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        // The card sits centred, at most ~900dp wide so lines stay readable on 4K; it scrolls if tall.
+        FrameLayout holder = new FrameLayout(this);
+        int maxW = Math.min(screen().widthPixels - k.dp(48), k.dp(900));
+        FrameLayout.LayoutParams clp = new FrameLayout.LayoutParams(maxW, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER);
+        clp.setMargins(0, k.dp(24), 0, k.dp(24));
+        holder.addView(col, clp);
         ScrollView sv = new ScrollView(this);
         sv.setFillViewport(true);
-        sv.setBackgroundColor(overlayStyle ? Color.parseColor("#F20F172A") : BG);
-        sv.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+        sv.setBackgroundColor(overlayStyle ? Color.parseColor("#F20B1220") : BG);
+        sv.addView(holder, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
         return sv;
     }
@@ -1246,11 +1258,17 @@ public class ViewerActivity extends Activity {
     private void hint(String s) {
         if (destroyed || root == null) return;
         if (hint == null) {
-            hint = label("", 22, Color.WHITE, false);
-            hint.setBackgroundColor(SCRIM);
-            hint.setPadding(dp(20), dp(10), dp(20), dp(10));
+            hint = label("", 18, Color.WHITE, false);
+            chip(hint);
+            hint.setPadding(kit().dp(22), kit().dp(12), kit().dp(22), kit().dp(12));
+            hint.setMaxWidth(Math.round(screen().widthPixels * 0.8f));
         }
-        if (hint.getParent() == null) root.addView(hint, wrap(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 32));
+        if (hint.getParent() == null) {
+            FrameLayout.LayoutParams lp = wrap(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 32);
+            // Sit above the page indicator / media controls so the two never overlap.
+            lp.bottomMargin = kit().dp(indicator != null || video != null ? 96 : 40);
+            root.addView(hint, lp);
+        }
         hint.setText(s);
         hint.setVisibility(View.VISIBLE);
         hint.bringToFront();
@@ -1264,9 +1282,19 @@ public class ViewerActivity extends Activity {
 
     /** Small touch-only "close" chip; not focusable so the remote's D-pad keeps changing pages. */
     private void addCloseChip() {
-        TextView x = label("X  Band karein", 18, Color.WHITE, true);
-        x.setBackgroundColor(SCRIM);
-        x.setPadding(dp(14), dp(8), dp(14), dp(8));
+        String title = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_TITLE);
+        if (title != null && !title.trim().isEmpty()) {
+            TextView t = label(title.trim(), 16, FG, true);
+            chip(t);
+            t.setSingleLine(true);
+            t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            // At most half the width, so it can never run into the Close chip on the right.
+            t.setMaxWidth(Math.round(screen().widthPixels * 0.5f));
+            t.setFocusable(false);
+            root.addView(t, wrap(Gravity.TOP | Gravity.START, 16));
+        }
+        TextView x = label("✕  Close", 16, Color.WHITE, true);
+        chip(x);
         x.setFocusable(false);
         x.setClickable(true);
         x.setOnClickListener(v -> finish());
@@ -1284,39 +1312,31 @@ public class ViewerActivity extends Activity {
     }
 
     private Button button(String text, View.OnClickListener l) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setTextSize(24);
-        b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setBackground(buttonBackground());
-        b.setPadding(dp(32), dp(14), dp(32), dp(14));
-        b.setFocusable(true);
-        b.setOnClickListener(l);
+        UiKit k = kit();
+        Button b = k.button(text, 20, true, l);
+        b.setPadding(k.dp(32), k.dp(12), k.dp(32), k.dp(12));
         return b;
     }
 
-    /** Clear focus ring for TV remotes: focused buttons are bright with a white border. */
-    private StateListDrawable buttonBackground() {
-        StateListDrawable s = new StateListDrawable();
-        s.addState(new int[] {android.R.attr.state_focused}, rounded(ACCENT, Color.WHITE));
-        s.addState(new int[] {android.R.attr.state_pressed}, rounded(ACCENT, ACCENT));
-        s.addState(new int[] {}, rounded(PANEL, MUTED));
-        return s;
+    private UiKit kit;
+
+    /** Created lazily (the display may change between contents). */
+    private UiKit kit() {
+        if (kit == null) kit = new UiKit(this);
+        return kit;
     }
 
-    private GradientDrawable rounded(int fill, int stroke) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(fill);
-        g.setCornerRadius(dp(12));
-        g.setStroke(dp(3), stroke);
-        return g;
+    /** Rounded translucent pill used for the page indicator, hints, title and Close. */
+    private void chip(TextView t) {
+        UiKit k = kit();
+        t.setBackground(k.rounded(SCRIM, UiKit.LINE, 14, 1));
+        t.setPadding(k.dp(14), k.dp(8), k.dp(14), k.dp(8));
     }
 
     private TextView label(String s, float sp, int color, boolean bold) {
         TextView t = new TextView(this);
         t.setText(s);
-        t.setTextSize(sp);
+        t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, kit().sp(sp));
         t.setTextColor(color);
         t.setGravity(Gravity.CENTER_HORIZONTAL);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);

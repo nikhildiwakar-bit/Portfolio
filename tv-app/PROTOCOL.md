@@ -63,7 +63,7 @@ TV → controller (`dir: "t2c"`):
 
 ```json
 {"v":1,"dir":"t2c","id":"p0q8…","re":"k3j9x0a2m1","ts":1760000000950,
- "ok":true,"msg":"Link TV par khul gaya.","data":{},"part":0,"parts":1}
+ "ok":true,"msg":"Opened the link on the TV.","data":{},"part":0,"parts":1}
 ```
 
 - `id`: 10+ random base36 chars, unique per message. `ts`: sender clock, milliseconds since epoch.
@@ -77,7 +77,7 @@ TV → controller (`dir: "t2c"`):
 ## 5. Commands
 
 Every command gets exactly one ack (or several `part`s for `apps`) with `ok` and a human `msg`
-in Hinglish, the same text the LAN API returns.
+in plain English, the same text the LAN API returns.
 
 | `cmd` | `args` | ack `data` |
 |---|---|---|
@@ -97,8 +97,14 @@ Status object:
 ```json
 {"name":"Conference Dahua","model":"Dahua LPH65-ST420","android":"11","appVersion":"1.2",
  "flavor":"full","accessibility":true,"needsPermission":false,"keepAwake":true,
+ "chrome":true,"youtubeApp":false,
  "volume":6,"maxVolume":15,"lanUrls":["http://192.168.1.50:8080"]}
 ```
+
+`chrome` is true when Google Chrome is installed (links open in it, reusing one tab);
+`youtubeApp` is true when a YouTube app is installed (otherwise YouTube opens in the browser
+with the desktop layout). Images, PDFs, video, audio and text files always open in Office TV's
+own viewer; Office documents try an installed office app first.
 
 ### Files (`file`)
 

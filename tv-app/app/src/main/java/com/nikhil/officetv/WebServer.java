@@ -60,7 +60,7 @@ public class WebServer extends NanoHTTPD {
             }
             // NanoHTTPD lower-cases header names.
             if (!Prefs.pin(ctx).equals(s.getHeaders().get("x-pin"))) {
-                return json(Response.Status.UNAUTHORIZED, Actions.result(false, "PIN galat hai."));
+                return json(Response.Status.UNAUTHORIZED, Actions.result(false, "Wrong PIN."));
             }
             if (m == Method.GET) return json(Response.Status.OK, get(uri));
             if (uri.equals("/api/upload")) {
@@ -81,7 +81,7 @@ public class WebServer extends NanoHTTPD {
             // Throwable: an Error escaping here would kill the whole app (NanoHTTPD only catches Exception).
             CrashLog.note(ctx, "API " + uri + ": " + e);
             String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            return json(Response.Status.INTERNAL_ERROR, Actions.result(false, "TV par error: " + why));
+            return json(Response.Status.INTERNAL_ERROR, Actions.result(false, "Something went wrong on the TV: " + why));
         }
     }
 
@@ -90,7 +90,7 @@ public class WebServer extends NanoHTTPD {
             case "/api/status": return Actions.status(ctx);
             case "/api/apps": return Actions.apps(ctx);
             case "/api/files": return Actions.files(ctx);
-            default: return Actions.result(false, "Unknown: " + uri);
+            default: return Actions.result(false, "Unknown request: " + uri);
         }
     }
 
@@ -106,27 +106,27 @@ public class WebServer extends NanoHTTPD {
                 Prefs.setKeepAwake(ctx, on);
                 ControlService svc = ControlService.instance;
                 if (svc != null) svc.applyKeepAwake();
-                return Actions.result(true, on ? "Screen hamesha on rahegi." : "Screen normal time par band hogi.");
+                return Actions.result(true, on ? "The screen will stay on." : "The screen will turn off as usual.");
             }
             case "/api/file/open": return Actions.openFile(ctx, FilesProvider.fileFor(ctx, in.optString("name")));
             case "/api/file/delete": {
                 boolean ok = FilesProvider.fileFor(ctx, in.optString("name")).delete();
-                return Actions.result(ok, ok ? "File hata di." : "File nahi mili.");
+                return Actions.result(ok, ok ? "File deleted." : "File not found.");
             }
-            default: return Actions.result(false, "Unknown: " + uri);
+            default: return Actions.result(false, "Unknown request: " + uri);
         }
     }
 
     /** Refuses uploads that are too big for NanoHTTPD or for the TV's free space, before reading them. */
     private String uploadProblem(IHTTPSession s) {
         long len = contentLength(s);
-        if (len > MAX_UPLOAD) return "File 1 GB se badi hai. Chhoti file bhejein, ya Google Drive ka link bhejein.";
+        if (len > MAX_UPLOAD) return "The file is larger than 1 GB. Send a smaller file or a Google Drive link.";
         if (len <= 0) return null;
         long free = Math.min(ctx.getCacheDir().getUsableSpace(), FilesProvider.dir(ctx).getUsableSpace());
         // NanoHTTPD keeps the whole request plus the extracted file, so about twice the size is needed.
         if (free < 2 * len + SPACE_MARGIN) {
-            return "TV mein jagah kam hai (" + free / (1024 * 1024) + " MB khaali). "
-                    + "Files list se purani files hata kar dobara bhejein.";
+            return "The TV is low on storage (" + free / (1024 * 1024) + " MB free). "
+                    + "Delete old files from the Files list and try again.";
         }
         return null;
     }
@@ -136,7 +136,7 @@ public class WebServer extends NanoHTTPD {
         s.parseBody(files);
         String tmp = files.get("file");
         List<String> names = s.getParameters().get("file");
-        if (tmp == null || names == null || names.isEmpty()) return Actions.result(false, "File nahi mili.");
+        if (tmp == null || names == null || names.isEmpty()) return Actions.result(false, "File not found.");
         // NanoHTTPD deletes its temp file after the response, so move or copy it now.
         File dest = FilesProvider.store(ctx, names.get(0), new File(tmp));
         JSONObject r = Actions.openFile(ctx, dest);
@@ -148,7 +148,7 @@ public class WebServer extends NanoHTTPD {
     private static String readBody(IHTTPSession s) throws IOException {
         long len = contentLength(s);
         if (len <= 0) return "";
-        if (len > MAX_JSON) throw new IOException("Request bahut badi hai.");
+        if (len > MAX_JSON) throw new IOException("The request is too large.");
         byte[] buf = new byte[(int) len];
         InputStream in = s.getInputStream();
         int off = 0;

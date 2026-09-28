@@ -17,6 +17,9 @@
 
     <!-- Needed on Android 11+ to see which apps are installed. -->
     <queries>
+        <package android:name="com.android.chrome" />
+        <package android:name="com.google.android.youtube" />
+        <package android:name="com.google.android.youtube.tv" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />

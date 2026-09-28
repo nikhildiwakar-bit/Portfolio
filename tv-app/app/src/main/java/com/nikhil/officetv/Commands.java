@@ -27,7 +27,7 @@ final class Commands implements RelayClient.Handler {
         if (args == null) args = new JSONObject();
         try {
             switch (cmd == null ? "" : cmd) {
-                case "ping": return withData(Actions.result(true, "TV online hai."), status(ctx));
+                case "ping": return withData(Actions.result(true, "The TV is online."), status(ctx));
                 case "open": return Actions.openUrl(ctx, args.optString("url"));
                 case "youtube": return Actions.youtube(ctx, args.optString("q"));
                 case "key": return Actions.key(ctx, args.optString("key"));
@@ -36,29 +36,29 @@ final class Commands implements RelayClient.Handler {
                 case "apps": {
                     JSONObject data = new JSONObject();
                     data.put("apps", Actions.apps(ctx));
-                    return withData(Actions.result(true, "Apps ki list."), data);
+                    return withData(Actions.result(true, "List of apps."), data);
                 }
                 case "awake": {
                     boolean on = args.optBoolean("on", true);
                     Prefs.setKeepAwake(ctx, on);
                     ControlService svc = ControlService.instance;
                     if (svc != null) svc.applyKeepAwake();
-                    return Actions.result(true, on ? "Screen hamesha on rahegi." : "Screen normal time par band hogi.");
+                    return Actions.result(true, on ? "The screen will stay on." : "The screen will turn off as usual.");
                 }
                 case "rename": {
                     String name = args.optString("name").trim();
-                    if (name.isEmpty()) return Actions.result(false, "Naam khaali hai.");
+                    if (name.isEmpty()) return Actions.result(false, "Please enter a name.");
                     if (name.length() > 40) name = name.substring(0, 40);
                     Prefs.setTvName(ctx, name);
-                    return withData(Actions.result(true, "TV ka naam ab: " + name), status(ctx));
+                    return withData(Actions.result(true, "TV renamed to " + name + "."), status(ctx));
                 }
                 case "file": return file(args);
                 default:
-                    return Actions.result(false, "Yeh command is TV app mein nahi hai. TV par Office TV app update karein.");
+                    return Actions.result(false, "This TV app does not support that command. Please update Office TV on the TV.");
             }
         } catch (Exception e) {
             CrashLog.note(ctx, "Relay command " + cmd + " failed: " + e);
-            return Actions.result(false, "TV par error: " + e.getMessage());
+            return Actions.result(false, "Something went wrong on the TV: " + e.getMessage());
         }
     }
 
@@ -69,20 +69,20 @@ final class Commands implements RelayClient.Handler {
 
     private JSONObject file(JSONObject args) throws JSONException {
         RelayClient client = RelayManager.client();
-        if (client == null) return Actions.result(false, "TV abhi internet se nahi juda.");
+        if (client == null) return Actions.result(false, "The TV is not connected to the internet right now.");
         byte[] bytes;
         try {
             bytes = client.fetchFile(args);
         } catch (IOException e) {
-            return Actions.result(false, "File TV tak nahi pahunchi (internet ya link expire). Dobara bhejein.");
+            return Actions.result(false, "The file did not reach the TV (network issue or expired link). Please send it again.");
         } catch (java.security.GeneralSecurityException e) {
-            return Actions.result(false, "File kharab mili ya galat TV code se bheji gayi.");
+            return Actions.result(false, "The file was damaged or sent with the wrong TV code.");
         }
         File dest = new File(FilesProvider.dir(ctx), safeName(args.optString("name")));
         try (OutputStream out = new FileOutputStream(dest)) {
             out.write(bytes);
         } catch (IOException e) {
-            return Actions.result(false, "TV par file save nahi hui (jagah kam ho sakti hai).");
+            return Actions.result(false, "Could not save the file on the TV (storage may be full).");
         }
         FilesProvider.trim(ctx);
         JSONObject r = Actions.openFile(ctx, dest);

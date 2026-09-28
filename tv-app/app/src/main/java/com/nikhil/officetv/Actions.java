@@ -69,45 +69,124 @@ final class Actions {
         }
     }
 
-    /** Opens i in another app; if none can, opens it in Office TV's own viewer so the TV never shows an error. */
-    private static JSONObject launch(Context c, Intent i, String what, Intent fallback, String notFound) {
-        wake(c);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        boolean own = false;
+    static final String CHROME = "com.android.chrome";
+    static final String[] YOUTUBE_APPS = {"com.google.android.youtube.tv", "com.google.android.youtube"};
+
+    static boolean installed(Context c, String pkg) {
         try {
-            if (onlyStubs(c, i)) throw new ActivityNotFoundException();
-            c.startActivity(i);
-        } catch (ActivityNotFoundException e) {
-            if (fallback == null) return result(false, notFound);
+            c.getPackageManager().getPackageInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    static String youtubeApp(Context c) {
+        for (String p : YOUTUBE_APPS) if (installed(c, p)) return p;
+        return null;
+    }
+
+    private static final String NO_BG = "Sent, but the TV may not show it. On the TV, open Office TV and turn on "
+            + "Accessibility or \"Display over other apps\".";
+
+    /** Starts one of the intents in order (null entries skipped); the first that starts wins. */
+    private static JSONObject start(Context c, String what, String notFound, boolean[] ownFlags, Intent... tries) {
+        wake(c);
+        for (int k = 0; k < tries.length; k++) {
+            Intent i = tries[k];
+            if (i == null) continue;
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            boolean own = ownFlags[k];
             try {
-                c.startActivity(fallback);
-                own = true;
-            } catch (RuntimeException e2) {
-                return result(false, notFound);
+                if (!own && onlyStubs(c, i)) continue;
+                c.startActivity(i);
+            } catch (ActivityNotFoundException e) {
+                continue;
+            } catch (SecurityException e) {
+                if (k == tries.length - 1) return result(false, "Android blocked this: " + e.getMessage());
+                continue;
+            } catch (RuntimeException e) {
+                CrashLog.note(c, "startActivity: " + e);
+                if (k == tries.length - 1) return result(false, "Could not open it on the TV: " + e.getMessage());
+                continue;
             }
-        } catch (SecurityException e) {
-            return result(false, "Android ne rok diya: " + e.getMessage());
-        } catch (RuntimeException e) {
-            CrashLog.note(c, "startActivity: " + e);
-            return result(false, "TV par kholte waqt error: " + e.getMessage());
+            if (!canOpenFromBackground(c)) return result(false, NO_BG);
+            return result(true, "Opened " + what + " on the TV.");
         }
-        if (!canOpenFromBackground(c)) {
-            return result(false, "Command bhej diya, par shayad TV par nahi khulega. TV par Office TV app kholkar "
-                    + "'Accessibility' ya 'Display over other apps' permission on karein.");
-        }
-        return result(true, own ? what + " Office TV ke andar khol diya." : what + " TV par khul gaya.");
+        return result(false, notFound);
+    }
+
+    private static Intent browserIntent(Context c, Uri uri, String pkg) {
+        Intent i = new Intent(Intent.ACTION_VIEW, uri);
+        i.addCategory(Intent.CATEGORY_BROWSABLE);
+        if (pkg != null) i.setPackage(pkg);
+        // Reuse one browser tab for every command instead of a new tab each time.
+        i.putExtra(android.provider.Browser.EXTRA_APPLICATION_ID, c.getPackageName());
+        i.putExtra(android.provider.Browser.EXTRA_CREATE_NEW_TAB, false);
+        return i;
+    }
+
+    private static JSONObject openWeb(Context c, Uri uri, String what) {
+        Intent chrome = installed(c, CHROME) ? browserIntent(c, uri, CHROME) : null;
+        Intent any = browserIntent(c, uri, null);
+        Intent own = ViewerActivity.intent(c, ViewerActivity.MODE_WEB, uri, null, null);
+        return start(c, what, "No app on the TV can open this link.", new boolean[]{false, false, true},
+                chrome, any, own);
     }
 
     static JSONObject openUrl(Context c, String url) {
         url = url == null ? "" : url.trim();
-        if (url.isEmpty()) return result(false, "Link khaali hai.");
+        if (url.isEmpty()) return result(false, "The link is empty.");
         if (!url.matches("(?i)^[a-z][a-z0-9+.-]*:.*")) url = "https://" + url;
         Uri uri = Uri.parse(url);
-        Intent i = new Intent(Intent.ACTION_VIEW, uri);
         String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.US);
-        Intent fb = scheme.equals("http") || scheme.equals("https")
-                ? ViewerActivity.intent(c, ViewerActivity.MODE_WEB, uri, null, null) : null;
-        return launch(c, i, "Link", fb, "Is link ko kholne wali app TV par nahi mili.");
+        if (scheme.equals("http") || scheme.equals("https")) {
+            if (isYoutube(uri)) return openYoutube(c, uri);
+            return openWeb(c, uri, "the link");
+        }
+        Intent i = new Intent(Intent.ACTION_VIEW, uri);
+        return start(c, "the link", "No app on the TV can open this link.", new boolean[]{false}, i);
+    }
+
+    static boolean isYoutube(Uri u) {
+        String h = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.US);
+        return h.equals("youtu.be") || h.equals("youtube.com") || h.endsWith(".youtube.com");
+    }
+
+    /** Canonical www.youtube.com URL (youtu.be and m.youtube.com become www.youtube.com/watch?v=...). */
+    static String canonicalYoutube(String url) {
+        Uri u = Uri.parse(url);
+        String h = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.US);
+        String path = u.getPath() == null ? "" : u.getPath();
+        String query = u.getEncodedQuery();
+        if (h.equals("youtu.be")) {
+            String id = path.startsWith("/") ? path.substring(1) : path;
+            int slash = id.indexOf('/');
+            if (slash >= 0) id = id.substring(0, slash);
+            String q = "v=" + id;
+            if (query != null && !query.isEmpty()) q += "&" + query;
+            return "https://www.youtube.com/watch?" + q;
+        }
+        return "https://www.youtube.com" + (path.isEmpty() ? "/" : u.getEncodedPath())
+                + (query == null || query.isEmpty() ? "" : "?" + query);
+    }
+
+    /** Adds app=desktop&persist_app=1 so the browser shows YouTube's desktop layout on a TV. */
+    static String desktopYoutube(String canonical) {
+        String out = canonical.replaceAll("([?&])(app|persist_app)=[^&]*&?", "$1");
+        if (out.endsWith("?") || out.endsWith("&")) out = out.substring(0, out.length() - 1);
+        return out + (out.indexOf('?') >= 0 ? "&" : "?") + "app=desktop&persist_app=1";
+    }
+
+    private static JSONObject openYoutube(Context c, Uri uri) {
+        String canonical = canonicalYoutube(uri.toString());
+        String app = youtubeApp(c);
+        if (app != null) {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(canonical)).setPackage(app);
+            Intent web = browserIntent(c, Uri.parse(desktopYoutube(canonical)), installed(c, CHROME) ? CHROME : null);
+            return start(c, "YouTube", "Could not open YouTube on the TV.", new boolean[]{false, false}, i, web);
+        }
+        return openWeb(c, Uri.parse(desktopYoutube(canonical)), "YouTube");
     }
 
     static JSONObject youtube(Context c, String q) {
@@ -121,16 +200,24 @@ final class Actions {
         }
     }
 
+    /** Types Office TV's own viewer always shows (TV photo/video apps are unreliable and some crash). */
+    static boolean ownViewerType(String mime) {
+        String m = mime == null ? "" : mime.toLowerCase(Locale.US);
+        return m.startsWith("image/") || m.startsWith("video/") || m.startsWith("audio/") || m.startsWith("text/")
+                || m.equals("application/pdf");
+    }
+
     static JSONObject openFile(Context c, File f) {
-        if (!f.isFile()) return result(false, "File nahi mili.");
-        Intent i = new Intent(Intent.ACTION_VIEW);
+        if (!f.isFile()) return result(false, "File not found.");
         String mime = FilesProvider.mime(f.getName());
-        i.setDataAndType(FilesProvider.uriFor(c, f), mime);
-        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        Intent fb = ViewerActivity.intent(c, ViewerActivity.modeFor(mime), Uri.fromFile(f), mime, f.getName());
-        fb.putExtra(ViewerActivity.EXTRA_PATH, f.getAbsolutePath());
-        return launch(c, i, f.getName(), fb, "TV par is file ko kholne wali app nahi hai. PDF/PPT ke liye "
-                + "WPS Office jaisi app TV par install karein.");
+        Intent own = ViewerActivity.intent(c, ViewerActivity.modeFor(mime), Uri.fromFile(f), mime, f.getName());
+        own.putExtra(ViewerActivity.EXTRA_PATH, f.getAbsolutePath());
+        String notFound = "The TV cannot open this file type.";
+        if (ownViewerType(mime)) return start(c, f.getName(), notFound, new boolean[]{true}, own);
+        Intent ext = new Intent(Intent.ACTION_VIEW);
+        ext.setDataAndType(FilesProvider.uriFor(c, f), mime);
+        ext.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        return start(c, f.getName(), notFound, new boolean[]{false, true}, ext, own);
     }
 
     static JSONArray apps(Context c) {
@@ -162,8 +249,8 @@ final class Actions {
         PackageManager pm = c.getPackageManager();
         Intent i = pm.getLaunchIntentForPackage(pkg);
         if (i == null) i = pm.getLeanbackLaunchIntentForPackage(pkg);
-        if (i == null) return result(false, "Yeh app TV par nahi mili.");
-        return launch(c, i, "App", null, "Yeh app TV par nahi mili.");
+        if (i == null) return result(false, "This app is not installed on the TV.");
+        return start(c, "the app", "This app is not installed on the TV.", new boolean[]{false}, i);
     }
 
     private static void mediaKey(AudioManager am, int code) {
@@ -200,8 +287,8 @@ final class Actions {
         ViewerActivity v = ViewerActivity.front();
         if (v != null) {
             switch (name) {
-                case "next_slide": case "scroll_down": v.next(); return result(true, "Aage");
-                case "prev_slide": case "scroll_up": v.prev(); return result(true, "Peeche");
+                case "next_slide": case "scroll_down": v.next(); return result(true, "Next");
+                case "prev_slide": case "scroll_up": v.prev(); return result(true, "Previous");
                 case "back": v.close(); return result(true, "Back");
                 default: break;
             }
@@ -209,7 +296,7 @@ final class Actions {
 
         RemoteA11yService a = RemoteA11yService.instance;
         if (a == null) {
-            return result(false, "Iske liye TV par Settings → Accessibility → Office TV on karein.");
+            return result(false, "To use this, turn on Office TV in the TV's Settings > Accessibility.");
         }
         wake(c);
         boolean done;
@@ -223,8 +310,8 @@ final class Actions {
             case "scroll_up": done = a.swipe(0.5f, 0.25f, 0.5f, 0.75f); break;
             default: return result(false, "Unknown key: " + name);
         }
-        if (!done && name.contains("_")) return result(false, "Swipe ke liye Android 7 ya naya chahiye.");
-        return result(done, done ? "Done" : "TV ne command nahi maani.");
+        if (!done && name.contains("_")) return result(false, "Swipe needs Android 7 or newer.");
+        return result(done, done ? "Done" : "The TV did not accept the command.");
     }
 
     static JSONObject volume(Context c, int percent) {
@@ -248,6 +335,8 @@ final class Actions {
         o.put("appVersion", BuildConfig.VERSION_NAME);
         o.put("flavor", BuildConfig.FLAVOR);
         o.put("port", ControlService.port());
+        o.put("chrome", installed(c, CHROME));
+        o.put("youtubeApp", youtubeApp(c) != null);
         return o;
     }
 

@@ -54,7 +54,7 @@ public class ControlService extends Service {
                 // Reported below.
             }
         }
-        CrashLog.note(app, "Service start nahi hui: " + first);
+        CrashLog.note(app, "Service failed to start: " + first);
     }
 
     static boolean running() {
@@ -131,7 +131,7 @@ public class ControlService extends Service {
             try {
                 s.start(READ_TIMEOUT_MS, false);
                 server = s;
-                if (p != WebServer.PORT) CrashLog.note(this, "Port " + WebServer.PORT + " busy tha, " + p + " use kiya.");
+                if (p != WebServer.PORT) CrashLog.note(this, "Port " + WebServer.PORT + " was busy, using " + p + ".");
                 if (BuildConfig.DEBUG) {
                     Log.i(TAG, "OTV_TEST pin=" + Prefs.pin(this) + " port=" + p + " code=" + Prefs.pairCode(this));
                 }
@@ -145,7 +145,7 @@ public class ControlService extends Service {
             }
         }
         Log.e(TAG, "server start failed", last);
-        CrashLog.note(this, "Web server shuru nahi hua (ports " + WebServer.PORT + "-" + (WebServer.PORT + EXTRA_PORTS)
+        CrashLog.note(this, "Web server failed to start (ports " + WebServer.PORT + "-" + (WebServer.PORT + EXTRA_PORTS)
                 + "): " + last);
     }
 
@@ -222,7 +222,7 @@ public class ControlService extends Service {
                 err = t;
             }
         }
-        if (!foreground) CrashLog.note(this, "Foreground service nahi bana: " + err);
+        if (!foreground) CrashLog.note(this, "Foreground service failed: " + err);
     }
 
     /** plain = the most basic notification possible, used if the normal one fails. */
@@ -243,10 +243,10 @@ public class ControlService extends Service {
             b = new Notification.Builder(this);
         }
         b.setSmallIcon(plain ? android.R.drawable.stat_notify_sync : R.drawable.ic_launcher)
-                .setContentTitle("Office TV chal raha hai")
+                .setContentTitle("Office TV is running")
                 .setOngoing(true);
         if (!plain) {
-            b.setContentText("Laptop ya phone se TV chalane ke liye taiyaar.");
+            b.setContentText("Ready to be controlled from a laptop or phone.");
             try {
                 int flags = Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0;
                 b.setContentIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), flags));

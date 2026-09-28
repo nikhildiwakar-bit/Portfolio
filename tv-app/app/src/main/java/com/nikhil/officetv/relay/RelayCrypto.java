@@ -82,8 +82,8 @@ public final class RelayCrypto {
     }
 
     byte[] openFile(byte[] buf, int off, int len, byte[] iv) throws GeneralSecurityException {
-        if (iv == null || iv.length != IV_BYTES) throw new GeneralSecurityException("File IV galat hai.");
-        if (buf == null || len < TAG_BYTES) throw new GeneralSecurityException("File adhoori hai.");
+        if (iv == null || iv.length != IV_BYTES) throw new GeneralSecurityException("The file IV is invalid.");
+        if (buf == null || len < TAG_BYTES) throw new GeneralSecurityException("The file is incomplete.");
         return crypt(Cipher.DECRYPT_MODE, iv, fileAad, buf, off, len);
     }
 
