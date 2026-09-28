@@ -59,9 +59,12 @@ public class WebServer extends NanoHTTPD {
                 return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not found");
             }
             // NanoHTTPD lower-cases header names.
-            if (!Prefs.pin(ctx).equals(s.getHeaders().get("x-pin"))) {
+            String pin = s.getHeaders().get("x-pin");
+            if (uri.equals("/api/screen.jpg") && pin == null) pin = query(s, "pin");
+            if (!Prefs.pin(ctx).equals(pin)) {
                 return json(Response.Status.UNAUTHORIZED, Actions.result(false, "Wrong PIN."));
             }
+            if (m == Method.GET && uri.equals("/api/screen.jpg")) return screenJpg();
             if (m == Method.GET) return json(Response.Status.OK, get(uri));
             if (uri.equals("/api/upload")) {
                 String problem = uploadProblem(s);
@@ -90,6 +93,7 @@ public class WebServer extends NanoHTTPD {
             case "/api/status": return Actions.status(ctx);
             case "/api/apps": return Actions.apps(ctx);
             case "/api/files": return Actions.files(ctx);
+            case "/api/screen/status": return ScreenCapture.status();
             default: return Actions.result(false, "Unknown request: " + uri);
         }
     }
@@ -108,6 +112,8 @@ public class WebServer extends NanoHTTPD {
                 if (svc != null) svc.applyKeepAwake();
                 return Actions.result(true, on ? "The screen will stay on." : "The screen will turn off as usual.");
             }
+            case "/api/screen/start": return ScreenCapture.requestStart(ctx);
+            case "/api/screen/stop": return ScreenCapture.requestStop(ctx);
             case "/api/file/open": return Actions.openFile(ctx, FilesProvider.fileFor(ctx, in.optString("name")));
             case "/api/file/delete": {
                 boolean ok = FilesProvider.fileFor(ctx, in.optString("name")).delete();
@@ -115,6 +121,21 @@ public class WebServer extends NanoHTTPD {
             }
             default: return Actions.result(false, "Unknown request: " + uri);
         }
+    }
+
+    /** Latest Live Screen frame; 204 until the first frame exists. */
+    private Response screenJpg() {
+        byte[] b = ScreenCapture.frame();
+        Response r = b == null
+                ? newFixedLengthResponse(Response.Status.NO_CONTENT, MIME_PLAINTEXT, "")
+                : newFixedLengthResponse(Response.Status.OK, "image/jpeg", new java.io.ByteArrayInputStream(b), b.length);
+        r.addHeader("Cache-Control", "no-store");
+        return cors(r);
+    }
+
+    private static String query(IHTTPSession s, String key) {
+        List<String> v = s.getParameters() == null ? null : s.getParameters().get(key);
+        return v == null || v.isEmpty() ? null : v.get(0);
     }
 
     /** Refuses uploads that are too big for NanoHTTPD or for the TV's free space, before reading them. */

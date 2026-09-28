@@ -222,9 +222,9 @@ test('link without scheme, Meet code, Sheets chip, YouTube search, keys, keyboar
     await until(() => tvA.received('open').length === 2, 8000, 'meet code');
     assert.equal(tvA.received('open')[1].args.url, 'https://meet.google.com/xyz-abcd-pqr');
 
-    await page.click('button[data-url="https://docs.google.com/spreadsheets"]');
+    await page.click('button[data-url="https://docs.google.com/spreadsheets/u/0/"]');
     await until(() => tvA.received('open').length === 3, 8000, 'sheets');
-    assert.equal(tvA.received('open')[2].args.url, 'https://docs.google.com/spreadsheets');
+    assert.equal(tvA.received("open")[2].args.url, "https://docs.google.com/spreadsheets/u/0/");
 
     await page.fill('#yt', 'lofi hindi songs');
     await page.click('#ytForm button');
@@ -433,6 +433,44 @@ test('rename sends "rename" and remove forgets the TV', async () => {
     await page.done();
 });
 
+test('Live Screen sends "screen" start and opens the TV LAN page with #live in a new tab', async () => {
+    const page = await open();
+    await pairA(page);
+    assert.equal(await page.isVisible('#liveBtn'), true);
+    assert.match(await page.getAttribute('#liveBtn', 'title'), /same Wi-Fi as the TV/);
+    const ctx = page.context();
+    // The LAN address is not reachable in the test; answer it locally.
+    await ctx.route('http://192.168.1.50:8080/**', r => r.fulfill({ status: 200, contentType: 'text/html', body: '<title>LAN</title>ok' }));
+    const [popup] = await Promise.all([ctx.waitForEvent('page'), page.click('#liveBtn')]);
+    assert.deepEqual((await lastCmd(tvA, 'screen')).args, { action: 'start' });
+    await until(() => popup.url() === 'http://192.168.1.50:8080/#live', 10000, 'live tab url');
+    const t = await toastText(page, /Start now/);
+    assert.match(t, /Live Screen works when this laptop is on the same Wi-Fi as the TV\./);
+    assert.equal(await page.getAttribute('#toastLink', 'href'), 'http://192.168.1.50:8080/#live');
+    await popup.close();
+    await page.done();
+});
+
+test('Live Screen: no LAN address closes the tab and explains; hidden for All TVs', async () => {
+    const page = await open();
+    const saved = tvA.status.lanUrls;
+    tvA.status.lanUrls = [];
+    try {
+        await pairA(page);
+        const ctx = page.context();
+        const [popup] = await Promise.all([ctx.waitForEvent('page'), page.click('#liveBtn')]);
+        await toastText(page, /did not report its Wi-Fi address/);
+        await until(() => popup.isClosed(), 5000, 'tab closed');
+        await page.goto(pairUrl(CODE_C, 'Board Room'));
+        await toastText(page, /Board Room is connected/);
+        await page.click('.tv-chip[data-code="all"]');
+        assert.equal(await page.isVisible('#liveBtn'), false, 'Live Screen needs a single TV');
+    } finally {
+        tvA.status.lanUrls = saved;
+    }
+    await page.done();
+});
+
 test('keeps working after the relay drops the event stream', async () => {
     const page = await open();
     await pairA(page);
@@ -529,7 +567,7 @@ test('Chrome tip shows only when the TV reports chrome: true', async () => {
     await page.click('#refreshBtn');
     await page.waitForSelector('#chromeTip', { state: 'visible' });
     assert.match(await page.textContent('#chromeTip'),
-        /Tip: turn on Desktop site in Chrome on the TV for the full computer view of Gmail, Drive and Sheets \(Chrome ⋮ → Settings → Site settings → Desktop site\)\./);
+        /Tip: Sign in to your Google account once in Chrome on the TV, and turn on Desktop site \(Chrome ⋮ → Settings → Site settings → Desktop site\) for the full computer view\./);
     tvA.status.chrome = false;
     await page.click('#refreshBtn');
     await page.waitForSelector('#chromeTip', { state: 'hidden' });

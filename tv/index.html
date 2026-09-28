@@ -358,6 +358,7 @@ dialog p { margin: 0 0 14px; color: var(--muted); }
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></symbol>
   <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0M2 9a15 15 0 0 1 20 0M8.5 16a5 5 0 0 1 7 0"/><path d="M12 19.5h.01"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><circle cx="12" cy="10" r="2.5"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 11v5.5M12 7.5h.01"/></symbol>
   <symbol id="i-all" viewBox="0 0 24 24"><rect x="2" y="3" width="13" height="9" rx="1.5"/><rect x="9" y="12" width="13" height="9" rx="1.5"/></symbol>
   <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.7-2.5 2.2-2.5 4M12 17h.01"/></symbol>
@@ -390,6 +391,7 @@ dialog p { margin: 0 0 14px; color: var(--muted); }
     </div>
     <div class="actions">
       <button type="button" class="btn-ghost btn-sm" id="refreshBtn"><svg class="ic" aria-hidden="true"><use href="#i-refresh"/></svg><span>Refresh</span></button>
+      <button type="button" class="btn-ghost btn-sm" id="liveBtn" title="Live Screen works when this laptop is on the same Wi-Fi as the TV."><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg>Live Screen</button>
       <button type="button" class="btn-ghost btn-sm" id="renameBtn"><svg class="ic" aria-hidden="true"><use href="#i-edit"/></svg>Rename</button>
       <a class="btn btn-ghost btn-sm" id="barLan" target="_blank" rel="noopener" hidden><svg class="ic" aria-hidden="true"><use href="#i-wifi"/></svg>Same Wi-Fi page</a>
       <button type="button" class="btn-danger btn-sm" id="removeBtn"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg>Remove</button>
@@ -452,25 +454,25 @@ dialog p { margin: 0 0 14px; color: var(--muted); }
         <h3>Quick open</h3>
         <div class="chips">
           <button type="button" class="chip" data-url="https://www.youtube.com">YouTube</button>
-          <button type="button" class="chip" data-url="https://meet.google.com">Google Meet</button>
+          <button type="button" class="chip" data-url="https://meet.google.com/landing?authuser=0">Google Meet</button>
           <button type="button" class="chip" data-url="https://zoom.us/join">Zoom</button>
           <button type="button" class="chip" data-url="https://teams.microsoft.com">Teams</button>
           <button type="button" class="chip" data-url="https://www.google.com">Google</button>
         </div>
         <h3>Google apps</h3>
         <div class="chips">
-          <button type="button" class="chip" data-url="https://mail.google.com">Gmail</button>
-          <button type="button" class="chip" data-url="https://drive.google.com">Drive</button>
-          <button type="button" class="chip" data-url="https://docs.google.com/spreadsheets">Sheets</button>
-          <button type="button" class="chip" data-url="https://docs.google.com/document">Docs</button>
-          <button type="button" class="chip" data-url="https://docs.google.com/presentation">Slides</button>
-          <button type="button" class="chip" data-url="https://chat.google.com">Chat</button>
-          <button type="button" class="chip" data-url="https://calendar.google.com">Calendar</button>
+          <button type="button" class="chip" data-url="https://mail.google.com/mail/u/0/">Gmail</button>
+          <button type="button" class="chip" data-url="https://drive.google.com/drive/u/0/my-drive">Drive</button>
+          <button type="button" class="chip" data-url="https://docs.google.com/spreadsheets/u/0/">Sheets</button>
+          <button type="button" class="chip" data-url="https://docs.google.com/document/u/0/">Docs</button>
+          <button type="button" class="chip" data-url="https://docs.google.com/presentation/u/0/">Slides</button>
+          <button type="button" class="chip" data-url="https://chat.google.com/u/0/">Chat</button>
+          <button type="button" class="chip" data-url="https://calendar.google.com/calendar/u/0/r">Calendar</button>
         </div>
         <p class="note">The first time, sign in to your Google account in the browser on the TV.</p>
         <div class="tip" id="chromeTip" hidden>
           <svg class="ic" aria-hidden="true"><use href="#i-info"/></svg>
-          <p>Tip: turn on Desktop site in Chrome on the TV for the full computer view of Gmail, Drive and Sheets (Chrome ⋮ → Settings → Site settings → Desktop site).</p>
+          <p>Tip: Sign in to your Google account once in Chrome on the TV, and turn on Desktop site (Chrome ⋮ → Settings → Site settings → Desktop site) for the full computer view.</p>
         </div>
       </section>
 

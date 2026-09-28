@@ -87,6 +87,9 @@ export async function createFakeTv({
                 tv.files.push({ name: a.name, bytes });
                 return [result(true, 'Opened ' + a.name + ' on the TV.')];
             }
+            case 'screen':
+                return [a.action === 'stop' ? result(true, 'Live Screen stopped.')
+                    : result(true, 'Tap “Start now” on the TV to share its screen.', Object.assign({}, tv.status))];
             default: return [result(false, 'Unknown: ' + m.cmd)];
         }
     }

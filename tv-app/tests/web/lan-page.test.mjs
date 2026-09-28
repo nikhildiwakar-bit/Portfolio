@@ -39,8 +39,9 @@ after(async () => {
     if (web) await web.close();
 });
 
-function mockApi(status) {
+function mockApi(status, screen = {}) {
     const calls = [];
+    const scr = Object.assign({ running: false, waiting: false, jpeg: null, frames: 0 }, screen);
     const apps = Array.from({ length: 24 }, (_, i) => ({ label: 'App ' + (i + 1), pkg: 'com.example.app' + (i + 1) }));
     const files = [{ name: 'Quarterly review 2026 final version.pptx', size: 1 }, { name: 'Agenda.pdf', size: 1 }];
     const handler = async route => {
@@ -49,7 +50,18 @@ function mockApi(status) {
         const body = req.method() === 'POST' && path !== '/api/upload' ? JSON.parse(req.postData() || '{}') : null;
         calls.push({ path, body, pin: req.headers()['x-pin'] });
         let json;
-        if (path === '/api/status') json = status;
+        if (path === '/api/screen.jpg') {
+            if (!scr.running || !scr.jpeg) return route.fulfill({ status: 204, headers: { 'Cache-Control': 'no-store' }, body: '' });
+            scr.frames++;
+            return route.fulfill({ status: 200, contentType: 'image/jpeg', headers: { 'Cache-Control': 'no-store' }, body: scr.jpeg });
+        }
+        if (path === '/api/screen/start') {
+            scr.waiting = true;
+            setTimeout(() => { scr.running = true; scr.waiting = false; }, 600);   // user taps "Start now"
+            json = { ok: true, msg: 'Tap “Start now” on the TV to share its screen.', running: false, waiting: true };
+        } else if (path === '/api/screen/stop') { scr.running = false; json = { ok: true, msg: 'Live Screen stopped.' }; }
+        else if (path === '/api/screen/status') json = { supported: true, running: scr.running, waiting: scr.waiting };
+        else if (path === '/api/status') json = status;
         else if (path === '/api/apps') json = apps;
         else if (path === '/api/files') json = files;
         else if (path === '/api/open') json = { ok: true, msg: 'Opened the link on the TV.' };
@@ -61,15 +73,15 @@ function mockApi(status) {
     return { calls, handler };
 }
 
-async function open(viewport, colorScheme, status) {
+async function open(viewport, colorScheme, status, screen, hash = '') {
     const ctx = await browser.newContext({ viewport, colorScheme });
     const page = await ctx.newPage();
     const errors = [];
     page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
     page.on('pageerror', e => errors.push('pageerror: ' + e.message));
-    const api = mockApi(status);
+    const api = mockApi(status, screen);
     await page.route('**/api/**', api.handler);
-    await page.goto(web.url + '/index.html?pin=1234');
+    await page.goto(web.url + '/index.html?pin=1234' + hash);
     await page.waitForFunction(() => document.getElementById('pill').textContent === 'Connected');
     return { page, ctx, errors, api };
 }
@@ -90,7 +102,7 @@ async function layoutProblems(page) {
                 out.push('outside ' + el.tagName + '.' + el.className);
             }
         }
-        for (const box of document.querySelectorAll('header, .brand, .row, .chips, .keys, .vol, .grid2, .col, .apps, .switch, .actions, .list li')) {
+        for (const box of document.querySelectorAll('header, .brand, .live-head, .live-title, .live-actions, .row, .chips, .keys, .vol, .grid2, .col, .apps, .switch, .actions, .list li')) {
             const kids = Array.from(box.children).filter(k => k.offsetParent !== null && getComputedStyle(k).position === 'static');
             for (let a = 0; a < kids.length; a++) {
                 for (let b = a + 1; b < kids.length; b++) {
@@ -110,7 +122,7 @@ test('LAN page: English text, status, Chrome tip, actions and PIN header', async
     const { page, ctx, errors, api } = await open({ width: 390, height: 844 }, 'light', STATUS);
     assert.equal(await page.textContent('#tvName'), 'Conference Dahua');
     assert.equal(await page.isVisible('#chromeTip'), true);
-    assert.match(await page.textContent('#chromeTip'), /Tip: turn on Desktop site in Chrome on the TV/);
+    assert.match(await page.textContent('#chromeTip'), /Sign in to your Google account once in Chrome on the TV, and turn on Desktop site \(Chrome ⋮ → Settings → Site settings → Desktop site\) for the full computer view\./);
     assert.equal(await page.isVisible('#banner'), false);
     const text = await page.evaluate(() => document.body.innerText + [...document.querySelectorAll('[placeholder],[aria-label]')]
         .map(e => (e.getAttribute('placeholder') || '') + ' ' + (e.getAttribute('aria-label') || '')).join(' ')
@@ -153,4 +165,62 @@ test('LAN page layout: screenshots at 390x844 and 1280x800, no overflow or overl
         assert.deepEqual(errors, []);
         await ctx.close();
     }
+});
+
+async function makeJpeg() {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    const b64 = await page.evaluate(() => {
+        const c = document.createElement('canvas');
+        c.width = 1280; c.height = 720;
+        const g = c.getContext('2d');
+        const grad = g.createLinearGradient(0, 0, 1280, 720);
+        grad.addColorStop(0, '#0e7490'); grad.addColorStop(1, '#14b8a6');
+        g.fillStyle = grad; g.fillRect(0, 0, 1280, 720);
+        g.fillStyle = '#fff'; g.font = 'bold 72px sans-serif'; g.fillText('Quarterly Review', 120, 330);
+        g.font = '40px sans-serif'; g.fillText('Slide 3 of 12', 120, 400);
+        return c.toDataURL('image/jpeg', 0.6).split(',')[1];
+    });
+    await ctx.close();
+    return Buffer.from(b64, 'base64');
+}
+
+test('LAN page Live Screen: start, waiting, live frames with PIN, stop, screenshots', { timeout: 60000 }, async () => {
+    const jpeg = await makeJpeg();
+    for (const [vp, name] of [[{ width: 390, height: 844 }, 'lan-live-390'], [{ width: 1280, height: 800 }, 'lan-live-1280']]) {
+        const { page, ctx, errors, api } = await open(vp, 'light', STATUS, { jpeg });
+        assert.equal(await page.textContent('#liveState'), 'Not started');
+        assert.equal(await page.isDisabled('#liveStop'), true);
+        await page.click('#liveStart');
+        await page.waitForFunction(() => document.getElementById('liveState').textContent === 'Waiting for the TV');
+        assert.match(await page.textContent('#liveMsg'), /Start now/);
+        await page.waitForFunction(() => document.getElementById('liveState').textContent === 'Live', null, { timeout: 8000 });
+        await page.waitForFunction(() => { const i = document.getElementById('liveImg'); return !i.hidden && i.naturalWidth === 1280; });
+        const n = api.calls.filter(c => c.path === '/api/screen.jpg').length;
+        await page.waitForTimeout(800);
+        assert.ok(api.calls.filter(c => c.path === '/api/screen.jpg').length > n + 1, 'keeps polling');
+        assert.ok(api.calls.filter(c => c.path === '/api/screen.jpg').every(c => c.pin === '1234'), 'X-Pin sent');
+        assert.equal(await page.isVisible('#liveMsg'), false);
+        await page.evaluate(() => window.scrollTo(0, 0));
+        assert.deepEqual(await layoutProblems(page), [], name);
+        await page.screenshot({ path: join(SHOTS, name + '.png') });
+        await page.click('#liveStop');
+        assert.equal(await page.textContent('#liveState'), 'Stopped');
+        assert.ok(api.calls.some(c => c.path === '/api/screen/stop'));
+        const after = api.calls.filter(c => c.path === '/api/screen.jpg').length;
+        await page.waitForTimeout(700);
+        assert.ok(api.calls.filter(c => c.path === '/api/screen.jpg').length <= after + 1, 'polling stops');
+        assert.deepEqual(errors, []);
+        await ctx.close();
+    }
+});
+
+test('LAN page Live Screen: #live starts it and waits for the TV', async () => {
+    const { page, ctx, errors, api } = await open({ width: 360, height: 740 }, 'dark', STATUS, {}, '#live');
+    await page.waitForFunction(() => document.getElementById('liveState').textContent === 'Waiting for the TV');
+    assert.ok(api.calls.some(c => c.path === '/api/screen/start'));
+    assert.deepEqual(await layoutProblems(page), []);
+    await page.screenshot({ path: join(SHOTS, 'lan-live-360-waiting.png') });
+    assert.deepEqual(errors, []);
+    await ctx.close();
 });

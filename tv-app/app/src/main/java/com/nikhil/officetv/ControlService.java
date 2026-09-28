@@ -8,6 +8,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
@@ -185,6 +186,10 @@ public class ControlService extends Service {
 
     @Override
     public void onDestroy() {
+        try {
+            ScreenCapture.stop(this, null);
+        } catch (Throwable ignored) {
+        }
         RelayManager.stop();
         synchronized (this) {
             try {
@@ -223,6 +228,34 @@ public class ControlService extends Service {
             }
         }
         if (!foreground) CrashLog.note(this, "Foreground service failed: " + err);
+    }
+
+    /**
+     * Android 10+: MediaProjection must run in a foreground service of type mediaProjection.
+     * Returns null on success, otherwise a message for the user. Never throws.
+     */
+    String goForegroundForProjection() {
+        if (Build.VERSION.SDK_INT < 29) return null;
+        Throwable err = null;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                startForeground(NOTIFICATION_ID, notification(attempt == 1),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+                foreground = true;
+                return null;
+            } catch (Throwable t) {
+                err = t;
+            }
+        }
+        CrashLog.note(this, "Foreground (screen sharing) failed: " + err);
+        return "The TV did not allow screen sharing in the background (" + err + ").";
+    }
+
+    /** Live Screen stopped: go back to the normal foreground notification. */
+    void projectionEnded() {
+        if (Build.VERSION.SDK_INT < 29) return;
+        foreground = false;
+        goForeground();
     }
 
     /** plain = the most basic notification possible, used if the normal one fails. */

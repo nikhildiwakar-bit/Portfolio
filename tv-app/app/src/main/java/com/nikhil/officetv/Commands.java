@@ -53,6 +53,11 @@ final class Commands implements RelayClient.Handler {
                     return withData(Actions.result(true, "TV renamed to " + name + "."), status(ctx));
                 }
                 case "file": return file(args);
+                case "screen": {
+                    boolean stop = "stop".equals(args.optString("action"));
+                    JSONObject r = stop ? ScreenCapture.requestStop(ctx) : ScreenCapture.requestStart(ctx);
+                    return withData(r, status(ctx));
+                }
                 default:
                     return Actions.result(false, "This TV app does not support that command. Please update Office TV on the TV.");
             }

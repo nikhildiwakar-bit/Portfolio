@@ -324,8 +324,8 @@ public class MainActivity extends Activity {
         LinearLayout c = cardBox();
         c.setBackground(ui.rounded(UiKit.CARD, UiKit.ACCENT_DARK, 18, 2));
         c.addView(eyebrow("TIP · GOOGLE APPS"), fill(0, 0, 0, ui.dp(6)));
-        c.addView(ui.text("For the full desktop view of Gmail, Drive and Sheets: open Chrome → ⋮ menu → Settings → "
-                + "Site settings → Desktop site → On", 16, FG, false), fill(0, 0, 0, ui.dp(10)));
+        c.addView(ui.text("Sign in to your Google account once in Chrome on the TV, and turn on Desktop site "
+                + "(Chrome ⋮ → Settings → Site settings → Desktop site) for the full computer view.", 16, FG, false), fill(0, 0, 0, ui.dp(10)));
         Button ok = ui.button("Got it", 15, false, v -> {
             try {
                 getSharedPreferences(UI_PREFS, MODE_PRIVATE).edit().putBoolean(TIP_DONE, true).apply();

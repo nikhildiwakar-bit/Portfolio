@@ -91,6 +91,7 @@ in plain English, the same text the LAN API returns.
 | `app` | `{pkg}` | – |
 | `file` | `{url, name, iv, size}` | – |
 | `rename` | `{name}` (1–40 chars) | status object |
+| `screen` | `{action:"start"\|"stop"}` | `{ok,msg,running?,waiting?}` + status object in `data` (use `data.lanUrls[0]` + `#live` to open the LAN Live Screen view; frames are served only on the LAN at `GET /api/screen.jpg`, never over the relay) |
 
 Status object:
 

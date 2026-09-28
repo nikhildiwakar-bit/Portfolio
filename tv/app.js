@@ -132,6 +132,57 @@ function lanUrl(tv) {
     return '';
 }
 
+const LIVE_NOTE = 'Live Screen works when this laptop is on the same Wi-Fi as the TV.';
+
+/** The TV's LAN page with #live, so it scrolls to and starts the Live Screen card. */
+function liveUrl(list) {
+    for (const u of Array.isArray(list) ? list : []) {
+        try {
+            const url = new URL(String(u));
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+            url.hash = 'live';
+            return url.href;
+        } catch (e) { /* skip */ }
+    }
+    return '';
+}
+
+/** Asks the TV to share its screen (the TV shows "Start now"), then opens its LAN page in a new tab. */
+async function startLiveScreen() {
+    const tv = selectedTv();
+    if (!tv) return;
+    // Open the tab now, inside the click, so pop-up blockers allow it; it is pointed at the TV once it answers.
+    let win = null;
+    try { win = window.open('', '_blank'); } catch (e) { win = null; }
+    if (win) {
+        try {
+            win.document.title = 'Live Screen';
+            win.document.body.style.font = '16px system-ui, sans-serif';
+            win.document.body.style.padding = '24px';
+            win.document.body.textContent = 'Asking the TV to share its screen…';
+        } catch (e) { /* ignore */ }
+    }
+    const [r] = await act('screen', { action: 'start' }, { btn: $('liveBtn'), silent: true });
+    const ack = r && r.ack;
+    if (!ack || !ack.ok) {
+        if (win) try { win.close(); } catch (e) { /* ignore */ }
+        return;
+    }
+    const s = statusOf(tv);
+    const url = liveUrl(ack.data && ack.data.lanUrls) || liveUrl(s && s.lanUrls);
+    if (!url) {
+        if (win) try { win.close(); } catch (e) { /* ignore */ }
+        toast(prefix(tv) + 'The TV did not report its Wi-Fi address. Open the Office TV app on the TV and try again. ' + LIVE_NOTE, 'bad');
+        return;
+    }
+    if (win) {
+        try { win.opener = null; win.location.href = url; } catch (e) { win = null; }
+    }
+    if (!win) window.open(url, '_blank', 'noopener');
+    toast(prefix(tv) + (ack.msg || 'Tap “Start now” on the TV to share its screen.') + ' ' + LIVE_NOTE, 'ok',
+        { link: { href: url, label: 'Open Live Screen' }, duration: 9000 });
+}
+
 function lanLink(tv) {
     const href = lanUrl(tv);
     return href ? { href, label: 'Same Wi-Fi page' } : null;
@@ -311,6 +362,7 @@ function renderBar() {
         meta.textContent = 'Every command goes to all TVs. ' + parts.join(', ') + '.';
         $('refreshBtn').lastElementChild.textContent = 'Refresh all';
         $('renameBtn').hidden = true;
+        $('liveBtn').hidden = true;
         $('removeBtn').hidden = true;
         $('barLan').hidden = true;
         return;
@@ -323,6 +375,7 @@ function renderBar() {
     $('barName').textContent = tvName(tv);
     $('refreshBtn').lastElementChild.textContent = 'Refresh';
     $('renameBtn').hidden = false;
+    $('liveBtn').hidden = false;
     $('removeBtn').hidden = false;
     if (state.pinging.has(tv.code) && l.state !== 'online') {
         meta.textContent = 'Contacting the TV…';
@@ -508,6 +561,7 @@ function actionTitle(cmd, args) {
         case 'volume': return 'Volume ' + args.percent + '%';
         case 'awake': return args.on ? 'Keep screen on' : 'Screen normal';
         case 'ping': return 'Refresh';
+        case 'screen': return 'Live Screen';
         default: return cmd;
     }
 }
@@ -893,6 +947,8 @@ function wire() {
             summaryToast(res, textFor);
         }
     });
+
+    $('liveBtn').addEventListener('click', startLiveScreen);
 
     const renameDlg = $('renameDlg');
     $('renameBtn').addEventListener('click', () => {
