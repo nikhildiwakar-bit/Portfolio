@@ -2,6 +2,7 @@ package com.nikhil.officetv;
 
 import android.content.Context;
 import android.content.Intent;
+import android.os.Looper;
 import android.os.SystemClock;
 
 import com.nikhil.officetv.mirror.MirrorProtocol;
@@ -368,7 +369,7 @@ final class PhoneServer {
                     MirrorProtocol.writeMessage(out, type, payload);
                     out.flush();
                 }
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
                 if (type != MirrorProtocol.T_BYE) end(null);
             }
         }
@@ -388,10 +389,20 @@ final class PhoneServer {
                 if (was && reason == null && socket.isClosed()) return;
                 cb = onEnd;
             }
-            if (reason != null && !socket.isClosed()) {
-                send(MirrorProtocol.T_BYE, MirrorProtocol.byePayload(error, reason));
+            final byte[] bye = reason != null && !socket.isClosed() ? MirrorProtocol.byePayload(error, reason) : null;
+            Runnable close = () -> {
+                if (bye != null) send(MirrorProtocol.T_BYE, bye);
+                closeQuietly(socket);
+            };
+            // Back, onStop and "New TV code" end the session on the main thread, where Android forbids network
+            // writes (NetworkOnMainThreadException): send the BYE from a short-lived thread there.
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                Thread t = new Thread(close, "otv-phone-bye");
+                t.setDaemon(true);
+                t.start();
+            } else {
+                close.run();
             }
-            closeQuietly(socket);
             synchronized (LOCK) {
                 if (active == this) active = null;
             }

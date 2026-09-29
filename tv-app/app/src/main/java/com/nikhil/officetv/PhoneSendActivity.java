@@ -222,7 +222,11 @@ public class PhoneSendActivity extends Activity {
         }
         page.addView(how, fill(0, 0, 0, ui.dp(14)));
         page.addView(ui.text("The phone and the TV must be on the same Wi-Fi. Only the TV in the QR code can "
-                + "receive your screen.", 13, UiKit.MUTED, false), fill(ui.dp(2), 0, ui.dp(2), 0));
+                + "receive your screen.", 13, UiKit.MUTED, false), fill(ui.dp(2), 0, ui.dp(2), ui.dp(18)));
+        // Safety net for a display that Android describes like a phone: turn this install into the TV.
+        Button asTv = ui.button("This device is the TV: show the TV code", 14, false, v -> useAsTv());
+        asTv.setAlpha(0.85f);
+        page.addView(asTv, fill(0, 0, 0, 0));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -231,6 +235,20 @@ public class PhoneSendActivity extends Activity {
         scroll.addView(page, new ScrollView.LayoutParams(ScrollView.LayoutParams.MATCH_PARENT,
                 ScrollView.LayoutParams.WRAP_CONTENT));
         setContentView(scroll);
+    }
+
+    private void useAsTv() {
+        if (PhoneSendService.state() == PhoneSendService.State.STREAMING
+                || PhoneSendService.state() == PhoneSendService.State.CONNECTING) {
+            PhoneSendService.stop(this);
+        }
+        Prefs.setDeviceMode(this, "tv");
+        try {
+            startActivity(new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP));
+        } catch (RuntimeException e) {
+            CrashLog.note(this, "TV screen: " + e);
+        }
+        finish();
     }
 
     private void onPrimary() {

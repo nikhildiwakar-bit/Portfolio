@@ -260,7 +260,9 @@ crash_scan() {
     if [ -n "$fatal" ] || [ -n "$native" ]; then
         fail "$1: app crashed (FATAL EXCEPTION / native crash), see logcat.txt"
         printf '%s\n%s\n' "$fatal" "$native" | sed '/^$/d; s/^/      /'
-        printf '%s\n' "$new" | grep -A 25 'FATAL EXCEPTION' | head -n 60 > "$OUT/crash-$(date +%s).txt"
+        # The stack trace goes into the job log too, so a crash can be read without downloading artifacts.
+        printf '%s\n' "$new" | grep -A 25 'FATAL EXCEPTION' | head -n 60 | tee "$OUT/crash-$(date +%s).txt" \
+            | sed 's/^/      | /' | head -n 30
     else
         pass "$1: no crash of $PKG in logcat"
     fi

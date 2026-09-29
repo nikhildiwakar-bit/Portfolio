@@ -86,6 +86,7 @@ Office TV starts by itself when the TV powers on or the app is updated, and keep
 | The phone says "not found on this Wi-Fi" | Put the phone on the same Wi-Fi as the TV (not a guest network that isolates devices), and check the TV is on with Office TV installed. |
 | The phone says the QR code is out of date | The TV code was changed. Scan the QR code on the TV again. |
 | The phone says the TV is busy | Another phone is mirroring. Stop it there (or press Back on the remote), then try again. |
+| The TV shows "Show this phone's screen on a TV" instead of its code | Android describes this display like a phone. Tap **This device is the TV: show the TV code** at the bottom; the TV remembers it. |
 | No sound | Press OK on the TV remote once. Share a browser tab with "Share tab audio", or the whole screen with system audio (Windows / ChromeOS). |
 
 ## Privacy and security
@@ -115,6 +116,13 @@ Android phone mirroring: QR code on the TV home screen, `PhoneSendActivity` + `P
 (MediaProjection + hardware H.264 encoder), `PhoneServer` + `PhoneMirrorActivity` on the TV (TCP on the local
 network, MediaCodec decoder on a SurfaceView). Status objects list the `phone` feature. Expected delay on a
 good Wi-Fi: about 60–120 ms glass to glass at 1080p60 (longer on slow TV decoders or busy Wi-Fi).
+
+## Office TV 3.3.1 changes
+
+Fixed: pressing Back on the TV during phone mirroring closed Office TV (the goodbye message to the phone was
+sent from the main thread). The home screen keeps the TV code in view on small or portrait screens. Large touch
+panels that report a phone-sized screen are recognised as TVs, and the phone screen has a **This device is the
+TV** button as a fallback.
 
 ## For developers
 

@@ -6,6 +6,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.ConnectivityManager;
@@ -20,6 +21,7 @@ import android.provider.Settings;
 import android.text.InputFilter;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -67,6 +69,7 @@ public class MainActivity extends Activity {
 
     private UiKit ui;
     private boolean twoCols;
+    private boolean holdTop;
     private TextView tvName, code, clock, date, statusDot, statusText, statusHint, diag;
     private GradientDrawable statusPill;
     private View setupCard, howCard, allowSection, engineSection;
@@ -141,7 +144,13 @@ public class MainActivity extends Activity {
         diag.setAlpha(0.85f);
         page.addView(diag, fill(ui.dp(4), 0, ui.dp(4), 0));
 
-        ScrollView scroll = new ScrollView(this);
+        ScrollView scroll = new ScrollView(this) {
+            /** While holdTop is set, focusing a button further down does not scroll the TV code away. */
+            @Override
+            protected int computeScrollDeltaToGetChildRectOnScreen(Rect rect) {
+                return holdTop ? 0 : super.computeScrollDeltaToGetChildRectOnScreen(rect);
+            }
+        };
         scroll.setFillViewport(true);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
@@ -533,7 +542,19 @@ public class MainActivity extends Activity {
         }
     }
 
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        // The first remote key press: from now on the page follows the focus as usual.
+        if (event.getAction() == KeyEvent.ACTION_DOWN) holdTop = false;
+        return super.dispatchKeyEvent(event);
+    }
+
+    /**
+     * Puts the remote's focus on the most useful button. In one column (portrait or small screens) that button
+     * can be below the fold: the page stays at the top, with the TV code in view, until a key is pressed.
+     */
     private void focusDefault() {
+        holdTop = !twoCols;
         if (allowSection.isShown()) allowPrimary.requestFocus();
         else if (engineSection.isShown() && engineButton.isShown()) engineButton.requestFocus();
         else renameButton.requestFocus();
