@@ -122,7 +122,9 @@ good Wi-Fi: about 60–120 ms glass to glass at 1080p60 (longer on slow TV decod
 Fixed: pressing Back on the TV during phone mirroring closed Office TV (the goodbye message to the phone was
 sent from the main thread). The home screen keeps the TV code in view on small or portrait screens. Large touch
 panels that report a phone-sized screen are recognised as TVs, and the phone screen has a **This device is the
-TV** button as a fallback.
+TV** button as a fallback. Laptops now send the picture at the TV's own screen size (for example 1920 x 1080
+instead of 2560 x 1440): it looks the same on the TV and is much lighter for its decoder, which lowers the delay
+on slow TV chips.
 
 ## For developers
 

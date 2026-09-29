@@ -5,7 +5,7 @@ import * as otv from '../../../tv/otv.js';
 import {
     CastChannel, CastReceiver, CastSender, CONTENT_HINT, DEGRADATION, MAX_BITRATE, MAX_FPS, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, captureScreen, decodeSignal,
     displayMediaOptions, encodeSignal, parseReceiverFragment, preferCodec, preferH264, receiverUrl, senderSupport, signalMessages,
-    tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS,
+    tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS, fitScale,
 } from '../../../tv/cast.js';
 
 const CODE = '7K3M9QX2TD';
@@ -541,6 +541,64 @@ test('sender: the TV\'s stats arrive over the data channel (no relay); connectio
     pc.dc.dispatchEvent(dcMessage('bye'));
     assert.equal(sender.state, 'stopped');
     assert.equal(await sender.connectionInfo(), null, 'nothing after stopping');
+    link.close();
+    tv.rx.close();
+});
+
+test('fitScale: the picture is sent at the TV screen size, never bigger; odd sizes keep the full picture', () => {
+    assert.equal(fitScale(2560, 1440, '1920x1080'), 1.33);
+    assert.equal(fitScale(2880, 1800, '1920x1080'), 1.67);
+    assert.equal(fitScale(1920, 1080, '1920x1080'), 1);
+    assert.equal(fitScale(1920, 1080, '3840x2160'), 1, 'a bigger TV never enlarges');
+    assert.equal(fitScale(1980, 1100, '1920x1080'), 1, 'within 5 %: keep');
+    assert.equal(fitScale(2560, 1440, '1080x1920'), 2.37, 'portrait panel: fits the width');
+    assert.equal(fitScale(2560, 1440, '320x240'), 1);
+    assert.equal(fitScale(2560, 1440, ''), 1);
+    assert.equal(fitScale(2560, 1440, undefined), 1);
+    assert.equal(fitScale(2560, 1440, '1920x1080; x'), 1);
+    assert.equal(fitScale(0, 0, '1920x1080'), 1);
+    assert.equal(fitScale(undefined, undefined, '1920x1080'), 1);
+    assert.equal(fitScale(7680, 4320, '1280x720'), 4, 'at most 4x');
+});
+
+test('sender: the TV\'s screen size from its stats scales the picture to fit, once per change', async () => {
+    const { tv, link, sender, stream } = await castRig();
+    let size = { width: 2560, height: 1440 };
+    stream.tracks[0].getSettings = () => size;
+    sender.start(stream);
+    await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
+    const pc = FakePC.last;
+    pc.dc._open();
+    pc._conn('connected');
+    const vs = sender.videoSender;
+    let sets = 0;
+    const origSet = vs.setParameters;
+    vs.setParameters = async p => { sets++; return origSet(p); };
+    const stats = screen => pc.dc.dispatchEvent(dcMessage(JSON.stringify({ type: 'stats', v: 1, fps: 30, screen })));
+    stats('1920x1080');
+    await untilTrue(() => sets === 1);
+    await sleep(5);
+    assert.equal(vs.getParameters().encodings[0].scaleResolutionDownBy, 1.33);
+    assert.equal(vs.getParameters().encodings[0].maxBitrate, MAX_BITRATE, 'other encoder settings stay');
+    stats('1920x1080');
+    await sleep(20);
+    assert.equal(sets, 1, 'same size: no new setParameters');
+    size = { width: 1920, height: 1080 }; // the shared window got smaller
+    stats('1920x1080');
+    await untilTrue(() => sets === 2);
+    await sleep(5);
+    assert.equal(vs.getParameters().encodings[0].scaleResolutionDownBy, 1);
+    // A browser that refuses the change keeps sharing at full size and is not asked again every 2 s.
+    size = { width: 3840, height: 2160 };
+    vs.setParameters = async () => { sets++; throw new Error('InvalidModificationError'); };
+    stats('1920x1080');
+    await untilTrue(() => sets === 3);
+    await sleep(5);
+    stats('1920x1080');
+    await sleep(20);
+    assert.equal(sets, 3);
+    assert.equal(sender.state, 'sharing');
+    sender.stop('user');
     link.close();
     tv.rx.close();
 });

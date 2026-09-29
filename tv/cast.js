@@ -156,6 +156,21 @@ export async function tuneSender(sender) {
     return false; // the browser keeps its own limits
 }
 
+/**
+ * How much to scale the shared screen down so the picture is no larger than the TV's screen ('WxH' in device
+ * pixels, from the TV's stats): 1 = full size. The TV would scale a bigger picture down anyway, so sending
+ * exactly its size looks the same and spares the TV's decoder (on slow TV chips a too-big picture is what
+ * builds up delay). Implausible sizes keep the full picture.
+ */
+export function fitScale(srcW, srcH, tvScreen) {
+    const m = /^(\d{1,5})x(\d{1,5})$/.exec(typeof tvScreen === 'string' ? tvScreen : '');
+    if (!m || !(srcW > 0) || !(srcH > 0)) return 1;
+    const tw = +m[1], th = +m[2];
+    if (tw < 640 || th < 360) return 1;
+    const s = Math.max(srcW / tw, srcH / th);
+    return s > 1.05 ? Math.min(4, Math.round(s * 100) / 100) : 1;
+}
+
 /** Codecs for the TV's answer: H.264 (packetization-mode=1, constrained baseline first), then VP8, VP9, the rest. */
 export function receiverCodecOrder(codecs) {
     const list = Array.isArray(codecs) ? codecs : [];
@@ -629,6 +644,7 @@ export class CastSender {
                 this.rxStats = st;
                 this.rxStatsAt = Date.now();
                 this.rxStatsCount++;
+                this._fitToTv(st.screen);
             }
         });
         pc.addEventListener('connectionstatechange', () => this._onConn());
@@ -663,6 +679,29 @@ export class CastSender {
         this._connectTimer = setTimeout(() => {
             if (this.state === 'connecting') this._fail(castError('ice', 'Could not connect to the TV.'));
         }, this._connectTimeoutMs);
+    }
+
+    /** Sends the picture at the TV's screen size (fitScale), again whenever the shared window or the TV changes. */
+    _fitToTv(screen) {
+        const sender = this.videoSender;
+        const track = sender && sender.track;
+        if (!track || typeof track.getSettings !== 'function' || typeof sender.getParameters !== 'function'
+            || typeof sender.setParameters !== 'function') return;
+        let set;
+        try { set = track.getSettings() || {}; } catch (e) { return; }
+        const scale = fitScale(set.width, set.height, screen);
+        const now = this._fitScale || 1;
+        if (Math.abs(scale - now) < 0.05 || this._fitBusy) return;
+        let p;
+        try { p = sender.getParameters(); } catch (e) { return; }
+        if (!p || !Array.isArray(p.encodings) || !p.encodings.length) return;
+        for (const e of p.encodings) e.scaleResolutionDownBy = scale;
+        this._fitBusy = true;
+        Promise.resolve().then(() => sender.setParameters(p)).then(() => {
+            this._fitScale = scale;
+            if (this._log) this._log('fit-tv', set.width + 'x' + set.height + ' / ' + scale + ' for ' + screen);
+        }, () => { this._fitScale = scale; /* the browser keeps the full size; do not retry every 2 s */ })
+            .then(() => { this._fitBusy = false; });
     }
 
     _expect(ms, code, message) {

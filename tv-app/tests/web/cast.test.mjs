@@ -87,8 +87,11 @@ test('first visit: one click connects and shares; the TV plays it; Stop sharing 
     assert.equal(q.hint, 'detail');
     assert.equal(q.enc.maxBitrate, 15000000);
     assert.equal(q.enc.maxFramerate, 30);
-    assert.equal(q.enc.scaleResolutionDownBy, 1);
+    // Full size until the TV reports its screen, then exactly the TV's size (the test TV window is 1280 x 720).
+    assert.ok(q.enc.scaleResolutionDownBy === 1 || q.enc.scaleResolutionDownBy === 2, 'scale ' + q.enc.scaleResolutionDownBy);
     assert.equal(q.degradation, 'maintain-resolution');
+    await until(() => sender.evaluate(() => window.__otvCastSender.videoSender.getParameters().encodings[0].scaleResolutionDownBy === 2),
+        10000, 'picture scaled to the TV screen (2560 x 1440 -> 1280 x 720)');
     console.log('# video: ' + JSON.stringify(q.stats) + ', display source: ' + await sender.evaluate(() => window.__gdm.source));
 
     // Relay cost: the cast command, the offer and the answer (+ the TV's ack, which the fake TV publishes directly).
@@ -146,7 +149,8 @@ test('connection info: codec and resolution from getStats; the TV\'s numbers arr
     const row = k => text(sender, '#connRows [data-k="' + k + '"] dd');
     await until(async () => /bps/.test(await row('bitrate')) && /fps decoded/.test(await row('tvfps')), 8000, 'details filled in');
     assert.match(await row('codec'), /^(VP8 \(video\/VP8\)|H\.264 \(video\/H264\))$/);
-    assert.match(await row('res'), /^2560 x 1440$/, 'native resolution, not scaled down');
+    await until(async () => /^1280 x 720 \(captured 2560 x 1440\)$/.test(await row('res')), 8000,
+        'sent at the TV screen size (1280 x 720 window), captured at full size');
     assert.match(await row('fps'), /^\d+ fps$/);
     assert.match(await row('bitrate'), /^[\d.]+ [Mk]bps/);
     assert.match(await row('encoder'), / · (hardware|software)$/, 'the capturing laptop names its encoder');
