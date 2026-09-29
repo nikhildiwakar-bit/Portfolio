@@ -16,12 +16,19 @@ Laptop, Chromebook or MacBook                     Office TV (Android)
 
 The browser's screen picker and its one click are required by every browser for privacy; nothing can skip it.
 
+**Android phones (3.3+):** the TV's home screen also shows a QR code. On an Android phone on the same Wi-Fi,
+scan it with the camera, install Office TV once (the same `OfficeTV.apk`), open the link with Office TV and tap
+**Start now**. The phone screen appears on the TV with low delay, sent straight over the local network (no
+internet, no browser). Press **Back** on the remote or **Stop** on the phone to end it. iPhones are not supported.
+
 ## What you need
 
 - **TV:** Android 5.0 or newer (Android TVs, Google TV, interactive panels such as Dahua or Panasonic), with a
   current **Android System WebView** (version 72 or newer; the TV's home screen tells you if it needs an
   update). Tested on a Dahua interactive panel ("Droidlogic t982_ar301", Android 11).
 - **Laptop:** a laptop, Chromebook or MacBook with a current desktop browser.
+- **Phone (optional):** an Android phone (Android 5.0+) on the same Wi-Fi as the TV. The network must let
+  devices reach each other (TCP port 47300; guest Wi-Fi with client isolation blocks it).
 - **Network:** both need internet. The video goes directly from the laptop to the TV, so it works best when
   both are on the same office network. The network must allow `ntfy.sh` (the free service that passes the
   first encrypted "hello" messages between the website and the TV).
@@ -57,8 +64,11 @@ The row disappears once it is done. Without it, sharing still works while the Of
   "Can't reach the connection service" (the network blocks ntfy.sh; ask IT to allow it), "Can't connect
   securely" (fix the TV's date and time), "Busy right now" (the free service's limit; it retries by itself).
 - **Keep screen on** (default on): the TV does not go to sleep.
-- **Rename TV:** the name laptops see, for example "Conference Room".
-- **New TV code** (asks first): laptops that saved the old code need the new one. Use it if the code was
+- **Share an Android phone:** a QR code with the TV's local address and a secret, and the TV address as text.
+  It updates by itself when the TV's IP address changes.
+- **Rename TV:** the name laptops and phones see, for example "Conference Room".
+- **New TV code** (asks first): laptops that saved the old code need the new one, and phones must scan the
+  new QR code (a connected phone is disconnected). Use it if the code was
   shared with someone who should no longer use this TV.
 - A small line at the bottom with the Android, model, app and WebView versions and the last crash, if any
   (for support).
@@ -73,6 +83,9 @@ Office TV starts by itself when the TV powers on or the app is updated, and keep
 | "Update Android System WebView" (TV or laptop) | Update **Android System WebView** (or Google Chrome) in the TV's app store. |
 | The TV shows "Waiting for the laptop…" and nothing comes | The laptop and the TV cannot reach each other directly. Put both on the same office network (not a guest Wi-Fi that isolates devices). |
 | "Can't load screen sharing" on the TV | The TV has no internet, or the website is down. Check the TV's network and share again. |
+| The phone says "not found on this Wi-Fi" | Put the phone on the same Wi-Fi as the TV (not a guest network that isolates devices), and check the TV is on with Office TV installed. |
+| The phone says the QR code is out of date | The TV code was changed. Scan the QR code on the TV again. |
+| The phone says the TV is busy | Another phone is mirroring. Stop it there (or press Back on the remote), then try again. |
 | No sound | Press OK on the TV remote once. Share a browser tab with "Share tab audio", or the whole screen with system audio (Windows / ChromeOS). |
 
 ## Privacy and security
@@ -80,8 +93,13 @@ Office TV starts by itself when the TV powers on or the app is updated, and keep
 - Every message between the website and the TV is end-to-end encrypted with a key derived from the TV code
   (AES-256-GCM). ntfy.sh only sees random-looking text. The video itself never goes through ntfy.sh.
 - The TV code travels only in URL fragments, which browsers never send to a server.
-- The app has no web server and accepts nothing from the local network. It can only open its own receiver
-  page on the website; it cannot be told to open other apps, links or files.
+- The app has no web server. Its only local-network listener is the phone mirroring port (47300): it
+  accepts a phone only if it proves it knows the TV's 32-byte secret from the QR code (HMAC-SHA256 challenge),
+  shows one phone at a time, and only displays video; it cannot be told to open apps, links or files. The TV
+  proves the same secret back, so a phone never streams to the wrong device. The video on the local network is
+  not encrypted (like Miracast/Chromecast on a trusted network); use **New TV code** to replace the secret.
+- The phone QR link keeps the TV details in the URL fragment, which the browser never sends to a server;
+  `tv/phone.html` only hands it to the app.
 - The APK signing key (`app/officetv.keystore`) is in the repo so every build installs as an update over the
   last one. That is fine for sideloading in an office; a Play Store release would need its own key.
 
@@ -91,9 +109,19 @@ Screen sharing from laptops is now the whole product. Removed: remote control (k
 YouTube and Google-app shortcuts), Live Screen (TV to laptop), sending files, the QR code, and the same-Wi-Fi
 LAN page with its PIN. Commands for those features get "This feature is not available on this TV app version."
 
+## Office TV 3.3 changes
+
+Android phone mirroring: QR code on the TV home screen, `PhoneSendActivity` + `PhoneSendService` on the phone
+(MediaProjection + hardware H.264 encoder), `PhoneServer` + `PhoneMirrorActivity` on the TV (TCP on the local
+network, MediaCodec decoder on a SurfaceView). Status objects list the `phone` feature. Expected delay on a
+good Wi-Fi: about 60–120 ms glass to glass at 1080p60 (longer on slow TV decoders or busy Wi-Fi).
+
 ## For developers
 
-- `app/`: the Android app (Java, minSdk 21, targetSdk 33, no third-party libraries; flavors `full` and `lite`).
+- `app/`: the Android app (Java, minSdk 21, targetSdk 33, one library: ZXing core for the QR code; flavors
+  `full` and `lite`). The same APK is the TV receiver and the phone sender (`Device.isPhone`). Phone mirroring:
+  `mirror/MirrorProtocol` (pure Java), `PhoneServer`, `PhoneMirrorActivity` (TV), `PhoneSendActivity`,
+  `PhoneSendService` (phone), `Qr` (QR code and LAN address).
   `MainActivity` (home screen), `CastActivity` (WebRTC receiver in a WebView), `Commands` (`ping`, `cast`),
   `RelayManager` + `relay/` (pure-Java ntfy client and crypto), `ControlService` (foreground service, Wi-Fi
   lock, keep-awake), `BootReceiver` + `ServiceJob` (start at boot / watchdog), `CrashLog`, `Tls`.
@@ -105,11 +133,15 @@ LAN page with its PIN. Commands for those features get "This feature is not avai
   - `sh tests/compile-check.sh` compiles all app sources (debug and release) against the Android 13 jar and
     rejects APIs missing on Android 5 → `COMPILE OK`.
   - `bash tests/jvm/run.sh`: relay client against a fake ntfy (https and http), test vectors, and the app's
-    command contract (`tests/jvm/app/CommandsTest.java`).
+    command contract (`tests/jvm/app/CommandsTest.java`), and the phone mirroring handshake, framing, CONFIG,
+    Annex-B, QR link and a TCP loopback session (`tests/jvm/mirror/MirrorProtocolTest.java`). Needs the org.json,
+    android-all and ZXing core jars (see the script header).
   - `node --test tests/node/` and `node --test tests/web/` test the website.
 - Emulator tests (`.github/workflows/tv-app-test.yml`, Android 5 to 14, phone and TV images, both flavors):
   `ci/smoke.sh` installs the debug APK, checks the home screen (code, link, no overlapping text), crashes and
   ANRs, the removed commands, screen sharing from the background (one screen per session, Back, stop), that the
   relay reaches CONNECTED, and a real encrypted `ping` + `cast start/stop` through ntfy.sh with
   `ci/relay-cast.mjs` (network problems and HTTP 429 are warnings). Screenshots are published as the
-  `ci-screens` pre-release.
+  `ci-screens` pre-release. On API 29, 30, 33 and 34 `ci/phone-smoke.sh` then mirrors the emulator to itself
+  over 127.0.0.1 (PROJECT_MEDIA granted with appops) and checks the handshake, that `PhoneMirrorActivity`
+  resumes and decodes frames, Back, and that an old QR code is refused.

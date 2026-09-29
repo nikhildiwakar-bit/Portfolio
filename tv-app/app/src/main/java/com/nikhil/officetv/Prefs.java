@@ -4,10 +4,15 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Build;
 
+import com.nikhil.officetv.mirror.MirrorProtocol;
+
 import java.security.SecureRandom;
 import java.util.Locale;
 
-/** Small settings store: pairing code, TV name, relay URL and the keep-screen-on switch. */
+/**
+ * Small settings store: pairing code, TV name, relay URL, the keep-screen-on switch, the phone mirroring secret
+ * (TV) and the last TV a phone shared to (phone).
+ */
 final class Prefs {
     /** Crockford base32 (PROTOCOL.md section 1). */
     static final String PAIR_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -116,5 +121,43 @@ final class Prefs {
             v = v.substring(0, end).trim();
         }
         return v.isEmpty() ? null : v;
+    }
+
+    // ---------- phone mirroring ----------
+
+    /** The TV's 32-byte phone mirroring secret (in the QR code). Created on first use. */
+    static synchronized byte[] phoneSecret(Context c) {
+        byte[] k = MirrorProtocol.base64UrlDecode(p(c).getString("phone_secret", null));
+        if (k != null && k.length == MirrorProtocol.SECRET_LEN) return k;
+        return newPhoneSecret(c);
+    }
+
+    /** New secret: phones that scanned the old QR code must scan again. Made together with a new TV code. */
+    static synchronized byte[] newPhoneSecret(Context c) {
+        byte[] k = new byte[MirrorProtocol.SECRET_LEN];
+        RNG.nextBytes(k);
+        p(c).edit().putString("phone_secret", MirrorProtocol.base64UrlEncode(k)).apply();
+        return k;
+    }
+
+    /** Phone: the TV it last shared to, or null. */
+    static MirrorProtocol.Link lastTv(Context c) {
+        String q = p(c).getString("last_tv", null);
+        return q == null ? null : MirrorProtocol.Link.parse("officetvphone://connect?" + q);
+    }
+
+    static void setLastTv(Context c, MirrorProtocol.Link l) {
+        if (l == null) p(c).edit().remove("last_tv").apply();
+        else p(c).edit().putString("last_tv", l.query()).apply();
+    }
+
+    /** "tv", "phone" or null (detect). Lets tests and odd devices override the automatic choice. */
+    static String deviceMode(Context c) {
+        return p(c).getString("device_mode", null);
+    }
+
+    static void setDeviceMode(Context c, String mode) {
+        if (mode == null) p(c).edit().remove("device_mode").apply();
+        else p(c).edit().putString("device_mode", mode).apply();
     }
 }

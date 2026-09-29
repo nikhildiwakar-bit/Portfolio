@@ -10,8 +10,8 @@ android {
         applicationId 'com.nikhil.officetv'
         minSdk 21
         targetSdk 33
-        versionCode 12
-        versionName '3.2'
+        versionCode 13
+        versionName '3.3'
     }
 
     // One shared key so every new build installs as an update over the old one.
@@ -65,4 +65,8 @@ android {
     }
 }
 
-// No third-party libraries: the app is the relay client, a WebView receiver and a small UI.
+// One small library: ZXing core draws the phone QR code on the TV home screen. Everything else (relay client,
+// WebRTC receiver in a WebView, phone mirroring with MediaCodec) uses only the Android framework.
+dependencies {
+    implementation 'com.google.zxing:core:3.3.0'
+}

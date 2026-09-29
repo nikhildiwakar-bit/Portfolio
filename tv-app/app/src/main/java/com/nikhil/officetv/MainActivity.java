@@ -76,10 +76,24 @@ public class MainActivity extends Activity {
     private boolean engineStoreFailed, settingsFailed;
     /** WebViewInfo.problem(), refreshed with the rest of the screen every few seconds. */
     private String engineProblem;
+    private View phoneCard;
+    private ImageView phoneQr;
+    private TextView phoneAddr;
+    private String phoneLinkShown;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if (Device.isPhone(this)) {
+            // The same app on a phone is the sender: show the phone screen instead of the TV home screen.
+            try {
+                startActivity(new Intent(this, PhoneSendActivity.class));
+            } catch (RuntimeException e) {
+                CrashLog.note(this, "Phone screen: " + e);
+            }
+            finish();
+            return;
+        }
         ControlService.start(this);
         RelayManager.start(this);
         ui = new UiKit(this);
@@ -97,6 +111,7 @@ public class MainActivity extends Activity {
         View settings = settingsRow(twoCols || vw >= 560);
         setupCard = setupCard();
         howCard = howCard();
+        phoneCard = phoneCard();
         if (twoCols) {
             LinearLayout body = new LinearLayout(this);
             body.setOrientation(LinearLayout.HORIZONTAL);
@@ -104,7 +119,8 @@ public class MainActivity extends Activity {
             left.addView(hero, fill(0, 0, 0, gap));
             left.addView(settings, fill(0, 0, 0, 0));
             right.addView(setupCard, fill(0, 0, 0, 0));
-            right.addView(howCard, fill(0, 0, 0, 0));
+            right.addView(howCard, fill(0, 0, 0, gap));
+            right.addView(phoneCard, fill(0, 0, 0, 0));
             LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f);
             l.setMargins(0, 0, gap / 2, 0);
             LinearLayout.LayoutParams r = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
@@ -116,6 +132,7 @@ public class MainActivity extends Activity {
             page.addView(hero, fill(0, 0, 0, gap));
             page.addView(setupCard, fill(0, 0, 0, gap));
             page.addView(howCard, fill(0, 0, 0, gap));
+            page.addView(phoneCard, fill(0, 0, 0, gap));
             page.addView(settings, fill(0, 0, 0, gap));
         }
 
@@ -278,6 +295,60 @@ public class MainActivity extends Activity {
         return c;
     }
 
+    /** Share an Android phone: the QR code (TV address + phone secret) and one line of instructions. */
+    private View phoneCard() {
+        LinearLayout c = cardBox(22, 18);
+        c.addView(eyebrow("SHARE AN ANDROID PHONE"), fill(0, 0, 0, ui.dp(10)));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        phoneQr = new ImageView(this);
+        phoneQr.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        phoneQr.setBackground(ui.rounded(0xFFFFFFFF, 0xFFFFFFFF, 8, 0));
+        phoneQr.setPadding(ui.dp(4), ui.dp(4), ui.dp(4), ui.dp(4));
+        int q = ui.dp(128);
+        LinearLayout.LayoutParams qlp = new LinearLayout.LayoutParams(q, q);
+        qlp.setMargins(0, 0, ui.dp(18), 0);
+        row.addView(phoneQr, qlp);
+        LinearLayout texts = vbox();
+        texts.addView(ui.text("On an Android phone: scan with the camera, install Office TV once, then tap Start now.",
+                15, UiKit.FG, false), fill(0, 0, 0, ui.dp(8)));
+        phoneAddr = ui.text("", 13, UiKit.MUTED, false);
+        texts.addView(phoneAddr, fill(0, 0, 0, 0));
+        row.addView(texts, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        c.addView(row, fill(0, 0, 0, 0));
+        return c;
+    }
+
+    /** Rebuilds the QR code only when the address, port, secret or name changed. */
+    private void refreshPhone() {
+        String ip = Qr.lanAddress();
+        int port = PhoneServer.port();
+        if (ip == null || port == 0) {
+            phoneLinkShown = null;
+            phoneQr.setImageDrawable(null);
+            phoneQr.setVisibility(View.GONE);
+            put(phoneAddr, ip == null ? "Connect the TV to the office Wi-Fi or network to share a phone screen."
+                    : "Getting ready…");
+            return;
+        }
+        String link = Qr.phoneLink(ip, port, Prefs.phoneSecret(this), Prefs.tvName(this));
+        if (!link.equals(phoneLinkShown)) {
+            android.graphics.Bitmap b = Qr.bitmap(link);
+            if (b != null) {
+                android.graphics.drawable.BitmapDrawable d = new android.graphics.drawable.BitmapDrawable(getResources(), b);
+                d.setFilterBitmap(false);
+                d.setAntiAlias(false);
+                phoneQr.setImageDrawable(d);
+                phoneLinkShown = link;
+            }
+        }
+        phoneQr.setVisibility(phoneLinkShown != null ? View.VISIBLE : View.GONE);
+        PhoneServer.Session s = PhoneServer.current();
+        put(phoneAddr, (s != null ? "A phone is connected.  ·  " : "") + "TV address " + ip + ":" + port
+                + " · same Wi-Fi as the phone");
+    }
+
     /** Keep screen on, Rename TV, New TV code: one row when there is room, else stacked. */
     private View settingsRow(boolean roomy) {
         LinearLayout row = new LinearLayout(this);
@@ -375,6 +446,7 @@ public class MainActivity extends Activity {
         howCard.setVisibility(twoCols && setup ? View.GONE : View.VISIBLE);
 
         refreshStatus();
+        refreshPhone();
 
         StringBuilder d = new StringBuilder();
         String wv = WebViewInfo.version(this);
@@ -423,7 +495,7 @@ public class MainActivity extends Activity {
                 col = UiKit.WARN;
             } else {
                 text = "Online · Ready for screen sharing";
-                hint = "Waiting for a laptop.";
+                hint = "Waiting for a laptop or phone.";
                 col = UiKit.OK;
             }
         } else if (s == RelayClient.State.RATE_LIMITED) {
@@ -482,7 +554,7 @@ public class MainActivity extends Activity {
         try {
             new AlertDialog.Builder(this)
                     .setTitle("Rename this TV")
-                    .setMessage("Laptops see this name when they connect.")
+                    .setMessage("Laptops and phones see this name when they connect.")
                     .setView(box)
                     .setPositiveButton("Save", (dlg, w) -> {
                         String n = input.getText().toString().trim();
@@ -500,10 +572,13 @@ public class MainActivity extends Activity {
         try {
             new AlertDialog.Builder(this)
                     .setTitle("Create a new TV code?")
-                    .setMessage("Laptops that saved the current code will need to enter the new one. "
+                    .setMessage("Laptops that saved the current code will need to enter the new one, and phones "
+                            + "will need to scan the new QR code. "
                             + "Use this if the code was shared with someone who should no longer use this TV.")
                     .setPositiveButton("Create new code", (dlg, w) -> {
                         Prefs.newPairCode(this);
+                        Prefs.newPhoneSecret(this);
+                        PhoneServer.disconnectAll("The TV code was changed. Scan the new QR code on the TV.");
                         RelayManager.restart(this);
                         DebugHooks.event("code=changed");
                         refresh();

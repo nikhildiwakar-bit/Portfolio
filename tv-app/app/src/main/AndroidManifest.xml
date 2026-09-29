@@ -12,6 +12,10 @@
     <!-- "Display over other apps": lets Android 10+ open the cast screen while another app is shown. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!-- Phone role: share the phone's screen to a TV (screen capture runs in a foreground service). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
@@ -46,6 +50,46 @@
             android:hardwareAccelerated="true"
             android:launchMode="singleTask"
             android:theme="@style/OfficeTv.Cast" />
+
+        <!-- TV: full-screen phone mirror (native H.264 decoder on a SurfaceView). -->
+        <activity
+            android:name=".PhoneMirrorActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode|fontScale|locale|layoutDirection"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTask"
+            android:theme="@style/OfficeTv.Cast" />
+
+        <!-- Phone: opened by scanning the TV's QR code (or from the launcher on a phone). -->
+        <activity
+            android:name=".PhoneSendActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="nikhildiwakar-bit.github.io"
+                    android:path="/Portfolio/tv/phone.html" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="officetvphone"
+                    android:host="connect" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".PhoneSendService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <service
             android:name=".ControlService"

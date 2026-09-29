@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+<meta name="description" content="Show your Android phone's screen on the office TV with the Office TV app.">
+<title>Office TV · Share your phone screen</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230e7c74'/%3E%3Crect x='6.5' y='8.5' width='19' height='12.5' rx='2.5' fill='none' stroke='white' stroke-width='2.2'/%3E%3Cpath d='M12 25h8' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f5f6f8; --surface: #ffffff; --surface-2: #f1f3f6; --text: #0f1419; --muted: #525d68;
+  --border: #e0e4e9; --accent: #0e7c74; --accent-hover: #0a6a63; --accent-soft: #e2f3f0; --on-accent: #ffffff;
+  --shadow: 0 1px 2px rgba(15, 20, 25, .04), 0 14px 36px -14px rgba(15, 20, 25, .16);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c1013; --surface: #141a1e; --surface-2: #1a2126; --text: #e8edf0; --muted: #a1adb5;
+    --border: #232c32; --accent: #2cc2b1; --accent-hover: #4fd6c6; --accent-soft: #0f2f2b; --on-accent: #03201c;
+    --shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 18px 44px -18px rgba(0, 0, 0, .75);
+  }
+}
+* { box-sizing: border-box; }
+html { background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 400 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 560px; margin: 0 auto; padding: 32px 16px 48px; }
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+header svg { width: 40px; height: 40px; flex: none; }
+header b { display: block; font-size: 18px; }
+header span { color: var(--muted); font-size: 14px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 24px; box-shadow: var(--shadow); margin-bottom: 16px; }
+.card[hidden], [hidden] { display: none !important; }
+h1 { font-size: 24px; line-height: 1.25; margin: 0 0 8px; }
+p { margin: 0 0 12px; color: var(--muted); }
+.btn { display: block; width: 100%; text-align: center; text-decoration: none; font: 600 17px/1.2 inherit;
+  font-family: inherit; padding: 15px 18px; border-radius: 12px; border: 0; cursor: pointer;
+  background: var(--accent); color: var(--on-accent); margin-top: 16px; }
+.btn:hover { background: var(--accent-hover); }
+.btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.btn.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+ol { margin: 8px 0 0; padding: 0; list-style: none; counter-reset: s; }
+ol li { counter-increment: s; position: relative; padding: 0 0 12px 40px; min-height: 28px; }
+ol li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent); font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.tv { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+small { color: var(--muted); font-size: 13px; }
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#0e7c74"/><rect x="6.5" y="8.5" width="19" height="12.5" rx="2.5" fill="none" stroke="white" stroke-width="2.2"/><path d="M12 25h8" stroke="white" stroke-width="2.2" stroke-linecap="round"/></svg>
+    <div><b>Office TV</b><span>Share your phone screen on the TV</span></div>
+  </header>
+
+  <section class="card" id="open" hidden>
+    <h1>Opening Office TV…</h1>
+    <p>Show this phone's screen on <span class="tv" id="tvName">the TV</span>. If Android asks, choose Office TV, then tap <b>Start now</b>.</p>
+    <a class="btn" id="openBtn" href="#">Open Office TV</a>
+  </section>
+
+  <section class="card" id="install" hidden>
+    <h1>Install Office TV on this phone</h1>
+    <p>It is the same free app the TV uses. You only need to install it once.</p>
+    <ol>
+      <li>Download the app below and open the downloaded file.</li>
+      <li>If Android asks, allow installing apps from your browser, then tap <b>Install</b>.</li>
+      <li>Scan the QR code on the TV again and open it with Office TV, then tap <b>Start now</b>.</li>
+    </ol>
+    <a class="btn" id="apk" href="https://github.com/nikhildiwakar-bit/Portfolio/releases/download/tv-app-latest/OfficeTV.apk">Install Office TV (APK)</a>
+    <p style="margin-top:12px"><small>Android 5 or newer. The phone and the TV must be on the same Wi-Fi.</small></p>
+  </section>
+
+  <section class="card" id="ios" hidden>
+    <h1>Android phones only</h1>
+    <p>Sharing a phone screen to Office TV works with Android phones. iPhone and iPad are not supported.</p>
+    <p>To share a laptop screen instead, open the Office TV website on the laptop and enter the TV code.</p>
+    <a class="btn secondary" href="./">Share a laptop screen</a>
+  </section>
+
+  <section class="card" id="desktop" hidden>
+    <h1>Open this on your Android phone</h1>
+    <p>Scan the QR code on the TV with the phone's camera. On a laptop, share your screen with the TV code instead.</p>
+    <a class="btn secondary" href="./">Share a laptop screen</a>
+  </section>
+
+  <p id="bad" hidden><small>This QR code is incomplete. Scan the code on the TV again.</small></p>
+</main>
+<script src="phone.js?v=1"></script>
+</body>
+</html>

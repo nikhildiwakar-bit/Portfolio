@@ -7,7 +7,7 @@
 #   run.sh e2e <relay> <code> [--trust cert.pem]   run the stand-in TV (E2EHarness)
 #   run.sh live [relay]          RelayLiveTest against https://ntfy.sh (exit 2 = no network / 429)
 #
-# Env: VECTORS (default tests/vectors.json), ORGJSON_JAR (default /tmp/claude-0/json-20240303.jar), ANDROID_ALL_JAR (default
+# Env: ZXING_JAR (default /tmp/claude-0/core-3.3.0.jar, needed to compile the app sources for CommandsTest), VECTORS (default tests/vectors.json), ORGJSON_JAR (default /tmp/claude-0/json-20240303.jar), ANDROID_ALL_JAR (default
 # /tmp/claude-0/android-all-13-robolectric-9030017.jar; if present, the unit tests run a second time with
 # Android's own org.json, which escapes '/' and has checked JSONException, to catch size/API differences, and
 # app/CommandsTest checks the TV app's command contract against the real app sources).
@@ -17,6 +17,8 @@ APP=$(cd "$HERE/../.." && pwd)
 ORGJSON_JAR=${ORGJSON_JAR:-/tmp/claude-0/json-20240303.jar}
 ANDROID_ALL_JAR=${ANDROID_ALL_JAR:-/tmp/claude-0/android-all-13-robolectric-9030017.jar}
 RELAY_SRC="$APP/app/src/main/java/com/nikhil/officetv/relay"
+MIRROR_SRC="$APP/app/src/main/java/com/nikhil/officetv/mirror"
+ZXING_JAR=${ZXING_JAR:-/tmp/claude-0/core-3.3.0.jar}
 VECTORS=${VECTORS:-$APP/tests/vectors.json}
 [ -f "$ORGJSON_JAR" ] || { echo "org.json jar not found: $ORGJSON_JAR (set ORGJSON_JAR)"; exit 1; }
 
@@ -29,15 +31,19 @@ filtered() {
   return "$(cat "$OUT/rc" 2>/dev/null || echo 1)"
 }
 
-# Relay code must build for Android (Java 8 language level, no android.* imports).
-if grep -n '^import android\.' "$RELAY_SRC"/*.java; then echo "relay package must not import android.*"; exit 1; fi
+# Relay and mirror code must build for Android (Java 8 language level, no android.* imports).
+if grep -n '^import android\.' "$RELAY_SRC"/*.java "$MIRROR_SRC"/*.java; then echo "relay/mirror packages must not import android.*"; exit 1; fi
 # APIs missing on Android API 21 (compile-check.sh builds against the API 33 jar, so it cannot catch these).
-if grep -nE 'java\.util\.Base64|String\.join|getOrDefault|putIfAbsent|computeIfAbsent|\.forEach\(|\.stream\(|java\.util\.function|Optional<|java\.time|requireNonNullElse|\.removeIf\(|List\.of\(|Map\.of\(|Set\.of\(|\.readAllBytes\(|\.isBlank\(|\.repeat\(|Math\.(floorMod|floorDiv|addExact|multiplyExact|toIntExact)|Long\.hashCode|Integer\.toUnsignedString|\.chars\(\)' "$RELAY_SRC"/*.java; then
-  echo "API newer than Android 21 used in the relay package"; exit 1
+if grep -nE 'java\.util\.Base64|String\.join|getOrDefault|putIfAbsent|computeIfAbsent|\.forEach\(|\.stream\(|java\.util\.function|Optional<|java\.time|requireNonNullElse|\.removeIf\(|List\.of\(|Map\.of\(|Set\.of\(|\.readAllBytes\(|\.isBlank\(|\.repeat\(|Math\.(floorMod|floorDiv|addExact|multiplyExact|toIntExact)|Long\.hashCode|Integer\.toUnsignedString|\.chars\(\)' "$RELAY_SRC"/*.java "$MIRROR_SRC"/*.java; then
+  echo "API newer than Android 21 used in the relay or mirror package"; exit 1
 fi
 mkdir -p "$OUT/classes"
 filtered javac --release 8 -encoding UTF-8 -Xlint:all -Xlint:-options -Werror -d "$OUT/classes" -cp "$ORGJSON_JAR" \
   "$RELAY_SRC"/*.java || { echo "relay package did not compile"; exit 1; }
+filtered javac --release 8 -encoding UTF-8 -Xlint:all -Xlint:-options -Werror -d "$OUT/classes" \
+  "$MIRROR_SRC"/*.java || { echo "mirror package did not compile"; exit 1; }
+filtered javac -encoding UTF-8 -nowarn -d "$OUT/classes" -cp "$OUT/classes" "$HERE"/mirror/*.java \
+  || { echo "mirror tests did not compile"; exit 1; }
 filtered javac -encoding UTF-8 -nowarn -d "$OUT/classes" -cp "$OUT/classes:$ORGJSON_JAR" "$HERE"/*.java \
   || { echo "tests did not compile"; exit 1; }
 CP="$OUT/classes:$ORGJSON_JAR"
@@ -59,6 +65,7 @@ suite() {
 }
 suite "VectorsTest (org.json $(basename "$ORGJSON_JAR"))" -cp "$CP" $PKG.VectorsTest "$VECTORS"
 suite "RelayClientTest" -cp "$CP" $PKG.RelayClientTest
+suite "MirrorProtocolTest (phone mirroring handshake and framing)" -cp "$OUT/classes" com.nikhil.officetv.mirror.MirrorProtocolTest
 if [ -f "$ANDROID_ALL_JAR" ]; then
   suite "VectorsTest with Android's org.json" -cp "$OUT/classes:$ANDROID_ALL_JAR" $PKG.VectorsTest "$VECTORS"
   suite "RelayClientTest with Android's org.json" -cp "$OUT/classes:$ANDROID_ALL_JAR" $PKG.RelayClientTest
@@ -86,8 +93,8 @@ public final class BuildConfig {
 }
 J
   find "$APPSRC/main/java" "$APPSRC/release/java" "$HERE/app" "$OUT/app/stub" -name '*.java' > "$OUT/app/sources.txt"
-  if filtered javac --release 8 -encoding UTF-8 -nowarn -d "$OUT/app/classes" -cp "$ANDROID_ALL_JAR" @"$OUT/app/sources.txt"; then
-    suite "CommandsTest (TV app command contract)" -cp "$OUT/app/classes:$ANDROID_ALL_JAR" com.nikhil.officetv.CommandsTest
+  if filtered javac --release 8 -encoding UTF-8 -nowarn -d "$OUT/app/classes" -cp "$ANDROID_ALL_JAR:$ZXING_JAR" @"$OUT/app/sources.txt"; then
+    suite "CommandsTest (TV app command contract)" -cp "$OUT/app/classes:$ANDROID_ALL_JAR:$ZXING_JAR" com.nikhil.officetv.CommandsTest
   else
     echo "!! FAILED: app sources did not compile for CommandsTest"; FAILED=1
   fi

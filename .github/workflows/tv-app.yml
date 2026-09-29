@@ -57,4 +57,4 @@ jobs:
           gh release create tv-app-latest OfficeTV.apk OfficeTV-lite.apk \
             --target "${{ github.sha }}" \
             --title "Office TV app (latest)" \
-            --notes "TV par install karne ke liye OfficeTV.apk download karein. Steps: tv-app/README.md"
+            --notes "Install OfficeTV.apk on the TV (receiver) and on Android phones (to share the phone screen). OfficeTV-lite.apk is for TVs that block the Accessibility service. Steps: tv-app/README.md"

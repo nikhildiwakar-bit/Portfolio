@@ -101,20 +101,23 @@ Status object:
 
 ```json
 {"name":"Conference Room","model":"Dahua t982_ar301","android":"11","appVersion":"3.0","flavor":"full",
- "features":["cast"],"accessibility":true,"needsPermission":false,"keepAwake":true,
- "webview":"120.0.6099.230","webviewOk":true,"casting":false}
+ "features":["cast","phone"],"accessibility":true,"needsPermission":false,"keepAwake":true,
+ "webview":"120.0.6099.230","webviewOk":true,"casting":false,"phone":true,"phonePort":47300,"phoneConnected":false}
 ```
 
 | Field | Meaning |
 |---|---|
 | `name` | TV name (1–40 chars), set with **Rename TV** on the TV. Defaults to maker + model. |
-| `features` | What this app version supports. `["cast"]` in 3.0. |
+| `features` | What this app version supports. `["cast"]` in 3.0, `["cast","phone"]` since 3.3. |
 | `accessibility` | Full flavor: the Accessibility service is on. Always false in the lite flavor. |
 | `needsPermission` | Android 10+ only: true when the TV cannot open the cast screen while another app is in front (neither Accessibility nor "Display over other apps" is allowed). The TV's home screen shows the one-time setup. |
 | `keepAwake` | **Keep screen on** is enabled (default). |
 | `webview` | Version of the web engine the cast screen uses ("" if unknown). |
 | `webviewOk` | False when that engine is known to be missing or older than 72 (then `cast start` fails with an update message). |
 | `casting` | A cast screen is open on the TV right now. |
+| `phone` | 3.3+: the TV accepts Android phone mirroring on the local network (section 10). |
+| `phonePort` | TCP port of the phone mirroring server (47300–47309), 0 if it is not running. |
+| `phoneConnected` | A phone is connected right now. |
 
 ## 6. Relay usage
 
@@ -223,11 +226,58 @@ the connection was up.
 - Log lines with tag `OfficeTV`: `OTV_TEST port=<p> token=<t> code=<TV code>` when the background service
   starts, `OTV_TEST relay=<STATE> code=<code>` on every relay state change (`CONNECTED`, `CONNECTING`,
   `OFFLINE`, `RATE_LIMITED`, `STOPPED`), `OTV_TEST cast=open|page-loaded|message|closed session=<s> …`
-  and `OTV_TEST a11y=connected`.
+  and `OTV_TEST a11y=connected`; for phone mirroring `OTV_TEST phonekey=<secret>`, `phone=listening port=<p>`,
+  `phone=connected|config|screen opened|decoding …|disconnected …|rejected reason=auth|busy` (TV role) and
+  `sender=CONNECTING|STREAMING|IDLE|ERROR msg=…`, `sender=frames n=<n>` (phone role).
 - A JSON API on **127.0.0.1 only** (port 8080–8090; reach it with `adb forward`), header `X-Token: <t>`:
   `GET /api/status` (status object + `code`, `relay`, `relayDetail`, `castSession`,
   `canOpenFromBackground`, `inForeground`) and `POST /api/cmd {"cmd":…,"args":{…}}`, which runs a command
   exactly like one that came through the relay.
 
 `tv-app/ci/smoke.sh` uses both on emulators, and `tv-app/ci/relay-cast.mjs` then repeats `ping` and
-`cast start/stop` through the real ntfy.sh with the website's own `tv/otv.js`.
+`cast start/stop` through the real ntfy.sh with the website's own `tv/otv.js`. `tv-app/ci/phone-smoke.sh`
+mirrors the emulator to itself over 127.0.0.1 (the app is sender and receiver at once).
+
+## 10. Phone mirroring (3.3+, local network, no relay)
+
+The same APK is the receiver on a TV and the sender on an Android phone (`Device.isPhone`: touchscreen,
+not a TV, smallest width below 600 dp; debug builds default to TV). Source: `app/src/main/java/.../mirror/
+MirrorProtocol.java` (pure Java, shared by both roles and by `tests/jvm/mirror/MirrorProtocolTest.java`).
+
+**QR code** on the TV home screen:
+`https://nikhildiwakar-bit.github.io/Portfolio/tv/phone.html#h=<TV IPv4>&p=<port>&k=<secret>&n=<TV name>`.
+`k` is the TV's random 32-byte phone secret, base64url without padding (43 chars); it is replaced together
+with the TV code (**New TV code**), which also ends a running phone session. The phone app handles that https
+link and `officetvphone://connect?h=…&p=…&k=…&n=…` (the website's fallback deep link) in `PhoneSendActivity`.
+
+**Transport:** one TCP connection from the phone to the TV, port 47300 (47301–47309 if taken), TCP_NODELAY.
+
+**Handshake:**
+
+| Direction | Bytes |
+|---|---|
+| phone → TV | `"OTVP1"` · nonce (16 random bytes) · HMAC-SHA256(secret, nonce ‖ `"phone"`) — 53 bytes |
+| TV → phone (accepted) | `"OK"` · HMAC-SHA256(secret, nonce ‖ `"tv"`) — 34 bytes, proves it is the TV from the QR code |
+| TV → phone (refused) | `"NO"` · reason: 1 = wrong secret (old QR code), 2 = busy (another phone is connected), 3 = version |
+
+The TV closes the connection at once on wrong magic, compares MACs in constant time, allows 4 s for the
+handshake and at most 4 handshakes at a time, and accepts one phone at a time.
+
+**Messages** (both directions): `type u8 · length u32 big-endian · payload` (payload ≤ 8 MB).
+
+| Type | Name | Direction | Payload |
+|---|---|---|---|
+| 1 | CONFIG | phone → TV | width u32 · height u32 · rotation u8 (0–3) · flags u8 · SPS length u32 · SPS · PPS length u32 · PPS (Annex-B, with start codes). Sent before the first frame and again after every encoder restart (rotation, resolution). |
+| 2 | FRAME | phone → TV | flags u8 (1 = key frame) · pts i64 (µs) · one H.264 Annex-B access unit |
+| 3 | PING | both | empty. The TV sends one every 2 s; the phone when it has sent nothing for 1.5 s. Either side gives up after 12–15 s of silence. |
+| 4 | BYE | both | empty, or kind u8 (0 = normal end, 1 = error) · reason (UTF-8) shown on the other side |
+| 5 | KEYREQ | TV → phone | empty: send a key frame now (decoder (re)started, or frames were dropped) |
+
+**Latency rules.** Phone: hardware H.264 encoder with Surface input, long side ≤ 1920 (aspect kept, even or
+16-aligned sides as the codec requires), ~8 Mbit/s (scaled down for smaller sizes), 60 fps (30 on weak devices),
+key frame every 2 s, repeat the previous frame after 100 ms of a still screen, CBR if supported, `latency`
+1 (API 30+), `priority` 0 (API 23+), SPS/PPS before every IDR (API 29+). A sender thread keeps at most 3
+frames waiting; beyond that it drops non-key frames and requests a sync frame. TV: MediaCodec decoder on a
+SurfaceView with `low-latency` 1 (API 30+), `priority` 0 and `operating-rate` 120 (API 23+) and common vendor
+low-latency keys; each frame is queued on arrival and rendered as soon as it is decoded (no pts pacing); more
+than 6 frames waiting are dropped up to the next key frame (and KEYREQ is sent).

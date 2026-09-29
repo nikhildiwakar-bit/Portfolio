@@ -71,6 +71,8 @@ final class DebugHooks {
         t.setDaemon(true);
         t.start();
         Log.i(TAG, "OTV_TEST port=" + port + " token=" + token + " code=" + Prefs.pairCode(app));
+        // Phone mirroring secret, so tv-app/ci/phone-smoke.sh can build the QR link (debug builds only).
+        Log.i(TAG, "OTV_TEST phonekey=" + com.nikhil.officetv.mirror.MirrorProtocol.base64UrlEncode(Prefs.phoneSecret(app)));
     }
 
     static synchronized void stop() {

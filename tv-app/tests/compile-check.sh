@@ -2,12 +2,16 @@
 # Compile-checks all TV app Java sources against the Android 13 framework jar (no Android SDK needed).
 # Two passes, like Gradle's build types: src/main + src/debug, and src/main + src/release (each has its own
 # DebugHooks). Generates stub R and BuildConfig classes. Exit code != 0 means a compile error.
-# Jar expected in $JARS (default /tmp/claude-0): android-all-13-robolectric-9030017.jar.
+# Jars expected in $JARS (default /tmp/claude-0): android-all-13-robolectric-9030017.jar and core-3.3.0.jar (ZXing).
 set -e
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 JARS=${JARS:-/tmp/claude-0}
 CP="$JARS/android-all-13-robolectric-9030017.jar"
 [ -f "$CP" ] || { echo "android-all jar not found: $CP (set JARS)"; exit 1; }
+# ZXing core (the only library, for the phone QR code): com.google.zxing:core:3.3.0 from Maven Central.
+ZXING_JAR=${ZXING_JAR:-$JARS/core-3.3.0.jar}
+[ -f "$ZXING_JAR" ] || { echo "zxing core jar not found: $ZXING_JAR (set ZXING_JAR)"; exit 1; }
+CP="$CP:$ZXING_JAR"
 SRC="$HERE/app/src"
 
 # APIs missing on Android 5 (API 21) that the API 33 jar would happily compile.

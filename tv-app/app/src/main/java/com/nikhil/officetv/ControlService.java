@@ -32,6 +32,8 @@ public class ControlService extends Service {
     /** Starts (or pokes) the service. Never throws; problems end up in CrashLog. */
     static void start(Context c) {
         Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
+        // On a phone the app only sends its screen (PhoneSendService); no receiver runs in the background.
+        if (Device.isPhone(app)) return;
         Intent i = new Intent(app, ControlService.class);
         RuntimeException first;
         try {
@@ -66,6 +68,7 @@ public class ControlService extends Service {
         acquireWifiLock();
         applyKeepAwake();
         RelayManager.start(this);
+        PhoneServer.start(this);
         DebugHooks.start(this);
         ServiceJob.schedule(this);
     }
@@ -74,6 +77,7 @@ public class ControlService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         goForeground();
         RelayManager.start(this);
+        PhoneServer.start(this);
         DebugHooks.start(this);
         return START_STICKY;
     }
@@ -134,6 +138,7 @@ public class ControlService extends Service {
     @Override
     public void onDestroy() {
         RelayManager.stop();
+        PhoneServer.stop();
         DebugHooks.stop();
         synchronized (this) {
             try {
@@ -191,7 +196,7 @@ public class ControlService extends Service {
                 .setContentTitle("Office TV is ready")
                 .setOngoing(true);
         if (!plain) {
-            b.setContentText("Laptops can share their screen to this TV.");
+            b.setContentText("Laptops and phones can share their screen to this TV.");
             try {
                 int flags = Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0;
                 b.setContentIntent(PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), flags));

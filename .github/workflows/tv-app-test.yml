@@ -12,6 +12,8 @@ on:
       - 'tv/cast.js'
       - 'tv/receive.html'
       - 'tv/receive.js'
+      - 'tv/phone.html'
+      - 'tv/phone.js'
       - '.github/workflows/tv-app-test.yml'
   workflow_dispatch:
 
@@ -35,8 +37,9 @@ jobs:
           curl -sSfL -o jars/json-20240303.jar https://repo1.maven.org/maven2/org/json/json/20240303/json-20240303.jar
           curl -sSfL -o jars/android-all-13-robolectric-9030017.jar \
             https://repo1.maven.org/maven2/org/robolectric/android-all/13-robolectric-9030017/android-all-13-robolectric-9030017.jar
+          curl -sSfL -o jars/core-3.3.0.jar https://repo1.maven.org/maven2/com/google/zxing/core/3.3.0/core-3.3.0.jar
           ORGJSON_JAR=$PWD/jars/json-20240303.jar ANDROID_ALL_JAR=$PWD/jars/android-all-13-robolectric-9030017.jar \
-            bash tv-app/tests/jvm/run.sh
+            ZXING_JAR=$PWD/jars/core-3.3.0.jar bash tv-app/tests/jvm/run.sh
       - name: Compile check (all app sources, debug and release, API 21 rules)
         run: JARS=$PWD/jars sh tv-app/tests/compile-check.sh
 
@@ -74,10 +77,10 @@ jobs:
           - { api: 21, target: default,     arch: x86,    flavor: full, grant: a11y }
           - { api: 24, target: default,     arch: x86,    flavor: full, grant: a11y }
           - { api: 26, target: default,     arch: x86_64, flavor: full, grant: a11y }
-          - { api: 29, target: default,     arch: x86_64, flavor: full, grant: a11y }
-          - { api: 30, target: google_apis, arch: x86_64, flavor: full, grant: a11y }
-          - { api: 33, target: google_apis, arch: x86_64, flavor: full, grant: a11y }
-          - { api: 34, target: google_apis, arch: x86_64, flavor: full, grant: a11y }
+          - { api: 29, target: default,     arch: x86_64, flavor: full, grant: a11y, phone: 1 }
+          - { api: 30, target: google_apis, arch: x86_64, flavor: full, grant: a11y, phone: 1 }
+          - { api: 33, target: google_apis, arch: x86_64, flavor: full, grant: a11y, phone: 1 }
+          - { api: 34, target: google_apis, arch: x86_64, flavor: full, grant: a11y, phone: 1 }
           - { api: 30, target: android-tv,  arch: x86,    flavor: full, grant: a11y }
           - { api: 30, target: google_apis, arch: x86_64, flavor: lite, grant: overlay }
           - { api: 34, target: google_apis, arch: x86_64, flavor: lite, grant: overlay }
@@ -109,7 +112,8 @@ jobs:
           arch: ${{ matrix.arch }}
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: bash tv-app/ci/smoke.sh apk/${{ matrix.flavor }}/debug/app-${{ matrix.flavor }}-debug.apk ${{ matrix.flavor }} ${{ matrix.grant }}
+          # Then, where matrix.phone is set: phone mirroring end to end on the same emulator (sender and receiver in one app).
+          script: r=0; bash tv-app/ci/smoke.sh apk/${{ matrix.flavor }}/debug/app-${{ matrix.flavor }}-debug.apk ${{ matrix.flavor }} ${{ matrix.grant }} || r=1; if [ "${{ matrix.phone }}" = 1 ]; then bash tv-app/ci/phone-smoke.sh || r=1; fi; exit $r
       - name: Upload ci-out
         if: always()
         uses: actions/upload-artifact@v4

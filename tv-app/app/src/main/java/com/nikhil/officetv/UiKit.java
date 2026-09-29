@@ -39,13 +39,18 @@ final class UiKit {
     final float widthDp, heightDp;
 
     UiKit(Context c) {
+        this(c, 0);
+    }
+
+    /** fixedScale > 0: use it instead of the screen-based scale (the phone screens use 1.0). */
+    UiKit(Context c, float fixedScale) {
         ctx = c;
         DisplayMetrics dm = c.getResources().getDisplayMetrics();
         density = dm.density <= 0 ? 1f : dm.density;
         widthDp = dm.widthPixels / density;
         heightDp = dm.heightPixels / density;
         float small = Math.min(widthDp, heightDp);
-        scale = Math.max(0.75f, Math.min(1.5f, small / 540f));
+        scale = fixedScale > 0 ? fixedScale : Math.max(0.75f, Math.min(1.5f, small / 540f));
     }
 
     int dp(float v) {
