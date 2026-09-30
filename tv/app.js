@@ -476,6 +476,37 @@ const LIVE_TEXT = {
     reconnecting: ['Reconnecting', 'Reconnecting to {tv}…', 'The connection dropped for a moment. Trying again.'],
 };
 
+/**
+ * Sound: the shared tab's or system sound plays on the TV. "TV only" mutes it on the laptop
+ * (suppressLocalAudioPlayback, Chrome 109+) while the TV keeps playing it; the TV remote sets the TV volume.
+ */
+function renderSound(s) {
+    const a = s.stream && s.stream.getAudioTracks ? s.stream.getAudioTracks()[0] : null;
+    const on = s.phase === 'sharing' || s.phase === 'reconnecting';
+    $('soundRow').hidden = !on;
+    if (!on) return;
+    const btn = $('soundBtn');
+    if (!a) {
+        $('soundNote').textContent = 'No sound is shared. To hear it on the TV, stop and share a Chrome tab with \u201cAlso share tab audio\u201d on (or the entire screen with \u201cAlso share system audio\u201d on Windows and ChromeOS).';
+        btn.hidden = true;
+        return;
+    }
+    const canTvOnly = typeof a.applyConstraints === 'function' && !!(navigator.mediaDevices && navigator.mediaDevices.getSupportedConstraints
+        && navigator.mediaDevices.getSupportedConstraints().suppressLocalAudioPlayback);
+    $('soundNote').textContent = s.tvOnly
+        ? 'Sound plays on the TV only. Use the TV remote for the volume.'
+        : 'Sound plays on the TV and on this laptop. Use the TV remote for the TV volume.';
+    btn.hidden = !canTvOnly;
+    btn.textContent = s.tvOnly ? 'Play sound here too' : 'Sound on the TV only';
+    btn.onclick = () => {
+        const want = !s.tvOnly;
+        a.applyConstraints({ suppressLocalAudioPlayback: want }).then(() => { s.tvOnly = want; render(); }, () => {
+            $('soundNote').textContent = 'This browser cannot mute the laptop by itself. Mute the shared tab or the laptop instead: the TV keeps the sound of a shared tab.';
+            btn.hidden = true;
+        });
+    };
+}
+
 function render() {
     const s = state.session;
     const hasTvs = state.tvs.length > 0;
@@ -531,6 +562,7 @@ function render() {
             const p = pv.play && pv.play();
             if (p && p.catch) p.catch(() => {});
         }
+        renderSound(s);
         document.title = (s.phase === 'sharing' ? 'Sharing to ' : s.phase === 'reconnecting' ? 'Reconnecting to ' : 'Connecting to ') + name + ' · Office TV';
     } else {
         if ($('preview').srcObject) $('preview').srcObject = null;

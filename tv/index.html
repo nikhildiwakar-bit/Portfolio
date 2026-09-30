@@ -246,6 +246,9 @@ body.is-live .stage { display: grid; grid-template-columns: minmax(0, 1fr); alig
 footer { display: flex; align-items: center; gap: 8px; padding: 28px 0 40px; color: var(--faint); font-size: .86rem; }
 footer .ic { width: 16px; height: 16px; }
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
+.sound-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 12px; }
+.sound-row .fine { margin: 0; flex: 1 1 220px; }
+.btn-quiet { min-height: 44px; padding: 10px 16px; border-radius: 12px; border: 1px solid var(--border, #d0d6dc); background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -388,6 +391,10 @@ footer .ic { width: 16px; height: 16px; }
           <div class="live-actions">
             <button class="btn btn-stop" type="button" id="stopBtn"><svg class="ic" style="fill:currentColor;stroke:none"><use href="#i-stop"/></svg><span id="stopLabel">Stop sharing</span></button>
           </div>
+          <div class="sound-row" id="soundRow" hidden>
+            <p class="fine" id="soundNote"></p>
+            <button class="btn btn-quiet" type="button" id="soundBtn" hidden></button>
+          </div>
           <p class="fine">Keep this tab open while you share. Closing it stops sharing.</p>
           <div class="conn" id="connInfo" hidden>
             <button class="conn-toggle" type="button" id="connToggle" aria-expanded="false" aria-controls="connDetails"><svg class="ic"><use href="#i-chevron"/></svg>Connection info</button>
@@ -419,6 +426,6 @@ footer .ic { width: 16px; height: 16px; }
     <span>End-to-end encrypted. Your screen goes straight from this browser to the TV.</span>
   </footer>
 </div>
-<script type="module" src="app.js?v=6"></script>
+<script type="module" src="app.js?v=7"></script>
 </body>
 </html>
