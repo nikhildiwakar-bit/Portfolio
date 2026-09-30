@@ -10,8 +10,8 @@ android {
         applicationId 'com.nikhil.officetv'
         minSdk 21
         targetSdk 33
-        versionCode 15
-        versionName '3.4'
+        versionCode 16
+        versionName '3.5'
     }
 
     // One shared key so every new build installs as an update over the old one.

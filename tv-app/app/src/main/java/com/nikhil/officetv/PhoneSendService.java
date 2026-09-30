@@ -1,5 +1,6 @@
 package com.nikhil.officetv;
 
+import android.annotation.TargetApi;
 import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -8,6 +9,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -47,6 +49,7 @@ import java.util.ArrayDeque;
  * Phone side of phone mirroring: a foreground service (type mediaProjection) that captures the screen into a
  * VirtualDisplay, encodes it with the hardware H.264 encoder and streams it to the TV over one TCP connection
  * (PROTOCOL.md section 10). The screen-capture consent is used once, for one session (Android 14 rules).
+ * On Android 10+ with RECORD_AUDIO, the sound of apps playing on the phone goes along (PhoneAudioCapture).
  */
 public class PhoneSendService extends Service {
     static final String ACTION_START = "com.nikhil.officetv.phone.START";
@@ -62,6 +65,14 @@ public class PhoneSendService extends Service {
     private static final int BITRATE = 8_000_000;
     /** Frames waiting for the network beyond this: the link is behind, drop until a key frame. */
     private static final int MAX_SEND_QUEUE = 3;
+    /** Sound chunks (10 ms each) waiting for the network beyond this: the oldest go (about 300 ms kept). */
+    private static final int MAX_AUDIO_QUEUE = 30;
+    /** How long the phone waits for the TV's CAPS (sent at once after the handshake) before it assumes an older TV. */
+    private static final long CAPS_WAIT_MS = 1500;
+    private static final String RECORD_AUDIO = "android.permission.RECORD_AUDIO";
+    private static final String NO_SOUND_PERMISSION =
+            "Sound is off: in the phone's Settings, open Apps, Office TV, Permissions and allow Microphone (only "
+                    + "the sound of apps playing on this phone is sent, never the microphone).";
 
     enum State { IDLE, CONNECTING, STREAMING, ERROR }
 
@@ -124,6 +135,12 @@ public class PhoneSendService extends Service {
     private MirrorProtocol.Link link;
     private volatile boolean running;
     private Encoder encoder;
+    private volatile PhoneAudioCapture audio;
+    /** The TV's CAPS flags (MirrorProtocol.CAP_AUDIO), or -1 until it sent them (older TVs never do). */
+    private int tvCaps = -1;
+    private final Object capsLock = new Object();
+    /** Why there is no sound, for the status line; null while sound runs. */
+    private volatile String soundNote;
     private int fps;
     private final Sender sender = new Sender();
     private DisplayManager.DisplayListener displayListener;
@@ -191,7 +208,10 @@ public class PhoneSendService extends Service {
         Socket s = new Socket();
         try {
             s.setTcpNoDelay(true);
-            s.setSendBufferSize(256 * 1024);
+            // Small kernel buffer: when Wi-Fi is slow, video waits in Sender (which drops it and lets sound go first)
+            // instead of hundreds of KB queuing in the socket ahead of every sound chunk. 64 KB is still well above
+            // what a LAN needs in flight.
+            s.setSendBufferSize(64 * 1024);
             s.connect(new InetSocketAddress(link.host, link.port), CONNECT_TIMEOUT_MS);
             s.setSoTimeout(CONNECT_TIMEOUT_MS);
             byte[] nonce = new byte[MirrorProtocol.NONCE_LEN];
@@ -246,7 +266,16 @@ public class PhoneSendService extends Service {
         }
         if (!running) return;
         watchRotation();
-        setState(State.STREAMING, "Your screen is showing on " + link.name + ".");
+        awaitCaps(CAPS_WAIT_MS);
+        startSound();
+        if (!running) return;
+        setState(State.STREAMING, streamingMessage());
+    }
+
+    private String streamingMessage() {
+        String note = soundNote;
+        return note == null ? "Your screen and sound are showing on " + link.name + "."
+                : "Your screen is showing on " + link.name + ". " + note;
     }
 
     /** Messages from the TV: PING, KEYREQ, BYE (with the reason as text). */
@@ -258,6 +287,11 @@ public class PhoneSendService extends Service {
                 if (m.type == MirrorProtocol.T_KEYREQ) {
                     Encoder e = encoder;
                     if (e != null) e.requestKeyFrame();
+                } else if (m.type == MirrorProtocol.T_CAPS) {
+                    synchronized (capsLock) {
+                        tvCaps = MirrorProtocol.capsFlags(m.payload);
+                        capsLock.notifyAll();
+                    }
                 } else if (m.type == MirrorProtocol.T_BYE) {
                     String why = MirrorProtocol.byeReason(m.payload);
                     boolean error = MirrorProtocol.byeIsError(m.payload);
@@ -414,8 +448,9 @@ public class PhoneSendService extends Service {
             f.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
             f.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
             f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
-            // A still screen produces no frames: repeat the last one so the TV never stalls or times out.
-            f.setLong("repeat-previous-frame-after", 100_000L);
+            // A still screen produces no frames: repeat the last one every 33 ms. TV decoders hold a frame until the
+            // next one arrives, so a steady 30 fps keeps the picture about 33 ms behind instead of seconds.
+            f.setLong("repeat-previous-frame-after", 33_333L);
             if (!tuned) return f;
             if (ecaps != null) {
                 if (ecaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)) {
@@ -526,16 +561,134 @@ public class PhoneSendService extends Service {
         return tries[2];
     }
 
+    // ---------- sound ----------
+
+    /** Waits (worker thread) until the TV sent its CAPS, which a TV does right after the handshake. */
+    private void awaitCaps(long ms) {
+        long end = SystemClock.elapsedRealtime() + ms;
+        synchronized (capsLock) {
+            long left;
+            while (tvCaps < 0 && running && (left = end - SystemClock.elapsedRealtime()) > 0) {
+                try {
+                    capsLock.wait(left);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    private boolean tvPlaysSound() {
+        synchronized (capsLock) {
+            return tvCaps > 0 && (tvCaps & MirrorProtocol.CAP_AUDIO) != 0;
+        }
+    }
+
+    /**
+     * Sound once the screen runs: Android 10+, a TV that plays sound (CAPS) and RECORD_AUDIO; otherwise the screen
+     * goes alone (never fails).
+     */
+    private void startSound() {
+        String reason;
+        String note;
+        if (Build.VERSION.SDK_INT < 29) {
+            reason = "api";
+            note = "This phone cannot send its sound (needs Android 10 or newer).";
+        } else if (!tvPlaysSound()) {
+            reason = "tv";
+            note = "To hear the phone's sound, update Office TV on the TV.";
+        } else if (!canRecordAudio()) {
+            reason = "permission";
+            note = NO_SOUND_PERMISSION;
+        } else {
+            reason = startAudioCapture();
+            if (reason == null) {
+                soundNote = null;
+                return;
+            }
+            note = reason.startsWith("permission") ? NO_SOUND_PERMISSION : "Sound could not start on this phone.";
+        }
+        soundNote = note;
+        DebugHooks.event("sender=audio off reason=" + reason);
+    }
+
+    @TargetApi(29)
+    private boolean canRecordAudio() {
+        try {
+            return checkSelfPermission(RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Null when sound runs, else the reason for the log. AUDIO_CONFIG goes first, then the chunks. */
+    @TargetApi(29)
+    private String startAudioCapture() {
+        MediaProjection p = projection;
+        if (p == null || !running) return "error stopped";
+        PhoneAudioCapture c = new PhoneAudioCapture(p, new PhoneAudioCapture.Listener() {
+            @Override
+            public void onStart(int sampleRate, int channels) {
+                sender.audioConfig(new MirrorProtocol.AudioConfig(sampleRate, channels,
+                        MirrorProtocol.AUDIO_PCM16).encode());
+            }
+
+            @Override
+            public void onAudio(long ptsUs, byte[] pcm) {
+                if (running) sender.audio(ptsUs, pcm);
+            }
+
+            @Override
+            public void onError(String reason) {
+                soundStopped(reason);
+            }
+        });
+        String why = c.start();
+        if (why != null) return why;
+        audio = c;
+        if (!running) {
+            // finish() ran meanwhile and may not have seen it.
+            c.stop();
+            return "error stopped";
+        }
+        DebugHooks.event("sender=audio on rate=" + c.sampleRate() + " ch=" + c.channels());
+        return null;
+    }
+
+    /** The capture ended by itself mid-session: the screen goes on without sound. */
+    private void soundStopped(String reason) {
+        if (!running) return;
+        DebugHooks.event("sender=audio off reason=" + reason);
+        soundNote = "Sound stopped on this phone.";
+        main.post(() -> {
+            if (running && state == State.STREAMING) setState(State.STREAMING, streamingMessage());
+        });
+    }
+
     // ---------- network sender ----------
 
-    /** Sends on its own thread so a slow network never blocks the encoder; drops frames when behind. */
+    /**
+     * Sends on its own thread so a slow network never blocks the encoder; drops frames when behind. Sound has
+     * its own queue that goes before waiting video (a chunk is small and must not wait behind frames); video
+     * config and frame dropping never touch it.
+     */
     private final class Sender implements Runnable {
+        /** Video: {CONFIG payload} or {data, key, pts}. */
         private final ArrayDeque<Object[]> queue = new ArrayDeque<>();
+        /** Sound: {AUDIO_CONFIG payload} or {pcm, pts}. */
+        private final ArrayDeque<Object[]> sound = new ArrayDeque<>();
         private Thread thread;
         private boolean waitKey;
         private long frames;
+        private long chunks;
+        private volatile long chunksDropped;
 
         void start() {
+            synchronized (this) {
+                // Sound left from an earlier session must not reach this TV before its AUDIO_CONFIG.
+                sound.clear();
+            }
             thread = new Thread(this, "otv-send-net");
             thread.setPriority(Thread.MAX_PRIORITY);
             thread.start();
@@ -576,15 +729,43 @@ public class PhoneSendService extends Service {
             return n;
         }
 
+        synchronized void audioConfig(byte[] payload) {
+            // A new sound format: chunks of the old one are useless now.
+            sound.clear();
+            sound.add(new Object[] {payload});
+            notifyAll();
+        }
+
+        synchronized void audio(long pts, byte[] pcm) {
+            int n = 0;
+            for (Object[] o : sound) if (o.length > 1) n++;
+            if (n >= MAX_AUDIO_QUEUE) {
+                // The link is behind: the oldest sound goes, the TV plays what is current.
+                java.util.Iterator<Object[]> it = sound.iterator();
+                while (it.hasNext()) {
+                    if (it.next().length > 1) {
+                        it.remove();
+                        chunksDropped++;
+                        break;
+                    }
+                }
+            }
+            sound.add(new Object[] {pcm, pts});
+            notifyAll();
+        }
+
         @Override
         public void run() {
             long lastSent = SystemClock.elapsedRealtime();
             try {
                 while (running) {
                     Object[] item;
+                    boolean isSound;
                     synchronized (this) {
-                        if (queue.isEmpty()) wait(1000);
-                        item = queue.poll();
+                        if (queue.isEmpty() && sound.isEmpty()) wait(1000);
+                        item = sound.poll();
+                        isSound = item != null;
+                        if (item == null) item = queue.poll();
                     }
                     OutputStream o = out;
                     if (o == null) continue;
@@ -595,7 +776,17 @@ public class PhoneSendService extends Service {
                         }
                         continue;
                     }
-                    if (item.length == 1) {
+                    if (isSound) {
+                        if (item.length == 1) {
+                            MirrorProtocol.writeMessage(o, MirrorProtocol.T_AUDIO_CONFIG, (byte[]) item[0]);
+                        } else {
+                            byte[] d = (byte[]) item[0];
+                            MirrorProtocol.writeAudio(o, (Long) item[1], d, 0, d.length);
+                            if (++chunks == 1 || chunks % 500 == 0) {
+                                DebugHooks.event("sender=audio chunks=" + chunks + " dropped=" + chunksDropped);
+                            }
+                        }
+                    } else if (item.length == 1) {
                         MirrorProtocol.writeMessage(o, MirrorProtocol.T_CONFIG, (byte[]) item[0]);
                     } else {
                         byte[] d = (byte[]) item[0];
@@ -638,6 +829,8 @@ public class PhoneSendService extends Service {
         out = null;
         final Encoder e = encoder;
         encoder = null;
+        final PhoneAudioCapture a = audio;
+        audio = null;
         final VirtualDisplay vd = display;
         display = null;
         final MediaProjection p = projection;
@@ -645,8 +838,9 @@ public class PhoneSendService extends Service {
         final HandlerThread w = worker;
         worker = null;
         work = null;
-        // Network and codec teardown off the main thread.
+        // Sound, network and codec teardown off the main thread.
         Thread t = new Thread(() -> {
+            if (a != null) a.stop();
             if (o != null) {
                 try {
                     MirrorProtocol.writeMessage(o, MirrorProtocol.T_BYE, null);
@@ -698,7 +892,9 @@ public class PhoneSendService extends Service {
     private boolean goForeground() {
         try {
             Notification n = notification();
-            if (Build.VERSION.SDK_INT >= 29) {
+            if (Build.VERSION.SDK_INT >= 30 && canRecordAudio() && foregroundWithSound(n)) {
+                return true;
+            } else if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
             } else {
                 startForeground(NOTIFICATION_ID, n);
@@ -706,6 +902,24 @@ public class PhoneSendService extends Service {
             return true;
         } catch (RuntimeException e) {
             CrashLog.note(this, "Phone foreground service: " + e);
+            return false;
+        }
+    }
+
+    /**
+     * Android 11+: while Office TV is in the background (the user opened another app to show it), Android 11 only
+     * lets a foreground service of type microphone record, and it counts the phone's playback capture as recording.
+     * If Android refuses the type, the caller falls back to mediaProjection only (the screen still goes, maybe
+     * without sound in the background).
+     */
+    @TargetApi(30)
+    private boolean foregroundWithSound(Notification n) {
+        try {
+            startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            return true;
+        } catch (RuntimeException e) {
+            CrashLog.note(this, "Phone foreground service with sound: " + e);
             return false;
         }
     }

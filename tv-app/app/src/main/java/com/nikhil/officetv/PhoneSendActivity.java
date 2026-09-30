@@ -1,9 +1,11 @@
 package com.nikhil.officetv;
 
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.drawable.GradientDrawable;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
@@ -22,12 +24,15 @@ import com.nikhil.officetv.mirror.MirrorProtocol;
 
 /**
  * Phone screen: "Start mirroring to (TV name)". Opened by scanning the TV's QR code (https link or
- * officetvphone://connect?...), or from the launcher on a phone. Asks Android for screen capture, then
- * PhoneSendService does the streaming.
+ * officetvphone://connect?...), or from the launcher on a phone. Asks for sound (Android 10+) once when missing,
+ * then for screen capture; PhoneSendService does the streaming.
  */
 public class PhoneSendActivity extends Activity {
     private static final int REQ_CAPTURE = 1;
-    private static final int REQ_NOTIFY = 2;
+    private static final int REQ_PERMISSIONS = 2;
+    private static final String RECORD_AUDIO = "android.permission.RECORD_AUDIO";
+    private static final String KEY_ASKING = "asking";
+    private static final String KEY_ASKING_SOUND = "askingSound";
 
     private UiKit ui;
     private MirrorProtocol.Link tv;
@@ -37,6 +42,8 @@ public class PhoneSendActivity extends Activity {
     private View tvCard;
     private GradientDrawable statusBg;
     private final Runnable changed = this::refresh;
+    /** The permission dialog is up (its answer continues to the screen-capture request); kept across recreation. */
+    private boolean asking, askingSound;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -44,9 +51,20 @@ public class PhoneSendActivity extends Activity {
         ui = new UiKit(this, 1f);
         build();
         tv = Prefs.lastTv(this);
+        if (state != null) {
+            asking = state.getBoolean(KEY_ASKING);
+            askingSound = state.getBoolean(KEY_ASKING_SOUND);
+        }
         boolean fresh = state == null;
         handle(getIntent(), fresh);
         refresh();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        out.putBoolean(KEY_ASKING, asking);
+        out.putBoolean(KEY_ASKING_SOUND, askingSound);
     }
 
     @Override
@@ -95,7 +113,16 @@ public class PhoneSendActivity extends Activity {
         if (s == PhoneSendService.State.STREAMING || s == PhoneSendService.State.CONNECTING) {
             PhoneSendService.stop(this);
         }
-        askNotificationsOnce();
+        // The answer to a dialog that is already up continues to the capture request.
+        if (asking || askPermissions()) {
+            refresh();
+            return;
+        }
+        askCapture();
+    }
+
+    private void askCapture() {
+        if (tv == null) return;
         try {
             MediaProjectionManager mpm = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
             // A new consent every time: Android 14 allows each one to be used for one session only.
@@ -125,15 +152,52 @@ public class PhoneSendActivity extends Activity {
         refresh();
     }
 
-    private void askNotificationsOnce() {
-        if (Build.VERSION.SDK_INT < 33) return;
+    /**
+     * One dialog for what is missing: RECORD_AUDIO (Android 10+, the phone's sound). True if it was shown; its answer goes on to the capture request. If the user denied for good,
+     * Android answers at once without a dialog, so mirroring is never blocked.
+     */
+    private boolean askPermissions() {
+        if (Build.VERSION.SDK_INT < 29) return false;
+        String[] missing = missingPermissions();
+        if (missing.length == 0) return false;
         try {
-            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIFY);
-            }
-        } catch (RuntimeException ignored) {
+            requestPermissions(missing, REQ_PERMISSIONS);
+        } catch (RuntimeException e) {
+            return false;
         }
+        asking = true;
+        askingSound = false;
+        for (String p : missing) if (RECORD_AUDIO.equals(p)) askingSound = true;
+        linkError = null;
+        return true;
+    }
+
+    @TargetApi(29)
+    private String[] missingPermissions() {
+        // Only what mirroring needs, so the phone asks as little as possible: the sound. (Notifications are left
+        // out on purpose: Android shows its own screen-sharing indicator, and Stop is in this screen.)
+        String[] wanted = {RECORD_AUDIO};
+        int n = 0;
+        String[] missing = new String[wanted.length];
+        for (String p : wanted) {
+            try {
+                if (checkSelfPermission(p) != PackageManager.PERMISSION_GRANTED) missing[n++] = p;
+            } catch (RuntimeException ignored) {
+            }
+        }
+        String[] out = new String[n];
+        System.arraycopy(missing, 0, out, 0, n);
+        return out;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode != REQ_PERMISSIONS) return;
+        asking = false;
+        askingSound = false;
+        // Whatever the answer: without RECORD_AUDIO only the screen is sent (PhoneSendService says so).
+        askCapture();
+        refresh();
     }
 
     private void scanAnother() {
@@ -204,7 +268,8 @@ public class PhoneSendActivity extends Activity {
         String[] steps = {
             "Open Office TV on the TV. Its home screen shows a QR code.",
             "Scan the QR code with this phone's camera and open it with Office TV.",
-            "Tap Start now when Android asks. Your screen appears on the TV.",
+            Build.VERSION.SDK_INT >= 29 ? "Tap Start now when Android asks. Your screen and sound appear on the TV."
+                    : "Tap Start now when Android asks. Your screen appears on the TV.",
         };
         for (int i = 0; i < steps.length; i++) {
             LinearLayout row = new LinearLayout(this);
@@ -257,6 +322,9 @@ public class PhoneSendActivity extends Activity {
             PhoneSendService.stop(this);
         } else {
             linkError = null;
+            // A tap means no dialog is up (a flag left over from a lost dialog must not block).
+            asking = false;
+            askingSound = false;
             startMirroring();
         }
         refresh();
@@ -273,7 +341,11 @@ public class PhoneSendActivity extends Activity {
 
         String msg;
         int col;
-        if (linkError != null && !active) {
+        if (askingSound && !active) {
+            msg = "To send the phone's sound to the TV, allow Office TV to record audio: only the sound of apps "
+                    + "playing on this phone is sent, never the microphone.";
+            col = UiKit.ACCENT;
+        } else if (linkError != null && !active) {
             msg = linkError;
             col = UiKit.BAD;
         } else if (s == PhoneSendService.State.STREAMING) {

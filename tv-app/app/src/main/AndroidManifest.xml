@@ -15,10 +15,17 @@
     <!-- Phone role: share the phone's screen to a TV (screen capture runs in a foreground service). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Phone role, Android 10+: sends the sound of apps playing on the phone to the TV (playback capture of
+         the screen-sharing session). The microphone is never used. -->
+    <uses-permission-sdk-23 android:name="android.permission.RECORD_AUDIO" />
+    <!-- Android 11+ in the background: the microphone foreground service type (targetSdk 34 needs this one). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <!-- RECORD_AUDIO would otherwise imply a microphone and hide the app from TVs that have none. -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:name=".OfficeTvApp"
@@ -89,7 +96,7 @@
         <service
             android:name=".PhoneSendService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+            android:foregroundServiceType="mediaProjection|microphone" />
 
         <service
             android:name=".ControlService"

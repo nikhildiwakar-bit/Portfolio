@@ -238,6 +238,13 @@ wait_otv() {
 # logged <regex>: true if an "OTV_TEST <regex>" line is in the log.
 logged() { grep -qE "OTV_TEST $1" "$LOGCAT_FILE" 2>/dev/null; }
 
+# log_lines: lines captured so far (a mark for log_from / otv_since).
+log_lines() { local n; n=$(wc -l < "$LOGCAT_FILE" 2>/dev/null | tr -d ' '); printf '%s\n' "${n:-0}"; }
+# log_from <mark>: the log lines captured after that mark.
+log_from() { tail -n "+$(( ${1:-0} + 1 ))" "$LOGCAT_FILE" 2>/dev/null; }
+# otv_since <mark> <regex>: text of the last "OTV_TEST <regex>..." line after the mark (without "OTV_TEST "), or nothing.
+otv_since() { log_from "$1" | grep -oE "OTV_TEST $2.*" | tail -n 1 | sed 's/^OTV_TEST //'; }
+
 # Pids of our app's main process (ps output differs: Android 8+ needs -A, older ps rejects it).
 app_pids() {
     S 'ps -A 2>/dev/null; ps 2>/dev/null' | awk -v p="$PKG" '$NF == p { print $2 }' | sort -u
@@ -340,6 +347,53 @@ api_cmd() {
     CMD_OK=$(jget "$HTTP_BODY" ok)
     CMD_MSG=$(jget "$HTTP_BODY" msg)
     [ "$code" = 200 ] || CMD_OK="http-$code"
+}
+
+# attach_api [seconds]: connects to the running app's test API (its last "OTV_TEST port=" line, else the
+# otv-test.env that smoke.sh saved); sets PORT TOKEN LPORT. True once GET /api/status answers.
+attach_api() {
+    if ! wait_otv "${1:-10}" && [ -f "$OUT/otv-test.env" ]; then
+        PORT=$(sed -n 's/^PORT=//p' "$OUT/otv-test.env")
+        TOKEN=$(sed -n 's/^TOKEN=//p' "$OUT/otv-test.env")
+    fi
+    [ -n "${PORT:-}" ] && [ -n "${TOKEN:-}" ] && forward "$PORT" && wait_until 10 server_up
+}
+
+# play_tone <ms>: the debug app plays a 440 Hz test tone (USAGE_MEDIA, RMS about 8500) for <ms> ms on the device;
+# 0 stops it. A new tone replaces the one playing. True if the app accepted it (the answer is in $HTTP_BODY).
+play_tone() {
+    TONE_HTTP=$(http POST "/api/tone?ms=$1" '{}')
+    [ "$TONE_HTTP" = 200 ] && [ "$(jget "$HTTP_BODY" ok)" = true ]
+}
+
+# ---------- media volume (STREAM_MUSIC = 3) ----------
+
+# media_volume: the media volume as "<index>/<max>" ("<index>/?" from dumpsys), or nothing if it cannot be read.
+# Android 11+ has "cmd media_session volume", Android 10 and older the "media" tool.
+media_volume() {
+    local c out v
+    for c in 'cmd media_session' media; do
+        out=$(S "$c volume --stream 3 --get")
+        printf '%s\n' "$out" >> "$OUT/volume.log"
+        v=$(printf '%s\n' "$out" | sed -nE 's/.*volume is ([0-9]+) in range \[[0-9]+\.\.([0-9]+)\].*/\1\/\2/p' | tail -n 1)
+        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+    done
+    # "- STREAM_MUSIC:" block of dumpsys audio: "Current: 2 (speaker): 5, ..." or "streamVolume:5".
+    v=$(S dumpsys audio | awk '/^- STREAM_MUSIC:/ { f = 1; next } f && /^- STREAM_/ { exit }
+        f && /streamVolume:/ { sub(/.*streamVolume:/, ""); print $1 + 0; exit }
+        f && /\(speaker\): [0-9]+/ { sub(/.*\(speaker\): /, ""); print $1 + 0; exit }')
+    [ -n "$v" ] && printf '%s/?\n' "$v"
+    return 0
+}
+
+# set_media_volume <index>: sets the media volume without showing the volume panel; true if it reads back.
+set_media_volume() {
+    local c
+    for c in 'cmd media_session' media; do
+        S "$c volume --stream 3 --set $1" >> "$OUT/volume.log"
+        [ "$(media_volume | cut -d/ -f1)" = "$1" ] && return 0
+    done
+    return 1
 }
 
 save_env() {

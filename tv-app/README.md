@@ -19,7 +19,11 @@ The browser's screen picker and its one click are required by every browser for 
 **Android phones (3.3+):** the TV's home screen also shows a QR code. On an Android phone on the same Wi-Fi,
 scan it with the camera, install Office TV once (the same `OfficeTV.apk`), open the link with Office TV and tap
 **Start now**. The phone screen appears on the TV with low delay, sent straight over the local network (no
-internet, no browser). Press **Back** on the remote or **Stop** on the phone to end it. iPhones are not supported.
+internet, no browser). On Android 10 and newer the phone's sound plays on the TV too (3.5+): the first time,
+allow Office TV to **record audio** when Android asks. It only takes the sound of apps playing on the phone, never
+the microphone. Some apps block capture (for example apps that forbid recording) and stay silent on the TV. On
+Android 5–9 the phone sends the picture only. Press **Back** on the remote or **Stop** on the phone to end it.
+iPhones are not supported.
 
 ## What you need
 
@@ -27,8 +31,8 @@ internet, no browser). Press **Back** on the remote or **Stop** on the phone to 
   current **Android System WebView** (version 72 or newer; the TV's home screen tells you if it needs an
   update). Tested on a Dahua interactive panel ("Droidlogic t982_ar301", Android 11).
 - **Laptop:** a laptop, Chromebook or MacBook with a current desktop browser.
-- **Phone (optional):** an Android phone (Android 5.0+) on the same Wi-Fi as the TV. The network must let
-  devices reach each other (TCP port 47300; guest Wi-Fi with client isolation blocks it).
+- **Phone (optional):** an Android phone (Android 5.0+; the sound needs Android 10+) on the same Wi-Fi as the
+  TV. The network must let devices reach each other (TCP port 47300; guest Wi-Fi with client isolation blocks it).
 - **Network:** both need internet. The video goes directly from the laptop to the TV, so it works best when
   both are on the same office network. The network must allow `ntfy.sh` (the free service that passes the
   first encrypted "hello" messages between the website and the TV).
@@ -87,7 +91,8 @@ Office TV starts by itself when the TV powers on or the app is updated, and keep
 | The phone says the QR code is out of date | The TV code was changed. Scan the QR code on the TV again. |
 | The phone says the TV is busy | Another phone is mirroring. Stop it there (or press Back on the remote), then try again. |
 | The TV shows "Show this phone's screen on a TV" instead of its code | Android describes this display like a phone. Tap **This device is the TV: show the TV code** at the bottom; the TV remembers it. |
-| No sound | Press OK on the TV remote once. Share a browser tab with "Share tab audio", or the whole screen with system audio (Windows / ChromeOS). |
+| No sound from the laptop | Press OK on the TV remote once. Share a browser tab with "Share tab audio", or the whole screen with system audio (Windows / ChromeOS). |
+| No sound from the phone | The phone needs Android 10 or newer, the TV needs Office TV 3.5 or newer, and Office TV on the phone needs the **record audio** permission (allow it when Android asks, or in the phone's Settings → Apps → Office TV → Permissions → **Microphone**; only the sound of apps playing on the phone is sent, never the microphone). Some apps block capture, for example apps that forbid recording. |
 
 ## Privacy and security
 
@@ -96,9 +101,12 @@ Office TV starts by itself when the TV powers on or the app is updated, and keep
 - The TV code travels only in URL fragments, which browsers never send to a server.
 - The app has no web server. Its only local-network listener is the phone mirroring port (47300): it
   accepts a phone only if it proves it knows the TV's 32-byte secret from the QR code (HMAC-SHA256 challenge),
-  shows one phone at a time, and only displays video; it cannot be told to open apps, links or files. The TV
-  proves the same secret back, so a phone never streams to the wrong device. The video on the local network is
-  not encrypted (like Miracast/Chromecast on a trusted network); use **New TV code** to replace the secret.
+  shows one phone at a time, and only shows its picture and plays its sound; it cannot be told to open apps,
+  links or files. The TV proves the same secret back, so a phone never streams to the wrong device. The video and
+  sound on the local network are not encrypted (like Miracast/Chromecast on a trusted network); use **New TV
+  code** to replace the secret.
+- On the phone, **record audio** is used only while mirroring, for the sound of apps playing on the phone
+  (Android's playback capture). The microphone is never opened, and nothing is saved.
 - The phone QR link keeps the TV details in the URL fragment, which the browser never sends to a server;
   `tv/phone.html` only hands it to the app.
 - The APK signing key (`app/officetv.keystore`) is in the repo so every build installs as an update over the
@@ -133,16 +141,27 @@ screen straight from the browser (the same WebRTC casting as a laptop) where the
 capture. Tap **Share this phone's screen**, then **Start now**. Browsers without screen capture fall back to the
 Office TV app.
 
+## Office TV 3.5 changes
+
+Phone mirroring with sound: on Android 10 and newer, the sound of the apps playing on the phone plays on the TV
+with the picture. It needs one extra permission, **record audio**, which Android asks for the first time; Office
+TV only takes the sound of apps playing on the phone, never the microphone. Some apps block capture (for example
+apps that forbid recording) and stay silent on the TV. On Android 5–9 phones mirroring stays video only. The
+sound travels as uncompressed 16-bit PCM, 48 kHz stereo, in 10 ms chunks on the same connection as the picture
+(about 1.5 Mbit/s, PROTOCOL.md section 10); the TV keeps at most about 150 ms of it waiting, so it stays in step
+with the picture. A TV with an older Office TV shows the picture without sound.
+
 ## For developers
 
 - `app/`: the Android app (Java, minSdk 21, targetSdk 33, one library: ZXing core for the QR code; flavors
   `full` and `lite`). The same APK is the TV receiver and the phone sender (`Device.isPhone`). Phone mirroring:
-  `mirror/MirrorProtocol` (pure Java), `PhoneServer`, `PhoneMirrorActivity` (TV), `PhoneSendActivity`,
-  `PhoneSendService` (phone), `Qr` (QR code and LAN address).
+  `mirror/MirrorProtocol` (pure Java), `PhoneServer`, `PhoneMirrorActivity`, `PhoneAudioPlayer` (TV),
+  `PhoneSendActivity`, `PhoneSendService`, `PhoneAudioCapture` (phone), `Qr` (QR code and LAN address).
   `MainActivity` (home screen), `CastActivity` (WebRTC receiver in a WebView), `Commands` (`ping`, `cast`),
   `RelayManager` + `relay/` (pure-Java ntfy client and crypto), `ControlService` (foreground service, Wi-Fi
   lock, keep-awake), `BootReceiver` + `ServiceJob` (start at boot / watchdog), `CrashLog`, `Tls`.
-  `src/debug/DebugHooks` adds test log lines and a loopback-only test API; `src/release` has no-op stubs.
+  `src/debug/DebugHooks` adds test log lines and a loopback-only test API (status, commands, a test tone);
+  `src/release` has no-op stubs.
 - Protocol: [`PROTOCOL.md`](PROTOCOL.md). The website (`../tv/`) implements the other side.
 - Build: Android SDK + JDK 17, `gradle assembleFullRelease assembleLiteRelease` (CI: `.github/workflows/tv-app.yml`
   publishes the `tv-app-latest` release).
@@ -151,7 +170,8 @@ Office TV app.
     rejects APIs missing on Android 5 → `COMPILE OK`.
   - `bash tests/jvm/run.sh`: relay client against a fake ntfy (https and http), test vectors, and the app's
     command contract (`tests/jvm/app/CommandsTest.java`), and the phone mirroring handshake, framing, CONFIG,
-    Annex-B, QR link and a TCP loopback session (`tests/jvm/mirror/MirrorProtocolTest.java`). Needs the org.json,
+    AUDIO_CONFIG and AUDIO, Annex-B, QR link and a TCP loopback session
+    (`tests/jvm/mirror/MirrorProtocolTest.java`). Needs the org.json,
     android-all and ZXing core jars (see the script header).
   - `node --test tests/node/` and `node --test tests/web/` test the website.
 - Emulator tests (`.github/workflows/tv-app-test.yml`, Android 5 to 14, phone and TV images, both flavors):
@@ -160,5 +180,7 @@ Office TV app.
   relay reaches CONNECTED, and a real encrypted `ping` + `cast start/stop` through ntfy.sh with
   `ci/relay-cast.mjs` (network problems and HTTP 429 are warnings). Screenshots are published as the
   `ci-screens` pre-release. On API 29, 30, 33 and 34 `ci/phone-smoke.sh` then mirrors the emulator to itself
-  over 127.0.0.1 (PROJECT_MEDIA granted with appops) and checks the handshake, that `PhoneMirrorActivity`
-  resumes and decodes frames, Back, and that an old QR code is refused.
+  over 127.0.0.1 (PROJECT_MEDIA granted with appops, RECORD_AUDIO with `pm grant`) and checks the handshake,
+  that `PhoneMirrorActivity` resumes and decodes frames, that the phone sends its sound and the TV plays it (a
+  440 Hz test tone from the debug test API must reach the TV's player with rms ≥ 300; a quiet emulator capture
+  is a warning), what the TV gets at phone media volume 0 (INFO), Back, and that an old QR code is refused.

@@ -3,6 +3,7 @@ package com.nikhil.officetv;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
+import android.media.AudioManager;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Build;
@@ -29,6 +30,7 @@ import java.nio.ByteBuffer;
  * Full-screen phone mirror: decodes the phone's H.264 stream with MediaCodec straight onto a SurfaceView.
  * Tuned for latency, not smoothness: every frame is queued as soon as it arrives and rendered as soon as it is
  * decoded (no presentation-time pacing); a backlog is dropped up to the next key frame (PhoneServer.Session).
+ * The phone's sound, if any, is played by the session (PhoneAudioPlayer); the remote's volume keys change it.
  */
 public class PhoneMirrorActivity extends Activity implements SurfaceHolder.Callback {
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -48,6 +50,7 @@ public class PhoneMirrorActivity extends Activity implements SurfaceHolder.Callb
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         kit = new UiKit(this);
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN);
         root = new FrameLayout(this);

@@ -1,6 +1,11 @@
 package com.nikhil.officetv;
 
 import android.content.Context;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioManager;
+import android.media.AudioTrack;
+import android.os.SystemClock;
 import android.util.Log;
 
 import org.json.JSONObject;
@@ -16,6 +21,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.SecureRandom;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Debug builds only (src/debug; release builds get the no-op version in src/release).
@@ -26,6 +32,8 @@ import java.util.Locale;
  *   OTV_TEST port=8080 token=&lt;hex&gt; code=&lt;pairing code&gt;
  *   GET  /api/status   (header X-Token)      status object + relay state + cast state
  *   POST /api/cmd      {"cmd":..,"args":{}}  runs a command exactly like one that came through the relay
+ *   POST /api/tone?ms=8000                   plays a 440 Hz test tone (USAGE_MEDIA) for that long (ms=0 stops
+ *                                            it), for the phone sound test (tv-app/ci/phone-smoke.sh)
  * </pre>
  */
 final class DebugHooks {
@@ -34,11 +42,17 @@ final class DebugHooks {
     private static final int LAST_PORT = 8090;
     private static final int MAX_HEAD = 16 * 1024;
     private static final int MAX_BODY = 64 * 1024;
+    private static final int TONE_RATE = 48000;
+    private static final int TONE_HZ = 440;
+    private static final int TONE_AMPLITUDE = 12000;
+    private static final int TONE_MAX_MS = 30000;
 
     private static ServerSocket server;
     private static String token;
     private static int port;
     private static volatile Context app;
+    /** Bumped by every tone request: a new tone ends the one playing. */
+    private static final AtomicInteger toneGen = new AtomicInteger();
 
     private DebugHooks() {}
 
@@ -108,6 +122,7 @@ final class DebugHooks {
             String[] parts = request.split(" ");
             String method = parts.length > 0 ? parts[0] : "";
             String path = parts.length > 1 ? parts[1] : "";
+            String route = path.indexOf('?') >= 0 ? path.substring(0, path.indexOf('?')) : path;
             int len = 0;
             String tok = null;
             int head = request.length();
@@ -140,10 +155,13 @@ final class DebugHooks {
             if (!token.equals(tok)) {
                 status = 401;
                 out = Actions.result(false, "Wrong or missing X-Token.");
-            } else if (method.equals("GET") && path.equals("/api/status")) {
+            } else if (method.equals("GET") && route.equals("/api/status")) {
                 status = 200;
                 out = status();
-            } else if (method.equals("POST") && path.equals("/api/cmd")) {
+            } else if (method.equals("POST") && route.equals("/api/tone")) {
+                status = 200;
+                out = tone(queryInt(path, "ms", 3000));
+            } else if (method.equals("POST") && route.equals("/api/cmd")) {
                 status = 200;
                 JSONObject req = new JSONObject(new String(body, 0, got, "UTF-8"));
                 JSONObject args = req.optJSONObject("args");
@@ -173,6 +191,100 @@ final class DebugHooks {
         s.put("canOpenFromBackground", Actions.canOpenFromBackground(app));
         s.put("inForeground", OfficeTvApp.inForeground());
         return s;
+    }
+
+    /** Starts a test tone on its own thread and answers at once (ms 0: stops the tone playing). */
+    private static JSONObject tone(int ms) throws Exception {
+        final int gen = toneGen.incrementAndGet();
+        if (ms <= 0) return Actions.result(true, "Test tone stopped.");
+        final int len = Math.max(100, Math.min(ms, TONE_MAX_MS));
+        Thread t = new Thread(() -> playTone(gen, len), "otv-debug-tone");
+        t.setDaemon(true);
+        t.start();
+        JSONObject o = Actions.result(true, "Playing a " + TONE_HZ + " Hz test tone for " + len + " ms.");
+        o.put("ms", len);
+        return o;
+    }
+
+    /**
+     * 440 Hz sine, stereo 48 kHz 16-bit, as USAGE_MEDIA with the default capture policy, so the phone role's
+     * playback capture takes it like the sound of any other app (the TV role's own player opts out of capture).
+     */
+    private static void playTone(int gen, int ms) {
+        AudioTrack track = null;
+        try {
+            int chunk = TONE_RATE / 50; // frames per write (20 ms)
+            int min = AudioTrack.getMinBufferSize(TONE_RATE, AudioFormat.CHANNEL_OUT_STEREO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+            AudioAttributes attrs = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build();
+            AudioFormat format = new AudioFormat.Builder()
+                    .setSampleRate(TONE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .build();
+            track = new AudioTrack(attrs, format, Math.max(min, chunk * 4 * 4), AudioTrack.MODE_STREAM,
+                    AudioManager.AUDIO_SESSION_ID_GENERATE);
+            if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+                throw new IllegalStateException("AudioTrack not ready");
+            }
+            track.play();
+            event("tone=start hz=" + TONE_HZ + " ms=" + ms);
+            long total = (long) TONE_RATE * ms / 1000;
+            int fade = TONE_RATE / 200; // 5 ms fade in and out, so the tone starts and ends without a click
+            double step = 2 * Math.PI * TONE_HZ / TONE_RATE;
+            byte[] pcm = new byte[chunk * 4];
+            long i = 0;
+            while (i < total && toneGen.get() == gen) {
+                int n = (int) Math.min(chunk, total - i);
+                for (int k = 0; k < n; k++, i++) {
+                    double g = Math.min(1.0, Math.min(i, total - 1 - i) / (double) fade);
+                    int v = (int) Math.round(TONE_AMPLITUDE * g * Math.sin(step * i));
+                    pcm[4 * k] = pcm[4 * k + 2] = (byte) v;
+                    pcm[4 * k + 1] = pcm[4 * k + 3] = (byte) (v >> 8);
+                }
+                for (int off = 0; off < 4 * n; ) {
+                    int w = track.write(pcm, off, 4 * n - off);
+                    if (w <= 0) throw new IllegalStateException("AudioTrack.write " + w);
+                    off += w;
+                }
+            }
+            // Let the buffered end play out before the track is released.
+            long end = SystemClock.elapsedRealtime() + 1000;
+            while (toneGen.get() == gen && track.getPlaybackHeadPosition() < total
+                    && SystemClock.elapsedRealtime() < end) {
+                Thread.sleep(20);
+            }
+            event(toneGen.get() == gen ? "tone=done ms=" + ms : "tone=replaced");
+        } catch (Throwable e) {
+            event("tone=error " + e);
+        } finally {
+            if (track != null) {
+                try {
+                    track.release();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    /** An integer query parameter of a request path ("/api/tone?ms=8000"), or def. */
+    private static int queryInt(String path, String name, int def) {
+        int q = path.indexOf('?');
+        if (q < 0) return def;
+        for (String kv : path.substring(q + 1).split("&")) {
+            int eq = kv.indexOf('=');
+            if (eq > 0 && kv.substring(0, eq).equals(name)) {
+                try {
+                    return Integer.parseInt(kv.substring(eq + 1));
+                } catch (NumberFormatException e) {
+                    return def;
+                }
+            }
+        }
+        return def;
     }
 
     private static void respond(OutputStream os, int status, JSONObject body) throws IOException {

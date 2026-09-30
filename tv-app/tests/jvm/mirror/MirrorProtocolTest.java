@@ -259,7 +259,11 @@ public final class MirrorProtocolTest {
         byte[] loud = new byte[4];
         loud[0] = (byte) 0xFF; loud[1] = 0x7F; loud[2] = 0x01; loud[3] = (byte) 0x80; // +32767, -32767
         ok(Math.abs(MirrorProtocol.pcmRms(loud, 0, 4) - 32767) < 0.01, "full scale RMS 32767");
-        ok(MirrorProtocol.T_AUDIO_CONFIG == 6 && MirrorProtocol.T_AUDIO == 7, "sound message types 6 and 7");
+        ok(MirrorProtocol.T_AUDIO_CONFIG == 6 && MirrorProtocol.T_AUDIO == 7 && MirrorProtocol.T_CAPS == 8,
+                "sound message types 6, 7 and CAPS 8");
+        ok(MirrorProtocol.capsFlags(MirrorProtocol.capsPayload(MirrorProtocol.CAP_AUDIO)) == MirrorProtocol.CAP_AUDIO,
+                "CAPS round trip");
+        ok(MirrorProtocol.capsFlags(new byte[0]) == 0 && MirrorProtocol.capsFlags(null) == 0, "empty CAPS: no sound");
     }
 
     static void loopback() throws Exception {

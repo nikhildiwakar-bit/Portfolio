@@ -23,7 +23,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * TV side of phone mirroring (PROTOCOL.md section 10): a TCP server on port 47300 (47301-47309 if taken) that
- * accepts one authenticated phone at a time and hands its H.264 stream to PhoneMirrorActivity.
+ * accepts one authenticated phone at a time and hands its H.264 stream to PhoneMirrorActivity (and its sound, if the
+ * phone sends any, to PhoneAudioPlayer).
  * Runs inside ControlService on background threads and never throws into the caller.
  */
 final class PhoneServer {
@@ -204,7 +205,10 @@ final class PhoneServer {
 
     // ---------- one phone session ----------
 
-    /** A connected, authenticated phone. Frames wait here (few, newest wins) until the decoder takes them. */
+    /**
+     * A connected, authenticated phone. Frames wait here (few, newest wins) until the decoder takes them; sound goes
+     * straight to the session's PhoneAudioPlayer (its own small queue and thread).
+     */
     static final class Session {
         /** More frames than this waiting means the decoder is behind: drop until the next key frame. */
         private static final int MAX_QUEUE = 6;
@@ -216,6 +220,8 @@ final class PhoneServer {
         private int configSeq;
         private boolean waitKey;
         private long lastKeyReq;
+        /** Plays the phone's sound; replaced on every AUDIO_CONFIG, released in end(). Written under this. */
+        private volatile PhoneAudioPlayer audio;
         volatile boolean ended;
         volatile boolean attached;
         private volatile Runnable onEnd;
@@ -231,6 +237,8 @@ final class PhoneServer {
         }
 
         void run() {
+            // This TV plays sound: phones (3.5+) send it only after this.
+            send(MirrorProtocol.T_CAPS, MirrorProtocol.capsPayload(MirrorProtocol.CAP_AUDIO));
             openScreen(this);
             Thread pinger = new Thread(this::pingLoop, "otv-phone-ping");
             pinger.setDaemon(true);
@@ -246,6 +254,12 @@ final class PhoneServer {
                             break;
                         case MirrorProtocol.T_FRAME:
                             offer(MirrorProtocol.Frame.decode(m.payload, SystemClock.elapsedRealtime()));
+                            break;
+                        case MirrorProtocol.T_AUDIO_CONFIG:
+                            onAudioConfig(m.payload);
+                            break;
+                        case MirrorProtocol.T_AUDIO:
+                            onAudio(m.payload);
                             break;
                         case MirrorProtocol.T_BYE:
                             reason = "bye";
@@ -281,6 +295,33 @@ final class PhoneServer {
             }
             DebugHooks.event("phone=config " + c.width + "x" + c.height + " rotation=" + c.rotation);
             if (cb != null) cb.run();
+        }
+
+        /** New sound format: a new player replaces the old one. A bad AUDIO_CONFIG only turns the sound off. */
+        private void onAudioConfig(byte[] payload) {
+            PhoneAudioPlayer next = null, old;
+            try {
+                next = PhoneAudioPlayer.start(app, MirrorProtocol.AudioConfig.decode(payload));
+            } catch (IOException | RuntimeException e) {
+                CrashLog.note(app, "Phone sound off: " + e);
+            }
+            boolean late;
+            synchronized (this) {
+                old = audio;
+                late = ended; // end() already ran: it cannot see this player any more
+                audio = late ? null : next;
+            }
+            if (old != null) old.release();
+            if (late && next != null) next.release();
+        }
+
+        /** One chunk of sound. Not a video frame: the frame counters stay as they are. */
+        private void onAudio(byte[] payload) {
+            PhoneAudioPlayer a = audio;
+            // Sound starts with the mirror screen, like the picture.
+            if (a == null || !attached) return;
+            byte[] pcm = MirrorProtocol.audioData(payload);
+            if (pcm != null) a.offer(pcm);
         }
 
         private void offer(MirrorProtocol.Frame f) {
@@ -382,13 +423,20 @@ final class PhoneServer {
         /** Ends the session: tells the phone why (reason null = the connection is already gone). */
         void end(String reason, boolean error) {
             Runnable cb;
+            PhoneAudioPlayer sound;
+            boolean done;
             synchronized (this) {
                 boolean was = ended;
                 ended = true;
                 notifyAll();
-                if (was && reason == null && socket.isClosed()) return;
+                sound = audio;
+                audio = null;
+                done = was && reason == null && socket.isClosed();
                 cb = onEnd;
             }
+            // Stops the sound at once (from any thread; it waits at most about 300 ms for the player thread).
+            if (sound != null) sound.release();
+            if (done) return;
             final byte[] bye = reason != null && !socket.isClosed() ? MirrorProtocol.byePayload(error, reason) : null;
             Runnable close = () -> {
                 if (bye != null) send(MirrorProtocol.T_BYE, bye);

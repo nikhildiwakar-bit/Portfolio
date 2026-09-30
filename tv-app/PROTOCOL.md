@@ -228,15 +228,21 @@ the connection was up.
   `OFFLINE`, `RATE_LIMITED`, `STOPPED`), `OTV_TEST cast=open|page-loaded|message|closed session=<s> …`
   and `OTV_TEST a11y=connected`; for phone mirroring `OTV_TEST phonekey=<secret>`, `phone=listening port=<p>`,
   `phone=connected|config|screen opened|decoding …|disconnected …|rejected reason=auth|busy` (TV role) and
-  `sender=CONNECTING|STREAMING|IDLE|ERROR msg=…`, `sender=frames n=<n>` (phone role).
+  `sender=CONNECTING|STREAMING|IDLE|ERROR msg=…`, `sender=frames n=<n>` (phone role). Phone sound (3.5+):
+  `phone=audio playing rate=<hz> ch=<n>` once when the TV starts playing, then about every 5 s
+  `phone=audio chunks=<n> rms=<average RMS of the last 5 s> dropped=<n> underruns=<n>` (TV role), and
+  `sender=audio on rate=<hz> ch=<n>` or `sender=audio off reason=<api|permission|error …>` (phone role).
 - A JSON API on **127.0.0.1 only** (port 8080–8090; reach it with `adb forward`), header `X-Token: <t>`:
   `GET /api/status` (status object + `code`, `relay`, `relayDetail`, `castSession`,
-  `canOpenFromBackground`, `inForeground`) and `POST /api/cmd {"cmd":…,"args":{…}}`, which runs a command
-  exactly like one that came through the relay.
+  `canOpenFromBackground`, `inForeground`), `POST /api/cmd {"cmd":…,"args":{…}}`, which runs a command
+  exactly like one that came through the relay, and `POST /api/tone?ms=<n>`, which plays a 440 Hz test tone
+  (stereo 48 kHz 16-bit, amplitude 12000, `USAGE_MEDIA`, capture allowed) for up to 30 s on its own thread
+  (`ms=0` stops it; a new tone replaces the one playing) and logs `tone=start|done|replaced|error`.
 
 `tv-app/ci/smoke.sh` uses both on emulators, and `tv-app/ci/relay-cast.mjs` then repeats `ping` and
 `cast start/stop` through the real ntfy.sh with the website's own `tv/otv.js`. `tv-app/ci/phone-smoke.sh`
-mirrors the emulator to itself over 127.0.0.1 (the app is sender and receiver at once).
+mirrors the emulator to itself over 127.0.0.1 (the app is sender and receiver at once) and checks the sound with
+the test tone.
 
 ## 10. Phone mirroring (3.3+, local network, no relay)
 
@@ -272,6 +278,10 @@ handshake and at most 4 handshakes at a time, and accepts one phone at a time.
 | 3 | PING | both | empty. The TV sends one every 2 s; the phone when it has sent nothing for 1.5 s. Either side gives up after 12–15 s of silence. |
 | 4 | BYE | both | empty, or kind u8 (0 = normal end, 1 = error) · reason (UTF-8) shown on the other side |
 | 5 | KEYREQ | TV → phone | empty: send a key frame now (decoder (re)started, or frames were dropped) |
+| 6 | AUDIO_CONFIG | phone → TV | sampleRate u32 · channels u8 (1, 2) · encoding u8 (1 = PCM16). Sound follows: sent before the first AUDIO message (3.5+). A new one replaces the format; a bad one only turns the sound off. |
+| 7 | AUDIO | phone → TV | pts i64 (µs) · PCM 16-bit little-endian, channels interleaved (3.5+) |
+
+A receiver ignores message types it does not know, so older TVs (3.3, 3.4) simply show the video without sound.
 
 **Latency rules.** Phone: hardware H.264 encoder with Surface input, long side ≤ 1920 (aspect kept, even or
 16-aligned sides as the codec requires), ~8 Mbit/s (scaled down for smaller sizes), 60 fps (30 on weak devices),
@@ -281,3 +291,25 @@ frames waiting; beyond that it drops non-key frames and requests a sync frame. T
 SurfaceView with `low-latency` 1 (API 30+), `priority` 0 and `operating-rate` 120 (API 23+) and common vendor
 low-latency keys; each frame is queued on arrival and rendered as soon as it is decoded (no pts pacing); more
 than 6 frames waiting are dropped up to the next key frame (and KEYREQ is sent).
+
+**Sound (3.5+).** The sound of the apps playing on the phone plays on the TV.
+
+- **Format:** uncompressed PCM, 16-bit, 48,000 Hz stereo (44,100 Hz if the phone cannot capture at 48 kHz), one
+  AUDIO message per 10 ms (1,920 bytes of PCM at 48 kHz stereo). That is about 1.5 Mbit/s, small next to the
+  video on a local network, with no encoder or decoder delay and no codec to support on old TVs. `pts` is the
+  phone's capture time; the TV plays the chunks in arrival order and does not pace them by pts.
+- **Phone:** Android 10+ only (API 29). `AudioPlaybackCaptureConfiguration` from the screen-sharing session's
+  MediaProjection, matching `USAGE_MEDIA`, `USAGE_GAME` and `USAGE_UNKNOWN`, so calls, notifications and alarms
+  stay on the phone. Needs the `RECORD_AUDIO` runtime permission (Android's dialog says "record audio"); the app
+  only takes the sound of apps playing on the phone and never opens the microphone. Android itself leaves out
+  apps that forbid capture (`android:allowAudioPlaybackCapture="false"`, a capture policy other than
+  `ALLOW_CAPTURE_BY_ALL`, or apps built for Android 9 or older that do not opt in). Below Android 10, without the
+  permission, or on any capture error the phone sends no sound and the video goes on.
+- **TV:** `PhoneAudioPlayer`, with its own thread and a small queue, plays an `AudioTrack` with `USAGE_MEDIA` /
+  `CONTENT_TYPE_MOVIE`. The socket reader only queues (it never blocks on sound); the blocking
+  `AudioTrack.write` calls run on the player thread. Sound starts with the mirror screen. Tuned for latency like
+  the video: playback starts once about 30 ms is waiting; more than about 150 ms waiting means the TV is behind,
+  so the oldest chunks are dropped down to about 60 ms. A TV that cannot play the sound shows the video without it.
+- **Capture policy:** on Android 10+ the TV's `AudioTrack` uses
+  `setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE)`, so the TV's own output is never captured
+  again (on a CI emulator the phone and the TV are the same device, which would otherwise echo).

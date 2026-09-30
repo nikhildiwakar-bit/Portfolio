@@ -33,7 +33,9 @@ import javax.crypto.spec.SecretKeySpec;
  *   KEYREQ  TV -> phone  empty (send a sync frame as soon as possible)
  *   AUDIO_CONFIG phone -> TV  sampleRate u32 | channels u8 (1, 2) | encoding u8 (AUDIO_PCM16)   (sound follows)
  *   AUDIO   phone -> TV  pts i64 (microseconds) | PCM 16-bit little-endian, channels interleaved
- * A receiver ignores message types it does not know, so older TVs simply show the video without sound.
+ *   CAPS    TV -> phone  flags u8 (CAP_AUDIO): sent right after the handshake by TVs that can play sound (3.5+)
+ * A receiver ignores message types it does not know, so older TVs simply show the video without sound; a phone
+ * sends sound only to a TV that announced CAP_AUDIO.
  * </pre>
  */
 public final class MirrorProtocol {
@@ -57,6 +59,10 @@ public final class MirrorProtocol {
     public static final int T_KEYREQ = 5;
     public static final int T_AUDIO_CONFIG = 6;
     public static final int T_AUDIO = 7;
+    public static final int T_CAPS = 8;
+
+    /** CAPS flag: this TV plays AUDIO. */
+    public static final int CAP_AUDIO = 1;
 
     public static final int AUDIO_PCM16 = 1;
     public static final int AUDIO_HEADER_LEN = 8;
@@ -346,6 +352,16 @@ public final class MirrorProtocol {
         public int bytesFor(int ms) {
             return (int) ((long) sampleRate * ms / 1000) * frameBytes();
         }
+    }
+
+    /** CAPS payload of a TV with the given flags. */
+    public static byte[] capsPayload(int flags) {
+        return new byte[] {(byte) flags};
+    }
+
+    /** Flags of a CAPS payload (0 if empty). */
+    public static int capsFlags(byte[] p) {
+        return p == null || p.length == 0 ? 0 : p[0] & 0xFF;
     }
 
     /** Writes AUDIO in one write call: pts, then PCM data. */

@@ -144,8 +144,9 @@ for gone in ViewerActivity ScreenCaptureActivity FilesProvider; do
     if printf '%s\n' "$pkgdump" | grep -q "$gone"; then fail "removed component still in the APK: $gone"; fi
 done
 perms=$(printf '%s\n' "$pkgdump" | sed -n '/requested permissions:/,/install permissions:/p')
-# POST_NOTIFICATIONS and FOREGROUND_SERVICE_MEDIA_PROJECTION are for the phone side (mirroring notification).
-for p in READ_EXTERNAL_STORAGE ACCESS_WIFI_STATE QUERY_ALL_PACKAGES CAMERA RECORD_AUDIO; do
+# POST_NOTIFICATIONS and FOREGROUND_SERVICE_MEDIA_PROJECTION are for the phone side (mirroring notification);
+# RECORD_AUDIO is for the phone's sound (Android 10+ playback capture of other apps, never the microphone).
+for p in READ_EXTERNAL_STORAGE ACCESS_WIFI_STATE QUERY_ALL_PACKAGES CAMERA; do
     if printf '%s\n' "$perms" | grep -q "android.permission.$p"; then fail "unexpected permission requested: $p"; fi
 done
 info "requested permissions: $(printf '%s\n' "$perms" | grep -oE 'android\.permission\.[A-Z_]+' | sed 's/android.permission.//' | sort -u | tr '\n' ' ')"
