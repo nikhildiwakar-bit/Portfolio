@@ -126,6 +126,13 @@ TV** button as a fallback. Laptops now send the picture at the TV's own screen s
 instead of 2560 x 1440): it looks the same on the TV and is much lighter for its decoder, which lowers the delay
 on slow TV chips.
 
+## Office TV 3.4 changes
+
+Phones without the app: the TV's QR code now also carries the TV code, so `tv/phone.html` can share the phone's
+screen straight from the browser (the same WebRTC casting as a laptop) where the phone's browser supports screen
+capture. Tap **Share this phone's screen**, then **Start now**. Browsers without screen capture fall back to the
+Office TV app.
+
 ## For developers
 
 - `app/`: the Android app (Java, minSdk 21, targetSdk 33, one library: ZXing core for the QR code; flavors

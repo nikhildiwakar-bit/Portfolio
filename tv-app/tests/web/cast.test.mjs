@@ -311,3 +311,25 @@ test('receiver page without parameters explains itself', async () => {
     assert.match(await text(page, '#statusSub'), /open nikhildiwakar-bit\.github\.io\/Portfolio\/tv on a laptop/);
     await page.done();
 });
+
+test('phone: the TV\'s QR opens the phone page; one tap, the phone allows capture, its screen plays on the TV (no app)', { skip, timeout: 90000 }, async () => {
+    const phone = await open({ viewport: { width: 390, height: 800 }, mobile: true, init: [RECORD_DISPLAY] });
+    const rx = receiverFor(E.tvC);
+    const key = 'A'.repeat(43);
+    await phone.goto(E.web.url + '/tv/phone.html#h=192.168.1.20&p=47300&k=' + key + '&n=Board%20Room&c=' + CODE_C);
+    assert.ok(await phone.isVisible('#web'), 'browser sharing offered');
+    assert.ok(await phone.isHidden('#open'), 'the app is not opened by itself');
+    assert.equal(await phone.evaluate(() => location.hash), '', 'TV details removed from the address bar');
+    assert.match(await text(phone, '#web h1'), /Board Room/);
+    await phone.click('#webBtn');
+    assert.equal((await phone.evaluate(() => window.__gdm.calls)).length, 1);
+    await until(async () => /showing on Board Room/.test(await text(phone, '#webStatus')), 30000, 'phone says it is sharing');
+    const receiver = await rx.wait(1);
+    await receiverPlaying(receiver);
+    assert.equal(await text(phone, '#webBtn'), 'Stop sharing');
+    await assertLayout(phone, 'phone page 390');
+    await phone.screenshot({ path: join(SHOTS, 'phone-web-sharing.png'), fullPage: true });
+    await phone.click('#webBtn');
+    await until(async () => /^Sharing stopped/.test(await text(phone, '#webStatus')), 10000, 'stopped');
+    await receiverClosed(receiver);
+});

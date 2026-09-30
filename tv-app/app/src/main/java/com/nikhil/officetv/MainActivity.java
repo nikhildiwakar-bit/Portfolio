@@ -320,7 +320,7 @@ public class MainActivity extends Activity {
         qlp.setMargins(0, 0, ui.dp(18), 0);
         row.addView(phoneQr, qlp);
         LinearLayout texts = vbox();
-        texts.addView(ui.text("On an Android phone: scan with the camera, install Office TV once, then tap Start now.",
+        texts.addView(ui.text("On a phone: scan with the camera, tap Share, then Start now.",
                 15, UiKit.FG, false), fill(0, 0, 0, ui.dp(8)));
         phoneAddr = ui.text("", 13, UiKit.MUTED, false);
         texts.addView(phoneAddr, fill(0, 0, 0, 0));
@@ -341,7 +341,7 @@ public class MainActivity extends Activity {
                     : "Getting ready…");
             return;
         }
-        String link = Qr.phoneLink(ip, port, Prefs.phoneSecret(this), Prefs.tvName(this));
+        String link = Qr.phoneLink(ip, port, Prefs.phoneSecret(this), Prefs.tvName(this), Prefs.pairCode(this));
         if (!link.equals(phoneLinkShown)) {
             android.graphics.Bitmap b = Qr.bitmap(link);
             if (b != null) {

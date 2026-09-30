@@ -6,8 +6,8 @@
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
-<meta name="description" content="Show your Android phone's screen on the office TV with the Office TV app.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src https://ntfy.sh; base-uri 'none'; form-action 'none'">
+<meta name="description" content="Show your phone's screen on the office TV: scan the QR code on the TV and allow screen sharing.">
 <title>Office TV · Share your phone screen</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230e7c74'/%3E%3Crect x='6.5' y='8.5' width='19' height='12.5' rx='2.5' fill='none' stroke='white' stroke-width='2.2'/%3E%3Cpath d='M12 25h8' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
@@ -49,6 +49,11 @@ ol li::before { content: counter(s); position: absolute; left: 0; top: 0; width:
 .tv { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 small { color: var(--muted); font-size: 13px; }
 a { color: var(--accent); }
+.btn:disabled { opacity: .7; cursor: default; }
+.status { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); color: var(--text); font-size: 15px; }
+.status[data-kind="ok"] { background: var(--accent-soft); }
+.status[data-kind="bad"] { background: #fdecec; color: #8a1c1c; }
+@media (prefers-color-scheme: dark) { .status[data-kind="bad"] { background: #3a1616; color: #ffc9c9; } }
 </style>
 </head>
 <body>
@@ -58,10 +63,22 @@ a { color: var(--accent); }
     <div><b>Office TV</b><span>Share your phone screen on the TV</span></div>
   </header>
 
+  <section class="card" id="web" hidden>
+    <h1>Show this phone on <span class="tvName">the TV</span></h1>
+    <p>Tap the button, then choose <b>Start now</b> when the phone asks. No app needed.</p>
+    <button class="btn" id="webBtn" type="button">Share this phone’s screen</button>
+    <p class="status" id="webStatus" role="status" aria-live="polite" hidden></p>
+    <div id="appAltRow" hidden>
+      <a class="btn secondary" id="appAlt" href="#">Use the Office TV app instead</a>
+      <p style="margin:8px 0 0"><small>Only if the app is installed on this phone: a little less delay on the same Wi-Fi.</small></p>
+    </div>
+  </section>
+
   <section class="card" id="open" hidden>
     <h1>Opening Office TV…</h1>
-    <p>Show this phone's screen on <span class="tv" id="tvName">the TV</span>. If Android asks, choose Office TV, then tap <b>Start now</b>.</p>
+    <p>Show this phone's screen on <span class="tv tvName">the TV</span>. If Android asks, choose Office TV, then tap <b>Start now</b>.</p>
     <a class="btn" id="openBtn" href="#">Open Office TV</a>
+    <p id="noWeb" hidden style="margin:12px 0 0"><small>This phone's browser cannot share its screen by itself, so the Office TV app is needed once.</small></p>
   </section>
 
   <section class="card" id="install" hidden>
@@ -91,6 +108,6 @@ a { color: var(--accent); }
 
   <p id="bad" hidden><small>This QR code is incomplete. Scan the code on the TV again.</small></p>
 </main>
-<script src="phone.js?v=1"></script>
+<script type="module" src="phone.js?v=2"></script>
 </body>
 </html>

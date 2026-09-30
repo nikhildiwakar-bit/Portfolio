@@ -24,9 +24,11 @@ final class Qr {
 
     private Qr() {}
 
-    /** Link in the QR code: PHONE_PAGE#h=IP&p=PORT&k=SECRET&n=NAME (the fragment never reaches a server). */
-    static String phoneLink(String ip, int port, byte[] secret, String name) {
-        return PHONE_PAGE + "#" + new com.nikhil.officetv.mirror.MirrorProtocol.Link(ip, port, secret, name).query();
+    /** Link in the QR code: PHONE_PAGE#h=IP&p=PORT&k=SECRET&n=NAME&c=CODE (the fragment never reaches a server). */
+    static String phoneLink(String ip, int port, byte[] secret, String name, String code) {
+        // c = the TV code: lets the phone's browser share its screen without the app (same as a laptop).
+        return PHONE_PAGE + "#" + new com.nikhil.officetv.mirror.MirrorProtocol.Link(ip, port, secret, name).query()
+                + "&c=" + code;
     }
 
     /** Black-on-white QR code, one pixel per module plus a 2-module quiet zone (scale it without filtering). */
