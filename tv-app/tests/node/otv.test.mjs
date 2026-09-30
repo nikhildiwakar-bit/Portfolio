@@ -57,6 +57,22 @@ test('deriveTopic and key bytes', async () => {
     assert.deepEqual([...key.usages].sort(), ['decrypt', 'encrypt']);
 });
 
+test('4-digit codes (3.6+): v2 topic and key, displayed as is, never the v1 topic', async () => {
+    const S = V.short;
+    assert.equal(otv.normalizeCode(S.code), S.code);
+    assert.equal(otv.isShortCode(S.code), true);
+    assert.equal(otv.isShortCode(V.code), false);
+    assert.equal(otv.displayCode(' ' + S.code + ' '), S.displayCode);
+    assert.equal(await otv.deriveTopic(S.code), S.topic);
+    assert.equal(S.topic.length, 36);
+    assert.ok(S.topic.startsWith('otv2'));
+    assert.equal(hex(await otv.deriveKeyBytes(S.code)), S.keyHex);
+    const key = await otv.deriveKey(S.code);
+    assert.equal(await otv.sealText(key, S.topic, S.message.plaintext, fromHex(S.message.ivHex)), S.message.envelope);
+    assert.deepEqual(await otv.open(key, S.topic, S.message.envelope), JSON.parse(S.message.plaintext));
+    assert.equal(await otv.open(await otv.deriveKey('4822'), S.topic, S.message.envelope), null, 'another code cannot read it');
+});
+
 test('sealText with vector IV reproduces the envelope byte for byte', async () => {
     const key = await otv.deriveKey(V.code);
     const env = await otv.sealText(key, V.topic, V.message.plaintext, fromHex(V.message.ivHex));

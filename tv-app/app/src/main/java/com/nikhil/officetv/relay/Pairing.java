@@ -13,6 +13,8 @@ public final class Pairing {
     public static final String CONTROLLER_URL = "https://nikhildiwakar-bit.github.io/Portfolio/tv/";
     public static final String DEFAULT_RELAY = "https://ntfy.sh";
     public static final int LENGTH = 10;
+    /** Office TV 3.6+: a 4-digit code, new every time the app opens (PROTOCOL.md section 1). */
+    public static final int SHORT_LENGTH = 4;
 
     static final Charset UTF8 = Charset.forName("UTF-8");
     private static final char[] HEX = "0123456789abcdef".toCharArray();
@@ -27,8 +29,24 @@ public final class Pairing {
         return new String(c);
     }
 
+    /** A new random 4-digit code ("0000".."9999"). */
+    public static String newShortCode(SecureRandom r) {
+        if (r == null) r = new SecureRandom();
+        char[] c = new char[SHORT_LENGTH];
+        for (int i = 0; i < SHORT_LENGTH; i++) c[i] = (char) ('0' + r.nextInt(10));
+        return new String(c);
+    }
+
+    /** True for a 4-digit code. */
+    public static boolean isShort(String code) {
+        if (code == null || code.length() != SHORT_LENGTH) return false;
+        for (int i = 0; i < SHORT_LENGTH; i++) if (code.charAt(i) < '0' || code.charAt(i) > '9') return false;
+        return true;
+    }
+
     /**
-     * Uppercase, drop whitespace and '-', map O->0 and I/L->1. Returns the 10-char code or null if invalid.
+     * Uppercase, drop whitespace and '-', map O->0 and I/L->1. Returns the 4-digit or the 10-char code, or null if
+     * invalid.
      */
     public static String normalize(String input) {
         if (input == null) return null;
@@ -43,7 +61,9 @@ public final class Pairing {
             b.append(ch);
             if (b.length() > LENGTH) return null;
         }
-        return b.length() == LENGTH ? b.toString() : null;
+        String s = b.toString();
+        if (isShort(s)) return s;
+        return s.length() == LENGTH ? s : null;
     }
 
     /** Whitespace and dashes users may type or paste between the groups (same set as the controller page). */
@@ -52,21 +72,27 @@ public final class Pairing {
                 || Character.isWhitespace(ch) || Character.isSpaceChar(ch);
     }
 
-    /** "7K3M9QX2TD" -> "7K3M9-QX2TD"; "" for invalid input (same as the controller page). */
+    /** "7K3M9QX2TD" -> "7K3M9-QX2TD", "4821" -> "4821"; "" for invalid input (same as the controller page). */
     public static String display(String code) {
         String n = normalize(code);
-        return n == null ? "" : n.substring(0, 5) + "-" + n.substring(5);
+        if (n == null) return "";
+        return isShort(n) ? n : n.substring(0, 5) + "-" + n.substring(5);
     }
 
-    /** "otv" + first 16 bytes of SHA-256("officetv/topic/v1:" + code) as lowercase hex (35 chars). */
+    /**
+     * 10-char code: "otv" + first 16 bytes of SHA-256("officetv/topic/v1:" + code) as lowercase hex (35 chars).
+     * 4-digit code: "otv2" + first 16 bytes of SHA-256("officetv/topic/v2:" + code) (36 chars).
+     */
     public static String topic(String code) {
-        byte[] h = sha256("officetv/topic/v1:" + canonical(code));
-        return "otv" + hex(h, 16);
+        String c = canonical(code);
+        if (isShort(c)) return "otv2" + hex(sha256("officetv/topic/v2:" + c), 16);
+        return "otv" + hex(sha256("officetv/topic/v1:" + c), 16);
     }
 
-    /** 32-byte AES-256-GCM key: SHA-256("officetv/key/v1:" + code). */
+    /** 32-byte AES-256-GCM key: SHA-256("officetv/key/v1:" + code), or ".../key/v2:" for a 4-digit code. */
     public static byte[] key(String code) {
-        return sha256("officetv/key/v1:" + canonical(code));
+        String c = canonical(code);
+        return sha256((isShort(c) ? "officetv/key/v2:" : "officetv/key/v1:") + c);
     }
 
     /**

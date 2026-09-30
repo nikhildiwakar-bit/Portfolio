@@ -48,6 +48,22 @@ public final class VectorsTest {
         T.eq(v.getString("topic"), Pairing.topic(code), "topic");
         T.eq(v.getString("keyHex"), T.hex(Pairing.key(code)), "key hex");
 
+        // Office TV 3.6+: 4-digit codes, v2 derivation.
+        JSONObject sv = v.getJSONObject("short");
+        String sc = sv.getString("code");
+        T.ok(Pairing.isShort(sc) && !Pairing.isShort(code), "isShort");
+        T.eq(sc, Pairing.normalize(" " + sc.substring(0, 2) + "-" + sc.substring(2) + " "), "normalize 4-digit");
+        T.eq(sv.getString("displayCode"), Pairing.display(sc), "display 4-digit");
+        T.eq(sv.getString("topic"), Pairing.topic(sc), "topic v2");
+        T.eq(sv.getString("keyHex"), T.hex(Pairing.key(sc)), "key v2");
+        RelayCrypto src = new RelayCrypto(sc);
+        JSONObject sm = sv.getJSONObject("message");
+        T.eq(sm.getString("envelope"), src.sealWithIv(sm.getString("plaintext"), T.unhex(sm.getString("ivHex"))),
+                "4-digit sealWithIv == vector envelope");
+        T.eq(sm.getString("plaintext"), src.open(sm.getString("envelope")), "4-digit open(vector envelope)");
+        String nc = Pairing.newShortCode(new java.security.SecureRandom());
+        T.ok(Pairing.isShort(nc) && nc.equals(Pairing.normalize(nc)), "newShortCode gives 4 digits: " + nc);
+
         RelayCrypto rc = new RelayCrypto(code);
         T.eq(v.getString("topic"), rc.topic(), "RelayCrypto.topic");
         JSONObject m = v.getJSONObject("message");

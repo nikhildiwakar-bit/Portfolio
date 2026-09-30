@@ -34,6 +34,41 @@
     {
       "input": "7K3M9QX2TU",
       "output": null
+    },
+    {
+      "input": "4821",
+      "output": "4821"
+    },
+    {
+      "input": " 48-21 ",
+      "output": "4821"
+    },
+    {
+      "input": "0O12",
+      "output": "0012"
+    },
+    {
+      "input": "482",
+      "output": null
+    },
+    {
+      "input": "48213",
+      "output": null
+    },
+    {
+      "input": "48A1",
+      "output": null
     }
-  ]
+  ],
+  "short": {
+    "code": "4821",
+    "displayCode": "4821",
+    "topic": "otv2a25398b225e5b3cb05848ef1cde766e1",
+    "keyHex": "f84586eff804a9167c4dd124f5bc0daf04eb4758905d8e6ee794b629a0d6a5ab",
+    "message": {
+      "ivHex": "000102030405060708090a0b",
+      "plaintext": "{\"v\":1,\"dir\":\"c2t\",\"id\":\"shortcode1\",\"ts\":1760000000000,\"cmd\":\"ping\",\"args\":{}}",
+      "envelope": "otv1.AAECAwQFBgcICQoL.0VAFA9GH2wCT30kNxG7YTNw87y6kMXCQgKudkaOeMgzBelyndKNKycTmg2156PUWEiNRELb7urkH8nQPh_H1z8-adyYl8oM-YRU1dneL4ZBAdHMjUdOAgSknQKg8uG4"
+    }
+  }
 }

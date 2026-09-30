@@ -39,20 +39,33 @@ async function sha256(text) {
 
 // ---------- §1 pairing code ----------
 
+/**
+ * TV code of user input, or null. Office TV 3.6+ TVs show a 4-digit code (a new one every time the app opens);
+ * older TVs a 10-symbol code. Spaces and dashes are ignored, O counts as 0 and I/L as 1.
+ */
 export function normalizeCode(input) {
     if (typeof input !== 'string') return null;
     const s = input.toUpperCase()
-        .replace(/[\s\-\u2010-\u2015]+/g, '')
+        .replace(/[\s\-\u2010-\u2015\uFEFF]+/g, '')
         .replace(/O/g, '0')
         .replace(/[IL]/g, '1');
+    if (SHORT_CODE.test(s)) return s;
     if (s.length !== 10) return null;
     for (const ch of s) if (ALPHABET.indexOf(ch) < 0) return null;
     return s;
 }
 
+const SHORT_CODE = /^[0-9]{4}$/;
+
+/** True for a 4-digit code (Office TV 3.6+). */
+export function isShortCode(code) {
+    return typeof code === 'string' && SHORT_CODE.test(code);
+}
+
 export function displayCode(code) {
     const c = normalizeCode(code);
-    return c ? c.slice(0, 5) + '-' + c.slice(5) : '';
+    if (!c) return '';
+    return isShortCode(c) ? c : c.slice(0, 5) + '-' + c.slice(5);
 }
 
 function codeOrThrow(code) {
@@ -63,14 +76,17 @@ function codeOrThrow(code) {
 
 // ---------- §2 derivation ----------
 
+/** Relay topic: v1 for 10-symbol codes, v2 ("otv2...") for 4-digit codes, so the two can never meet. */
 export async function deriveTopic(code) {
-    const h = await sha256('officetv/topic/v1:' + codeOrThrow(code));
-    return 'otv' + hex(h.subarray(0, 16));
+    const c = codeOrThrow(code);
+    if (isShortCode(c)) return 'otv2' + hex((await sha256('officetv/topic/v2:' + c)).subarray(0, 16));
+    return 'otv' + hex((await sha256('officetv/topic/v1:' + c)).subarray(0, 16));
 }
 
 /** Raw 32 key bytes (exposed for tests and tools; apps should use deriveKey). */
 export async function deriveKeyBytes(code) {
-    return sha256('officetv/key/v1:' + codeOrThrow(code));
+    const c = codeOrThrow(code);
+    return sha256((isShortCode(c) ? 'officetv/key/v2:' : 'officetv/key/v1:') + c);
 }
 
 export async function deriveKey(code) {
