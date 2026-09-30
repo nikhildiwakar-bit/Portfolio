@@ -1,6 +1,8 @@
 // Screen sharing receiver. The Office TV app opens this page full screen in its own WebView with
-// #s=<session>&code=<pairing code>[&relay=<url>]. The fragment never leaves the device; it is removed
-// from the address bar right away. See PROTOCOL.md section 8.
+// #s=<session>&code=<pairing code>[&ip=<TV LAN IPv4>][&relay=<url>] (Office TV 3.6+ serves it from the app
+// itself, so it opens without the internet). The fragment never leaves the device; it is removed from the
+// address bar right away. `ip` lets the laptop reach the TV's real address at once and, for 4-digit codes,
+// limits sharing to laptops on the same network. See PROTOCOL.md section 8.
 import { CastReceiver, parseReceiverFragment } from './cast.js?v=4';
 
 const $ = id => document.getElementById(id);
@@ -23,16 +25,18 @@ const END_TEXT = {
     disconnected: 'The connection to the laptop was lost.',
     timeout: 'The laptop did not connect in time.',
     error: 'Screen sharing could not start.',
+    network: 'Screen sharing works only from a laptop on the same network as this TV.',
 };
+const END_SUB = { network: 'Connect the laptop to the same Wi-Fi as this TV, then share again.' };
 
 function finish(reason) {
     video.srcObject = null;
     note('');
     $('sound').hidden = true;
-    show(END_TEXT[reason] || END_TEXT.stopped, 'Returning to the previous screen…');
+    show(END_TEXT[reason] || END_TEXT.stopped, END_SUB[reason] || 'Returning to the previous screen…');
     setTimeout(() => {
         if (bridge && typeof bridge.close === 'function') bridge.close();
-    }, reason === 'stopped' ? 800 : 3000);
+    }, reason === 'stopped' ? 800 : reason === 'network' ? 6000 : 3000);
 }
 
 const T0 = (performance && performance.now) ? performance.now() : 0;

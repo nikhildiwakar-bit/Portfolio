@@ -1,7 +1,9 @@
 // Target of the QR code on the Office TV home screen: .../tv/phone.html#h=IP&p=PORT&k=SECRET&n=NAME&c=CODE.
 // The TV details live only in the fragment, which browsers never send to a server; it is removed from the
-// address bar at once. With the TV code (c) and a browser that can capture its screen, the phone shares
-// straight from this page, like a laptop (no app). Otherwise the page hands the details to the Office TV app.
+// address bar at once. With the TV code (c: 4 digits on Office TV 3.6+, a new one every time the TV app
+// opens, so the QR code changes with it) and a browser that can capture its screen, the phone shares
+// straight from this page, like a laptop (no app): the same steady frame rate, and a shared tab's sound plays
+// on the TV only. Otherwise the page hands the details to the Office TV app.
 import { normalizeCode, TvLink } from './otv.js';
 import { CastSender, captureScreen, senderSupport } from './cast.js';
 
@@ -77,9 +79,12 @@ function end(text, kind) {
 
 function problem(code, err) {
     if (code === 'tv') return (err && err.message) || 'The TV could not open the screen view.';
-    if (code === 'timeout' || code === 'no_answer') return name + ' did not answer. Check that the TV is on and Office TV is open.';
+    if (code === 'timeout') return name + ' did not answer. Scan the QR code on the TV again: it changes every time Office TV opens.';
+    if (code === 'no_answer') return name + ' did not answer. Check that the TV is on and Office TV is open.';
     if (code === 'ice') return 'Could not reach ' + name + '. Put the phone on the same Wi-Fi as the TV, then try again.';
-    if (code === 'network') return 'No internet on this phone. Connect to Wi-Fi and try again.';
+    if (code === 'network') return 'Screen sharing works only from a phone on the same Wi-Fi as ' + name + '. Connect to it, then try again.';
+    if (code === 'offline') return 'No internet on this phone. Connect to Wi-Fi and try again.';
+    if (code === 'rate_limit') return 'Too many attempts right now. Wait a minute, then try again.';
     return 'Sharing stopped because of a problem. Please try again.';
 }
 

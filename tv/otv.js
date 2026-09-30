@@ -1,6 +1,8 @@
 // Office TV relay protocol v1 (tv-app/PROTOCOL.md). Plain ES module for browsers and Node 22.
 // Canonical vectors: tv-app/tests/vectors.json.
+import { Relay } from './relay.js';
 
+export { BROKERS, Relay } from './relay.js';
 export const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 export const CONTROLLER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/';
 export const DEFAULT_RELAY = 'https://ntfy.sh';
@@ -8,7 +10,6 @@ export const MAX_ENVELOPE_BYTES = 3900;
 
 const enc = new TextEncoder();
 const BASE36 = '0123456789abcdefghijklmnopqrstuvwxyz';
-const RECONNECT_S = [1, 2, 4, 8, 16, 30, 60];
 
 function subtle() {
     const s = globalThis.crypto && globalThis.crypto.subtle;
@@ -245,10 +246,6 @@ function rateLimitInfo(body) {
     return { status: 429, relayCode: code, limit };
 }
 
-async function readText(res) {
-    try { return await res.text(); } catch (e) { return ''; }
-}
-
 function linkError(code, message, extra) {
     const e = new Error(message || code);
     e.code = code;
@@ -274,19 +271,29 @@ export function mergeAcks(acks) {
 
 // ---------- TvLink ----------
 
+/** 4-digit codes: a command sent over MQTT only goes out once more over ntfy if no ack came in this time. */
+export const NTFY_FALLBACK_MS = 2500;
+
 /**
- * One paired TV. Events come over one EventSource; commands are simple CORS POSTs.
+ * One paired TV. Messages come and go through one Relay (tv/relay.js): for a 4-digit code the MQTT brokers
+ * plus the ntfy event stream, for a 10-symbol code the ntfy event stream and simple CORS POSTs, as before.
  * state: 'unknown' | 'online' | 'offline'. onchange(link) fires when state/status/connected change.
  * Other messages on the topic (screen sharing signals) go to listen() callbacks, so a sharing session
- * needs no second event stream. suspend() closes the stream while nothing needs it.
+ * needs no second connection. suspend() closes the transports while nothing needs them.
+ * transports: 'auto' (the website), 'mqtt' (brokers only, no ntfy) or 'ntfy' (no brokers); the last two are
+ * for CI and tests. lastAckVia: the transport the last completed ack came over ('mqtt' | 'ntfy').
  */
 export class TvLink {
-    constructor({ code, name = '', relay = DEFAULT_RELAY, fetch: fetchFn, EventSource: ES } = {}) {
+    constructor({
+        code, name = '', relay = DEFAULT_RELAY, fetch: fetchFn, EventSource: ES, WebSocket: WS, brokers,
+        transports = 'auto', ntfyFallbackMs = NTFY_FALLBACK_MS,
+    } = {}) {
         const c = normalizeCode(code);
         if (!c) throw new Error('invalid pairing code');
         this.code = c;
         this.name = cleanName(name);
         this.relay = normalizeRelay(relay || DEFAULT_RELAY) || DEFAULT_RELAY;
+        this.short = isShortCode(c);
         this.topic = null;
         this.key = null;
         this.state = 'unknown';
@@ -294,17 +301,20 @@ export class TvLink {
         this.connected = false;
         this.lastAckAt = 0;
         this.lastPingAt = 0;
+        this.lastAckVia = '';
         this.clockOffsetMs = 0;
         this.onchange = null;
+        this.transport = null; // the Relay, while open
         this._fetch = fetchFn || ((...a) => globalThis.fetch(...a));
         this._ES = ES || globalThis.EventSource;
+        this._WS = WS;
+        this._brokers = brokers;
+        this._transports = transports;
+        this._fallbackMs = ntfyFallbackMs;
         this._pending = new Map();
         this._listeners = new Set();
         this._recent = [];
-        this._es = null;
-        this._retry = 0;
-        this._retryTimer = null;
-        this._openWaiters = [];
+        this._seen = [];
         this._closed = false;
         this._initP = null;
     }
@@ -338,80 +348,39 @@ export class TvLink {
         }
     }
 
-    // --- subscription ---
+    // --- transports ---
 
+    /** Opens the Relay if needed; one that is waiting for a reconnect back-off reconnects now. */
     _connect() {
-        if (this._closed || !this._ES || !this.topic) return;
-        clearTimeout(this._retryTimer);
-        this._retryTimer = null;
-        if (this._es) {
-            try { this._es.close(); } catch (e) { /* ignore */ }
+        if (this._closed || !this.topic) return null;
+        if (this.transport) {
+            if (!this.transport.connected) this.transport.kick();
+            return this.transport;
         }
-        let es;
-        try {
-            es = new this._ES(this.url + '/sse');
-        } catch (e) {
-            this._es = null;
-            this._scheduleReconnect();
-            return;
-        }
-        this._es = es;
-        es.onopen = () => {
-            if (es !== this._es) return;
-            this._retry = 0;
-            this._setConnected(true);
-        };
-        es.onmessage = ev => {
-            if (es === this._es) this._onEvent(ev && ev.data);
-        };
-        const named = ev => {
-            // ntfy sends 'open' and 'keepalive' as named SSE events; the built-in 'open' has no data.
-            if (es === this._es && ev && typeof ev.data === 'string') this._onEvent(ev.data);
-        };
-        if (typeof es.addEventListener === 'function') {
-            es.addEventListener('open', named);
-            es.addEventListener('keepalive', named);
-        }
-        es.onerror = () => {
-            if (es !== this._es) return;
-            this._setConnected(false);
-            // CONNECTING (0): the browser retries by itself. CLOSED (2): it gave up, so we retry.
-            if (es.readyState === 2) this._scheduleReconnect();
-        };
+        const t = new Relay({
+            topic: this.topic, code: this.code,
+            ntfy: this._transports === 'mqtt' ? false : this.relay,
+            brokers: this._transports === 'ntfy' ? [] : this._brokers,
+            WebSocket: this._WS, EventSource: this._ES, fetch: this._fetch,
+        });
+        this.transport = t;
+        t.onmessage = (env, meta) => { if (t === this.transport) this._onEnvelope(env, meta); };
+        t.onchange = () => { if (t === this.transport) this._setConnected(t.connected); };
+        t.ontime = sec => { if (t === this.transport) this._noteServerTime(sec); };
+        t.start();
+        return t;
     }
 
     _setConnected(on) {
         if (this.connected === on) return;
         this.connected = on;
-        if (on) {
-            const w = this._openWaiters;
-            this._openWaiters = [];
-            for (const f of w) f(true);
-        }
         this._emit();
     }
 
-    _scheduleReconnect() {
-        if (this._closed || this._retryTimer) return;
-        const s = RECONNECT_S[Math.min(this._retry++, RECONNECT_S.length - 1)];
-        this._retryTimer = setTimeout(() => {
-            this._retryTimer = null;
-            this._connect();
-        }, s * 1000);
-    }
-
-    /** Resolves true once the event stream is open, or false after ms. */
+    /** Resolves true once the relay can carry a message (tv/relay.js ready()), or false after ms. */
     _waitConnected(ms) {
-        if (this.connected) return Promise.resolve(true);
-        if (!this._es || this._es.readyState === 2) this._connect();
-        return new Promise(resolve => {
-            const t = setTimeout(() => {
-                this._openWaiters = this._openWaiters.filter(f => f !== done);
-                resolve(false);
-            }, ms);
-            const done = v => { clearTimeout(t); resolve(v); };
-            this._openWaiters.push(done);
-        });
+        const t = this._connect();
+        return t ? t.ready(ms) : Promise.resolve(false);
     }
 
     _noteServerTime(sec) {
@@ -421,34 +390,38 @@ export class TvLink {
         this.clockOffsetMs = Math.abs(off) > 30000 ? off : 0;
     }
 
-    async _onEvent(raw) {
-        if (typeof raw !== 'string') return;
-        let body = raw;
-        let ev = null;
-        try { ev = JSON.parse(raw); } catch (e) { /* not JSON: maybe a bare envelope */ }
-        if (ev && typeof ev === 'object') {
-            if (ev.event === 'open' || ev.event === 'keepalive') {
-                this._noteServerTime(ev.time);
-                return;
-            }
-            if (ev.event && ev.event !== 'message') return;
-            body = ev.message;
-        }
+    /**
+     * Publishes a sealed envelope over this link's relay (screen sharing signals use it). Resolves with the
+     * Relay's result {via, ok, status?, body?}; never throws.
+     */
+    publishEnvelope(envelope, opts) {
+        const t = this._connect();
+        if (!t) return Promise.resolve({ via: 'ntfy', ok: false, status: 0, error: new Error('link closed') });
+        return t.publish(envelope, opts);
+    }
+
+    async _onEnvelope(body, meta) {
         if (typeof body !== 'string' || body.indexOf('otv1.') !== 0 || !this.key) return;
         const m = await open(this.key, this.topic, body);
-        if (!m) return;
+        if (!m || this._closed) return;
+        // The same message can arrive over three brokers and ntfy: handle each id once.
+        if (typeof m.id === 'string') {
+            if (this._seen.indexOf(m.id) >= 0) return;
+            this._seen.push(m.id);
+            if (this._seen.length > 256) this._seen.shift();
+        }
+        const info = meta && typeof meta === 'object' ? meta : { via: 'ntfy', time: Date.now() / 1000 };
         if (m.dir !== 't2c') {
             // Commands (own echoes) and screen sharing signals: listeners filter what they need.
-            const event = ev && typeof ev === 'object' ? ev : null;
             for (const fn of Array.from(this._listeners)) {
-                try { fn(m, event); } catch (e) { /* a listener must not break the link */ }
+                try { fn(m, info); } catch (e) { /* a listener must not break the link */ }
             }
             return;
         }
         if (typeof m.re !== 'string') return;
         const p = this._pending.get(m.re);
         if (p) {
-            this._onAckPart(p, m);
+            this._onAckPart(p, m, info);
         } else if (this._recent.indexOf(m.re) >= 0) {
             // Late ack for a command that already timed out: the TV is alive after all.
             this.lastAckAt = Date.now();
@@ -456,12 +429,13 @@ export class TvLink {
         }
     }
 
-    _onAckPart(p, m) {
+    _onAckPart(p, m, info) {
         const parts = Math.max(1, Math.min(100, parseInt(m.parts, 10) || 1));
         const part = Math.max(0, parseInt(m.part, 10) || 0);
         p.parts = parts;
         if (p.got.has(part)) return;
         p.got.set(part, m);
+        if (!p.via) p.via = info.via || '';
         this.lastAckAt = Date.now();
         if (p.got.size >= p.parts) this._finish(p, false);
     }
@@ -470,11 +444,13 @@ export class TvLink {
         if (!this._pending.has(p.id)) return;
         this._pending.delete(p.id);
         clearTimeout(p.timer);
+        clearTimeout(p.fallback);
         const ack = mergeAcks(Array.from(p.got.values()));
         if (partial) ack.partial = true;
         if (p.cmd === 'ping' && ack.ok && ack.data && typeof ack.data.name === 'string') {
             this.status = ack.data;
         }
+        this.lastAckVia = p.via || '';
         this.state = 'online';
         this._emit();
         p.resolve(ack);
@@ -484,6 +460,7 @@ export class TvLink {
         if (!this._pending.has(p.id)) return;
         this._pending.delete(p.id);
         clearTimeout(p.timer);
+        clearTimeout(p.fallback);
         if (code === 'timeout') this._setState('offline');
         p.reject(linkError(code, message, extra));
     }
@@ -499,6 +476,8 @@ export class TvLink {
      * Sends one command and resolves with its ack {ok, msg, data} (plus partial: true if some parts of a
      * multi-part ack never came). Rejects with err.code 'timeout' | 'rate_limit' | 'network' | 'relay' | 'closed';
      * rate_limit errors also carry err.limit 'burst' | 'daily' | 'unknown'.
+     * 4-digit codes: sent to every connected MQTT broker; if no ack came within 2.5 s, the same envelope goes
+     * out once more over ntfy (the TV may reach other brokers, or none). Without a broker it goes over ntfy.
      */
     async send(cmd, args, { timeoutMs = 15000 } = {}) {
         await this.init();
@@ -507,18 +486,18 @@ export class TvLink {
         this._remember(id);
         if (cmd === 'ping') this.lastPingAt = Date.now();
         return new Promise((resolve, reject) => {
-            const p = { id, cmd, got: new Map(), parts: 1, resolve, reject, timer: null };
+            const p = { id, cmd, got: new Map(), parts: 1, resolve, reject, timer: null, fallback: null, via: '' };
             this._pending.set(id, p);
             p.timer = setTimeout(() => {
                 if (p.got.size) this._finish(p, true);
-                else this._fail(p, 'timeout', 'TV did not answer');
+                else this._fail(p, 'timeout', 'TV did not answer', p.fallbackError ? { fallbackError: p.fallbackError } : undefined);
             }, timeoutMs);
             this._post(p, cmd, args);
         });
     }
 
     async _post(p, cmd, args) {
-        // The ack is only delivered to open subscriptions, so give the stream a moment first.
+        // The ack is only delivered to open subscriptions, so give the relay a moment first.
         await this._waitConnected(5000);
         if (!this._pending.has(p.id)) return;
         let envelope;
@@ -530,40 +509,41 @@ export class TvLink {
             this._fail(p, 'relay', 'encrypt failed: ' + e.message);
             return;
         }
-        let res;
-        try {
-            res = await this._fetch(this.url + '?firebase=no', {
-                method: 'POST', body: envelope, credentials: 'omit', referrerPolicy: 'no-referrer',
-            });
-        } catch (e) {
-            this._fail(p, 'network', 'network error: ' + (e && e.message));
+        const r = await this.publishEnvelope(envelope);
+        if (!this._pending.has(p.id)) return;
+        if (!r.ok) {
+            this._failPublish(p, r);
             return;
         }
-        if (res.status === 429) {
-            this._fail(p, 'rate_limit', 'relay limit reached', rateLimitInfo(await readText(res)));
-            return;
+        const t = this.transport;
+        if (r.via === 'mqtt' && this._fallbackMs > 0 && t && t.ntfy) {
+            p.fallback = setTimeout(() => this._fallback(p, envelope), this._fallbackMs);
         }
-        if (!res.ok) {
-            this._fail(p, 'relay', 'relay HTTP ' + res.status, { status: res.status });
-            return;
-        }
-        try {
-            const j = await res.json();
-            if (j && typeof j.time === 'number') this._noteServerTime(j.time);
-        } catch (e) { /* body is optional */ }
+    }
+
+    async _fallback(p, envelope) {
+        if (!this._pending.has(p.id) || p.got.size || !this.transport) return;
+        const r = await this.transport.publish(envelope, { via: 'ntfy' });
+        // The MQTT copy may still be answered, so a failed ntfy copy does not fail the command.
+        if (!r.ok) p.fallbackError = publishError(r);
+    }
+
+    _failPublish(p, r) {
+        const e = publishError(r);
+        this._fail(p, e.code, e.message, e.extra);
     }
 
     ping(opts) {
         return this.send('ping', {}, opts);
     }
 
-    /** fn(message, event) gets every decrypted message that is not an ack. Returns an unsubscribe function. */
+    /** fn(message, meta) gets every decrypted message that is not an ack; meta = {via, time}. Returns an unsubscribe function. */
     listen(fn) {
         this._listeners.add(fn);
         return () => { this._listeners.delete(fn); };
     }
 
-    /** Derives the keys and opens the event stream if needed. Resolves true once it is open, false after ms. */
+    /** Derives the keys and opens the relay if needed. Resolves true once it can carry messages, false after ms. */
     async ready(ms = 8000) {
         await this.init();
         if (this._closed) return false;
@@ -571,34 +551,31 @@ export class TvLink {
     }
 
     /**
-     * Closes the event stream while nothing needs it (no command waiting for an ack, no listener), so an
-     * idle page holds no relay connection. The next send() or ready() opens it again. Returns true if idle.
+     * Closes the relay while nothing needs it (no command waiting for an ack, no listener), so an idle page
+     * holds no relay connection. The next send() or ready() opens it again. Returns true if idle.
      */
     suspend() {
         if (this._pending.size || this._listeners.size) return false;
-        clearTimeout(this._retryTimer);
-        this._retryTimer = null;
-        const es = this._es;
-        this._es = null;
-        if (es) {
-            try { es.close(); } catch (e) { /* ignore */ }
-        }
-        this._retry = 0;
+        const t = this.transport;
+        this.transport = null;
+        if (t) t.close();
         this._setConnected(false);
         return true;
     }
 
     close() {
         this._closed = true;
-        clearTimeout(this._retryTimer);
-        this._retryTimer = null;
-        if (this._es) {
-            try { this._es.close(); } catch (e) { /* ignore */ }
-        }
-        this._es = null;
+        const t = this.transport;
+        this.transport = null;
+        if (t) t.close();
         this.connected = false;
         for (const p of Array.from(this._pending.values())) this._fail(p, 'closed', 'link closed');
-        for (const f of this._openWaiters) f(false);
-        this._openWaiters = [];
     }
+}
+
+/** {code, message, extra} for a failed Relay publish. */
+function publishError(r) {
+    if (r.status === 429) return { code: 'rate_limit', message: 'relay limit reached', extra: rateLimitInfo(r.body || '') };
+    if (!r.status) return { code: 'network', message: 'network error: ' + (r.error && r.error.message), extra: undefined };
+    return { code: 'relay', message: 'relay HTTP ' + r.status, extra: { status: r.status } };
 }

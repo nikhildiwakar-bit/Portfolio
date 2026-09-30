@@ -2,11 +2,12 @@
 // Signaling (SDP offer/answer, with every ICE candidate inside) travels over the same encrypted relay
 // topic as commands, in c2r (controller -> receiver) and r2c (receiver -> controller) messages that the
 // TV app ignores. Media goes directly between the browsers; the relay never sees it.
-import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, deriveKey, deriveTopic, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=3';
+import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, deriveKey, deriveTopic, isShortCode, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=3';
 import {
     RX_STALE_MS, STATS_MS, connectionRows, connectionVerdict, hardwareProbe, parseReceiverStats, parseSenderStats, readReceiverMessage,
-    receiverStatsMessage,
+    receiverStatsMessage, selectedPair,
 } from './stats.js?v=1';
+import { STEADY_FPS, steadyTrack } from './steady.js';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -22,6 +23,10 @@ export const DEGRADATION = 'maintain-resolution';
 export const CONTENT_HINT = 'detail';
 /** ICE gathering wait: stop at 1.5 s, or as soon as a host and a server-reflexive (STUN) address are known. */
 export const ICE_WAIT_MS = 1500;
+/** The tick worker of the steady frame rate (steady.js); relative to this module, so the TV app can serve it too. */
+const TICK_URL = (() => { try { return new URL('./tick.js', import.meta.url).href; } catch (e) { return ''; } })();
+/** The receiver ended the session because the laptop is not on the TV's network (4-digit codes). */
+export const NETWORK_TEXT = 'Screen sharing works only from a laptop on the same network as this TV.';
 const now = () => (globalThis.performance && typeof performance.now === 'function' ? performance.now() : Date.now());
 /** Connect timing log for comparing builds: console lines like "[otv] tx +123ms offer-sent". */
 export function timingLog(tag) {
@@ -44,11 +49,14 @@ function castError(code, message) {
  * getDisplayMedia options: the screen at its native resolution (ideal 2560 x 1440, at most 4K) and up to
  * 30 fps, so the TV is as sharp as the laptop; tab or system audio, the Office TV tab itself left out of the
  * picker, and Chrome's "Share this tab instead" button so the user can switch what is shown without stopping.
+ * suppressLocalAudioPlayback (Chrome 109+): a shared tab goes silent on the laptop and plays on the TV only,
+ * so the room never hears it twice from two places. (System audio of an entire screen cannot be muted
+ * locally; browsers without the constraint ignore it.)
  */
 export function displayMediaOptions() {
     return {
         video: { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: MAX_FPS, max: MAX_FPS } },
-        audio: true,
+        audio: { suppressLocalAudioPlayback: true },
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
         systemAudio: 'include',
@@ -528,16 +536,93 @@ export function iceGathered(pc, ms = ICE_WAIT_MS) {
     });
 }
 
+// ---------- same network (TV side) ----------
+
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/** [a, b, c, d] for a dotted IPv4 address, else null. */
+function ipv4(s) {
+    const m = IPV4.exec(String(s || '').trim());
+    if (!m) return null;
+    const b = m.slice(1).map(Number);
+    return b.every(x => x <= 255) ? b : null;
+}
+
+/** The TV's LAN IPv4 address from the receiver URL (ip=), or '' if it is not a usable one. */
+export function validLanIp(s) {
+    const b = ipv4(s);
+    return b && b[0] !== 0 && b[0] < 224 ? b.join('.') : '';
+}
+
+/**
+ * The TV's answer with its real address next to every hidden one. The TV's web engine names its host
+ * candidates "<uuid>.local" (mDNS), which many school and office Wi-Fi networks cannot resolve, so the laptop
+ * could not reach the TV directly. For each host candidate line with a .local address a copy with the
+ * address replaced by `ip` follows the original (which stays). Other lines are unchanged.
+ */
+export function withLanCandidates(sdp, ip) {
+    const addr = validLanIp(ip);
+    if (typeof sdp !== 'string' || !addr) return sdp;
+    const eol = sdp.indexOf('\r\n') >= 0 ? '\r\n' : '\n';
+    const out = [];
+    for (const line of sdp.split(eol)) {
+        out.push(line);
+        // a=candidate:<foundation> <component> <transport> <priority> <address> <port> typ <type> ...
+        const f = /^a=candidate:/.test(line) ? line.split(' ') : null;
+        if (f && f.length >= 8 && /\.local\.?$/i.test(f[4]) && f[6] === 'typ' && f[7] === 'host') {
+            f[4] = addr;
+            out.push(f.join(' '));
+        }
+    }
+    return out.join(eol);
+}
+
+/**
+ * Screen sharing with a 4-digit code is for laptops on the TV's own network: true when `address` (the
+ * laptop's address as the TV sees it) is private (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16,
+ * 127/8, fc00::/7, fe80::/10, ::1) or in the same /24 as the TV's `tvIp`. Unknown addresses (empty, or a
+ * hostname such as an mDNS name) are allowed.
+ */
+export function sameNetworkAddress(address, tvIp) {
+    let a = String(address || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (!a) return true;
+    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(a);
+    if (mapped) a = mapped[1];
+    const b = ipv4(a);
+    if (b) {
+        const [x, y] = b;
+        if (x === 10 || x === 127 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168)
+            || (x === 100 && y >= 64 && y <= 127) || (x === 169 && y === 254)) return true;
+        const t = ipv4(tvIp);
+        return !!t && t[0] === b[0] && t[1] === b[1] && t[2] === b[2];
+    }
+    if (a.indexOf(':') < 0 || !/^[0-9a-f:.]+$/.test(a)) return true; // a hostname: unknown
+    if (a === '::1') return true;
+    const first = parseInt(a.split(':')[0] || '0', 16);
+    return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+}
+
 const connState = pc => pc.connectionState || pc.iceConnectionState;
 const SENDER_LIVE = ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting'];
 
 /**
  * Laptop side.
- * states: 'idle' -> 'starting' (relay stream) -> 'waiting' (TV opens the receiver) -> 'connecting' (TV said
- * yes; offer sent) -> 'sharing' <-> 'reconnecting' (one ICE restart after a drop), then 'stopped' or 'error'.
- * onstate(state, detail): stopped has detail.reason 'user' | 'ended' (the browser's own "Stop sharing") |
- * 'tv' (the TV closed the receiver) | 'page'; error has detail.code and detail.error.
- * Relay cost: 'cast' command + ack + offer + answer; stopping uses the data channel (no relay message).
+ * states: 'idle' -> 'starting' (relay connections) -> 'waiting' (TV opens the receiver) -> 'connecting' (TV
+ * said yes, or its receiver answered) -> 'sharing' <-> 'reconnecting' (one ICE restart after a drop), then
+ * 'stopped' or 'error'. onstate(state, detail): 'connecting' has detail.data (the TV's status object);
+ * 'sharing' comes once more with detail.data when the TV's ack arrives after the connection is up. stopped
+ * has detail.reason 'user' | 'ended' (the browser's own "Stop sharing") | 'tv' (the TV closed the receiver)
+ * | 'page'; error has detail.code: 'timeout' (no TV answered the code) | 'tv' (the TV refused; message) |
+ * 'offline' (the relay cannot be reached) | 'rate_limit' | 'relay' | 'no_answer' | 'tv_error' | 'ice' (no
+ * connection) | 'network' (the TV refused a laptop from another network) | 'lost', and detail.error.
+ * 4-digit codes (Office TV 3.6+): the offer goes out as soon as it is ready, without waiting for the TV's
+ * ack (which is still awaited: a refusal fails the share), again whenever the receiver says 'ready' before
+ * the answer, and every 2 s until the answer (at most 15 times; over MQTT, which has no history).
+ * 10-symbol codes (older TVs): the offer goes out once, after the TV's ack, as before.
+ * Relay cost (ntfy): 'cast' command + ack + offer + answer; stopping uses the data channel (no relay message).
+ * The video track goes out through steadyTrack() (steady.js) where the browser can: at least 30 frames per
+ * second even while the screen is still, so a TV decoder that holds each frame until the next shows changes
+ * at once.
  * While sharing, the TV sends its playback numbers over the data channel every 2 s (rxStats);
  * connectionInfo() combines them with this browser's own getStats() for the "Connection info" panel.
  */
@@ -571,6 +656,9 @@ export class CastSender {
         this._encoderHw = hardwareProbe(this._w.navigator && this._w.navigator.mediaCapabilities, 'encoding');
         this._tvStarted = false;
         this._waiter = null;
+        this.short = false;      // a 4-digit code: MQTT signaling, offer before the ack (see above)
+        this.answered = false;   // the receiver's answer arrived
+        this.steady = null;      // steadyTrack() wrapper of the video track, or null (original track sent)
     }
 
     get active() {
@@ -598,7 +686,7 @@ export class CastSender {
         try {
             await this._start(stream);
         } catch (e) {
-            this._fail(e);
+            this._fail(relayProblem(e));
         }
     }
 
@@ -613,6 +701,7 @@ export class CastSender {
         const log = timingLog('tx');
         this._log = log;
         this.session = newId(16);
+        this.short = isShortCode(this.link.code);
         const ch = new CastChannel({ link: this.link, session: this.session, out: 'c2r' });
         this.channel = ch;
         ch.onsignal = (cast, data) => this._onSignal(cast, data);
@@ -629,9 +718,12 @@ export class CastSender {
             return a;
         });
         ack.catch(() => {}); // handled below; avoids an unhandled rejection if the relay fails first
+        // Steady frame rate: the encoder gets at least 30 frames per second even while the screen is still.
+        this.steady = video ? steadyTrack(video, { fps: STEADY_FPS, workerUrl: TICK_URL, window: this._w }) : null;
+        log('steady', this.steady ? STEADY_FPS + 'fps' : 'off');
         const pc = new this._PC({ iceServers: ICE_SERVERS });
         this.pc = pc;
-        this.videoSender = addMedia(pc, stream, this._w);
+        this.videoSender = addMedia(pc, this.steady ? this._withVideo(stream, this.steady.track) : stream, this._w);
         const dc = pc.createDataChannel('otv');
         this.dc = dc;
         // The TV closing the receiver (Back on the remote, or the app) closes the data channel at once.
@@ -639,6 +731,7 @@ export class CastSender {
         dc.addEventListener('message', e => {
             if (this.dc !== dc) return;
             if (e.data === 'bye') { this.stop('tv'); return; }
+            if (e.data === 'bye:network') { this._fail(castError('network', NETWORK_TEXT), false); return; }
             const st = readReceiverMessage(e.data);
             if (st) {
                 this.rxStats = st;
@@ -657,22 +750,36 @@ export class CastSender {
         offer.catch(() => {});
         await ch.init();
         if (!this.active) return;
-        if (!await ch.waitOpen(8000)) throw castError('network', 'The relay could not be reached.');
+        if (!await ch.waitOpen(8000)) throw castError('offline', 'The relay could not be reached.');
         log('relay-open');
         if (!this.active) return;
         this._set('waiting');
-        const [a] = await Promise.all([ack, offer]);
-        if (!this.active) return;
-        if (!a.ok) throw castError('tv', a.msg || 'The TV could not open the screen receiver.');
-        this.tvData = a.data && typeof a.data === 'object' ? a.data : {};
-        this._set('connecting', { data: this.tvData });
-        const answer = this._expect(this._answerTimeoutMs, 'no_answer', 'The TV did not connect.');
-        await ch.send('offer', await encodeSignal(pc.localDescription, { compress: false }));
+        let answer;
+        if (this.short) {
+            // Offer first; the ack is awaited alongside it.
+            ack.then(a => this._onAck(a), e => {
+                // The receiver answered, so the TV is there even though its ack got lost.
+                if (this.active && !this.answered) this._fail(relayProblem(e));
+            });
+            await offer;
+            if (!this.active) return;
+            answer = this._expect(this._answerTimeoutMs, 'no_answer', 'The TV did not connect.');
+            await this._sendOffer(ch, await encodeSignal(pc.localDescription, { compress: false }));
+        } else {
+            const [a] = await Promise.all([ack, offer]);
+            if (!this.active) return;
+            this._onAck(a);
+            if (!this.active) return;
+            answer = this._expect(this._answerTimeoutMs, 'no_answer', 'The TV did not connect.');
+            await ch.send('offer', await encodeSignal(pc.localDescription, { compress: false }));
+        }
         log('offer-sent');
         const desc = await decodeSignal(await answer);
         if (!this.active) return;
         if (!desc || desc.type !== 'answer') throw castError('bad_answer', 'The TV sent an invalid answer.');
+        this.answered = true;
         log('answer');
+        this._set('connecting', { data: this.tvData });
         await pc.setRemoteDescription(desc);
         tuneSender(this.videoSender);
         // The laptop and the TV cannot reach each other (different networks, no TURN): say so in good time.
@@ -684,8 +791,9 @@ export class CastSender {
     /** Sends the picture at the TV's screen size (fitScale), again whenever the shared window or the TV changes. */
     _fitToTv(screen) {
         const sender = this.videoSender;
-        const track = sender && sender.track;
-        if (!track || typeof track.getSettings !== 'function' || typeof sender.getParameters !== 'function'
+        // The captured track's size (the steady track's settings may not report one).
+        const track = (this.stream && this.stream.getVideoTracks()[0]) || (sender && sender.track);
+        if (!sender || !track || typeof track.getSettings !== 'function' || typeof sender.getParameters !== 'function'
             || typeof sender.setParameters !== 'function') return;
         let set;
         try { set = track.getSettings() || {}; } catch (e) { return; }
@@ -886,10 +994,17 @@ export class CastSender {
  */
 export class CastReceiver {
     constructor({
-        code, relay, session, RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES,
+        code, relay, session, ip = '', RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES,
         offerTimeoutMs = 90000, graceMs = 25000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w,
     } = {}) {
         this._w = w || globalThis;
+        // The TV's LAN address (receiver URL ip=): added to the answer next to the hidden .local candidates, and
+        // for 4-digit codes only a laptop on this network may share (sameNetworkAddress, checked once connected).
+        this.ip = validLanIp(ip);
+        this.lanOnly = isShortCode(normalizeCode(String(code || '')) || '');
+        this.lanChecked = false;
+        this.remoteAddress = '';
+        this._media = null; // [stream, track] waiting for the network check before it is shown
         this._statsMs = statsMs;
         this._extraStats = extraStats;
         this._statsTimer = null;
@@ -963,7 +1078,10 @@ export class CastReceiver {
         pc.addEventListener('track', e => {
             this.lowLatency = lowLatencyReceiver(e.receiver) || this.lowLatency || '';
             const stream = (e.streams && e.streams[0]) || null;
-            if (stream && typeof this.ontrack === 'function') this.ontrack(stream, e.track);
+            if (!stream) return;
+            // 4-digit codes: nothing is shown before the laptop is known to be on this network.
+            if (this.lanOnly && !this.lanChecked) this._media = [stream, e.track];
+            else this._show(stream, e.track);
         });
         pc.addEventListener('datachannel', e => this._watchChannel(e.channel));
         pc.addEventListener('connectionstatechange', () => this._onConn());
@@ -978,8 +1096,62 @@ export class CastReceiver {
         await iceGathered(pc);
         this._log('ice-gathered');
         if (this.state === 'ended') return;
-        await this.channel.send('answer', await encodeSignal(pc.localDescription));
-        this._log('answer-sent', 'lowLatency=' + (this.lowLatency || 'none') + ' h264First=' + this.codecPrefs);
+        await this.channel.send('answer', await encodeSignal(this._answerDesc(pc)));
+        this._log('answer-sent', 'lowLatency=' + (this.lowLatency || 'none') + ' h264First=' + this.codecPrefs + ' ip=' + (this.ip || 'none'));
+    }
+
+    /** The local answer as sent to the laptop: with the TV's real address next to its .local candidates. */
+    _answerDesc(pc) {
+        const d = pc.localDescription;
+        return { type: d.type, sdp: withLanCandidates(d.sdp, this.ip) };
+    }
+
+    _show(stream, track) {
+        if (typeof this.ontrack === 'function') {
+            try { this.ontrack(stream, track); } catch (e) { /* ignore */ }
+        }
+    }
+
+    /**
+     * 4-digit codes: once connected, the laptop's address (the selected candidate pair) must be on this
+     * network (sameNetworkAddress); otherwise the session ends on both sides with 'network'. Then the
+     * waiting picture is shown. Tries the stats a few times while the pair is not reported yet.
+     */
+    async _checkNetwork() {
+        if (this.lanChecked || this._lanBusy || this.state === 'ended') return;
+        this._lanBusy = true;
+        const pc = this.pc;
+        let pair = null;
+        for (let i = 0; i < 4 && !pair; i++) {
+            if (i) await new Promise(r => setTimeout(r, 250));
+            if (this.pc !== pc || this.state === 'ended') return;
+            try { pair = selectedPair(await pc.getStats()); } catch (e) { pair = null; }
+        }
+        this._lanBusy = false;
+        if (this.pc !== pc || this.state === 'ended') return;
+        this.remoteAddress = (pair && pair.remoteAddress) || '';
+        const ok = sameNetworkAddress(this.remoteAddress, this.ip);
+        this._log('network', (ok ? 'ok ' : 'refused ') + (this.remoteAddress || 'unknown') + ' tv=' + (this.ip || 'unknown'));
+        if (!ok) {
+            this._refuseNetwork();
+            return;
+        }
+        this.lanChecked = true;
+        const m = this._media;
+        this._media = null;
+        if (m) this._show(m[0], m[1]);
+    }
+
+    /** Tells the laptop why (data channel if open, and the relay), then ends with 'network'. */
+    _refuseNetwork() {
+        const dc = this.dc;
+        if (dc && dc.readyState === 'open') {
+            try { dc.send('bye:network'); } catch (e) { /* the relay message below still goes */ }
+        }
+        if (this.channel) this.channel.send('bye', 'network').catch(() => {});
+        this._media = null;
+        // A moment for the goodbye to leave before the connection closes.
+        this._ending = setTimeout(() => this.end('network'), 600);
     }
 
     /** The laptop's data channel: 'bye' and its closing end the session; once open, stats go out on it. */
@@ -1036,7 +1208,7 @@ export class CastReceiver {
         await pc.setLocalDescription(await pc.createAnswer());
         await iceGathered(pc);
         if (this.state === 'ended' || this.pc !== pc) return;
-        await this.channel.send('answer', await encodeSignal(pc.localDescription));
+        await this.channel.send('answer', await encodeSignal(this._answerDesc(pc)));
     }
 
     _failed(e) {
@@ -1053,6 +1225,7 @@ export class CastReceiver {
             clearTimeout(this._graceTimer);
             this._graceTimer = null;
             if (this.state !== 'playing' && this._log) this._log('connected');
+            if (this.lanOnly && !this.lanChecked) this._checkNetwork();
             this._set('playing');
         } else if (s === 'closed') {
             this.end('disconnected');
@@ -1071,6 +1244,7 @@ export class CastReceiver {
 
     end(reason, err) {
         if (this.state === 'ended') return;
+        clearTimeout(this._ending);
         clearTimeout(this._offerTimer);
         clearTimeout(this._graceTimer);
         clearInterval(this._statsTimer);

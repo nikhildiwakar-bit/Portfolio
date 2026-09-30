@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0c1013" media="(prefers-color-scheme: dark)">
 <meta name="referrer" content="no-referrer">
-<meta name="description" content="Show your laptop screen on the office TV. Enter the TV code, pick what to share, and it appears on the big screen.">
+<meta name="description" content="Show your laptop screen on the office TV. Type the 4-digit code shown on the TV, pick what to share, and it appears on the big screen.">
 <title>Office TV · Share your laptop screen</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230e7c74'/%3E%3Crect x='6.5' y='8.5' width='19' height='12.5' rx='2.5' fill='none' stroke='white' stroke-width='2.2'/%3E%3Cpath d='M12 25h8' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
@@ -60,37 +60,29 @@ a { color: var(--accent-ink); }
 .top-link { color: var(--muted); font-weight: 600; font-size: .95rem; text-decoration: none; padding: 10px 12px; border-radius: 10px; }
 .top-link:hover { color: var(--text); background: var(--surface-2); }
 
-/* stage: hero + card */
-.stage { display: grid; gap: 28px; padding: 8px 0 48px; }
-@media (min-width: 960px) {
-  .stage { grid-template-columns: minmax(0, 1fr) minmax(380px, 440px); gap: 64px; align-items: center; padding: 28px 0 72px; }
-}
-.eyebrow {
-  display: inline-flex; align-items: center; gap: 8px; margin: 0 0 18px; padding: 5px 12px; border-radius: 999px;
-  font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent-ink); background: var(--accent-soft);
-}
-.eyebrow .ic { width: 15px; height: 15px; }
-h1 { margin: 0; font-size: clamp(2rem, 1.3rem + 2.3vw, 3.3rem); line-height: 1.08; letter-spacing: -.03em; font-weight: 760; max-width: 15em; text-wrap: balance; }
-.lede { margin: 18px 0 0; font-size: 1.1rem; color: var(--muted); max-width: 32em; }
-.steps { list-style: none; margin: 28px 0 0; padding: 0; display: grid; gap: 12px; }
-.steps li { display: flex; align-items: center; gap: 14px; color: var(--text); font-weight: 550; }
-.steps .n {
-  width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; font-size: .88rem; font-weight: 750;
-  color: var(--accent-ink); background: var(--surface); border: 1px solid var(--border-strong);
-}
-.art { margin: 36px 0 0; max-width: 430px; }
-.art svg { display: block; width: 100%; height: auto; }
-@media (max-width: 959px) { .art { display: none; } .lede { font-size: 1.02rem; } .steps { margin-top: 22px; } .panel { max-width: 560px; } }
-body.unsupported .steps, body.unsupported .help { display: none; }
+/* stage: one centered card (home), or the sharing panel */
+.stage { display: grid; justify-items: center; padding: 20px 0 48px; }
+@media (min-width: 720px) { .stage { padding: 48px 0 72px; } }
+.panel { width: 100%; max-width: 500px; min-width: 0; }
+body.is-live .panel { max-width: 1040px; }
+body.unsupported .help { display: none; }
 
+/* home: code and Share screen */
+.home { text-align: center; }
+@media (min-width: 480px) { .home { padding: 40px 36px 32px; } }
+.home-ic { width: 56px; height: 56px; border-radius: 17px; margin: 0 auto 18px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); }
+.home-ic .ic { width: 28px; height: 28px; }
+.home h1 { margin: 0; font-size: clamp(1.5rem, 1.25rem + 1vw, 1.95rem); line-height: 1.2; letter-spacing: -.022em; font-weight: 760; text-wrap: balance; }
+.home form { display: grid; gap: 14px; margin-top: 26px; text-align: left; }
+.home .fine { margin: 2px 0 0; }
+.home .notice { margin: 0; }
+.home .field-err { text-align: center; }
 /* cards */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px 20px; min-width: 0; }
 @media (min-width: 480px) { .card { padding: 30px 28px; } }
 .card h2 { margin: 0; font-size: 1.22rem; letter-spacing: -.015em; line-height: 1.3; }
 .card .sub { margin: 6px 0 22px; color: var(--muted); font-size: .95rem; text-wrap: pretty; }
-.field { display: grid; gap: 6px; margin: 0 0 16px; min-width: 0; }
 label { font-weight: 650; font-size: .92rem; }
-.opt { color: var(--faint); font-weight: 450; }
 input {
   width: 100%; min-width: 0; height: 52px; padding: 0 14px; font: inherit; color: var(--text); background: var(--surface);
   border: 1px solid var(--border-strong); border-radius: 12px; transition: border-color .15s, box-shadow .15s;
@@ -98,12 +90,17 @@ input {
 input:hover { border-color: var(--faint); }
 input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px var(--glow), 0 0 0 1px var(--accent); }
 input::placeholder { color: var(--faint); opacity: 1; }
-input.code { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 1.28rem; letter-spacing: .12em; text-transform: uppercase; }
-input.code::placeholder { text-transform: none; }
+/* The code: big digits, centered (text-indent balances the letter spacing after the last digit). */
+input.code {
+  height: 76px; padding: 0 12px; border-radius: 16px; text-align: center; text-transform: uppercase;
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 2.3rem; font-weight: 650;
+  letter-spacing: .38em; text-indent: .38em; font-variant-numeric: tabular-nums;
+}
+input.code.long { font-size: 1.45rem; letter-spacing: .1em; text-indent: .1em; }
+input.code:placeholder-shown { font-family: inherit; font-size: 1.15rem; font-weight: 500; letter-spacing: normal; text-indent: 0; text-transform: none; }
 input[aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
-.hint { margin: 0; font-size: .86rem; color: var(--muted); min-height: 1.35em; }
-.hint.good { color: var(--ok); }
 .field-err { margin: 0; font-size: .88rem; color: var(--bad); font-weight: 550; }
+.hint { margin: 0; font-size: .86rem; color: var(--muted); }
 .fine { margin: 12px 0 0; font-size: .86rem; color: var(--muted); text-align: center; text-wrap: balance; }
 
 /* buttons */
@@ -122,43 +119,12 @@ input[aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 1px var
 .btn-big .ic { width: 22px; height: 22px; }
 .btn-stop { background: var(--stop); color: #fff; min-width: 180px; }
 .btn-stop:hover:not(:disabled) { background: var(--stop-hover); }
-.btn-quiet { background: var(--surface); border-color: var(--border-strong); }
-.btn-quiet:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
 .spin { display: none; width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
 .btn[aria-busy="true"] .spin { display: inline-block; }
 .btn[aria-busy="true"] .ic { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.link {
-  font: inherit; font-weight: 620; font-size: .94rem; color: var(--accent-ink); background: none; border: 0; padding: 8px 4px; min-height: 44px;
-  cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px; border-radius: 8px;
-}
-.link:hover { text-decoration-color: currentColor; }
-.link.danger { color: var(--bad); }
-.text-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 20px; margin-top: 10px; }
 
-/* saved TVs */
-.tvs { display: grid; gap: 10px; margin: 18px 0; }
-.tv {
-  display: flex; align-items: center; gap: 14px; width: 100%; min-height: 70px; padding: 12px 14px; text-align: left; font: inherit;
-  color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 15px; cursor: pointer;
-  transition: border-color .15s, background-color .15s;
-}
-.tv:hover { border-color: var(--accent); }
-.tv[aria-checked="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
-.tv-ic { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; flex: none; color: var(--muted); background: var(--surface-2); }
-.tv[aria-checked="true"] .tv-ic { background: var(--accent); color: var(--on-accent); }
-.tv-txt { display: grid; min-width: 0; flex: 1 1 auto; }
-.tv-name { font-weight: 680; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tv-meta { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: .86rem; color: var(--muted); white-space: nowrap; overflow: hidden; }
-.tv-meta .tv-code { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; letter-spacing: .04em; }
-.tv-check { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border-strong); display: grid; place-items: center; flex: none; color: transparent; }
-.tv-check .ic { width: 14px; height: 14px; stroke-width: 3; }
-.tv[aria-checked="true"] .tv-check { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.tvs.single .tv-check { display: none; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-.dot.online { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
-.dot.offline { background: var(--warn); }
-.dot.checking { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .3; } }
 
 /* notices */
@@ -170,15 +136,9 @@ input[aria-invalid="true"] { border-color: var(--bad); box-shadow: 0 0 0 1px var
 .notice strong { display: block; font-weight: 680; }
 .notice span { color: var(--muted); }
 .notice.bad span { color: var(--text); }
-.confirm { margin: 12px 0 0; padding: 14px; border-radius: 13px; border: 1px solid var(--border-strong); font-size: .93rem; }
-.confirm p { margin: 0 0 12px; }
-.confirm .row { display: flex; flex-wrap: wrap; gap: 10px; }
-.confirm .btn { min-height: 42px; padding: 0 16px; font-size: .92rem; }
-.btn-danger { background: var(--bad-soft); color: var(--bad); }
-.btn-danger:hover { border-color: var(--bad); }
 
 /* live */
-body.is-live .hero, body.is-live .help, body.is-live .top-link { display: none; }
+body.is-live .help, body.is-live .top-link { display: none; }
 body.is-live .stage { display: grid; grid-template-columns: minmax(0, 1fr); align-content: center; min-height: calc(100vh - 170px); padding-top: 12px; }
 .live {
   display: grid; gap: 22px; max-width: 1040px; margin: 0 auto; padding: 18px; background: var(--surface); border: 1px solid var(--border);
@@ -208,6 +168,9 @@ body.is-live .stage { display: grid; grid-template-columns: minmax(0, 1fr); alig
 .live-text { margin: 0; color: var(--muted); }
 .live-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
 .live .fine { text-align: left; margin-top: 16px; }
+.sound { display: flex; align-items: flex-start; gap: 10px; margin: 18px 0 0; font-size: .93rem; color: var(--text); }
+.sound .ic { width: 18px; height: 18px; margin-top: 2px; color: var(--accent-ink); }
+.sound.off .ic { color: var(--muted); }
 
 /* connection info (while sharing) */
 .conn { margin-top: 18px; padding-top: 6px; border-top: 1px solid var(--border); font-size: .88rem; color: var(--muted); min-width: 0; }
@@ -246,22 +209,20 @@ body.is-live .stage { display: grid; grid-template-columns: minmax(0, 1fr); alig
 footer { display: flex; align-items: center; gap: 8px; padding: 28px 0 40px; color: var(--faint); font-size: .86rem; }
 footer .ic { width: 16px; height: 16px; }
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
-.sound-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 12px; }
-.sound-row .fine { margin: 0; flex: 1 1 220px; }
-.btn-quiet { min-height: 44px; padding: 10px 16px; border-radius: 12px; border: 1px solid var(--border, #d0d6dc); background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
 </style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2.5"/><path d="M8 21h8M12 17v4"/></symbol>
   <symbol id="i-cast" viewBox="0 0 24 24"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><path d="M2 20h.01"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 11v5.5M12 7.5h.01"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9.5"/><path d="M12 7.5v5.5M12 16.5h.01"/></symbol>
   <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19.5h20"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
+  <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></symbol>
 </svg>
 
 <div class="wrap">
@@ -274,99 +235,23 @@ footer .ic { width: 16px; height: 16px; }
   </header>
 
   <main class="stage" id="main">
-    <section class="hero" id="hero" aria-labelledby="heroTitle">
-      <p class="eyebrow"><svg class="ic"><use href="#i-cast"/></svg>Screen sharing</p>
-      <h1 id="heroTitle">Show your laptop screen on the office TV</h1>
-      <p class="lede">Enter the code shown on the TV and pick what to share. Your screen appears on the big screen in seconds, straight from your browser.</p>
-      <ol class="steps">
-        <li><span class="n">1</span>Open Office TV on the TV</li>
-        <li><span class="n">2</span>Enter the TV code</li>
-        <li><span class="n">3</span>Pick a screen, window or tab</li>
-      </ol>
-      <figure class="art" aria-hidden="true">
-        <svg viewBox="0 0 440 236" fill="none" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="164" y="10" width="266" height="164" rx="14" fill="var(--art-body)" stroke="var(--art-frame)" stroke-width="2"/>
-          <rect x="176" y="22" width="242" height="140" rx="7" fill="var(--art-screen)"/>
-          <rect x="196" y="44" width="104" height="13" rx="6.5" fill="var(--accent)"/>
-          <rect x="196" y="70" width="148" height="7" rx="3.5" fill="var(--art-line)"/>
-          <rect x="196" y="84" width="118" height="7" rx="3.5" fill="var(--art-line)"/>
-          <rect x="196" y="98" width="132" height="7" rx="3.5" fill="var(--art-line)"/>
-          <rect x="352" y="112" width="12" height="32" rx="3" fill="var(--accent)" opacity=".45"/>
-          <rect x="370" y="98" width="12" height="46" rx="3" fill="var(--accent)" opacity=".7"/>
-          <rect x="388" y="80" width="12" height="64" rx="3" fill="var(--accent)"/>
-          <path d="M297 174v20M262 200h70" stroke="var(--art-frame)" stroke-width="4"/>
-          <rect x="14" y="108" width="128" height="84" rx="9" fill="var(--art-body)" stroke="var(--art-frame)" stroke-width="2"/>
-          <rect x="22" y="116" width="112" height="68" rx="4" fill="var(--art-screen)"/>
-          <rect x="32" y="128" width="52" height="7" rx="3.5" fill="var(--accent)"/>
-          <rect x="32" y="142" width="72" height="4" rx="2" fill="var(--art-line)"/>
-          <rect x="32" y="151" width="58" height="4" rx="2" fill="var(--art-line)"/>
-          <rect x="108" y="158" width="6" height="16" rx="1.5" fill="var(--accent)" opacity=".7"/>
-          <rect x="117" y="150" width="6" height="24" rx="1.5" fill="var(--accent)"/>
-          <path d="M4 200h148l-9 10H13z" fill="var(--art-base)" stroke="var(--art-frame)" stroke-width="2"/>
-          <circle cx="100" cy="100" r="4.5" fill="var(--accent)"/>
-          <path d="M102.8 84.2A16 16 0 0 1 115.2 95.1" stroke="var(--accent)" stroke-width="4.5"/>
-          <path d="M105.2 70.5A30 30 0 0 1 128.5 90.7" stroke="var(--accent)" stroke-width="4.5" opacity=".7"/>
-          <path d="M107.6 56.7A44 44 0 0 1 141.8 86.4" stroke="var(--accent)" stroke-width="4.5" opacity=".4"/>
-        </svg>
-      </figure>
-    </section>
-
     <div class="panel" id="panel">
-      <!-- First visit, or "Add another TV" -->
-      <section class="card" id="setupCard" aria-labelledby="setupTitle" hidden>
-        <h2 id="setupTitle" tabindex="-1">Connect to a TV</h2>
-        <p class="sub">Find it on the TV, in the Office TV app.</p>
-        <form id="setupForm" novalidate autocomplete="off">
-          <div class="field">
-            <label for="code">TV code</label>
-            <input id="code" class="code" name="code" type="text" inputmode="text" autocapitalize="characters" autocorrect="off" spellcheck="false"
-                   maxlength="120" placeholder="7K3M9-QX2TD" aria-describedby="codeHint codeErr">
-            <p class="hint" id="codeHint">10 letters and numbers, as shown on the TV.</p>
-            <p class="field-err" id="codeErr" role="alert" hidden></p>
+      <!-- Home: type the code shown on the TV, share -->
+      <section class="card home" id="homeCard" aria-labelledby="homeTitle">
+        <div class="home-ic" aria-hidden="true"><svg class="ic"><use href="#i-cast"/></svg></div>
+        <h1 id="homeTitle" tabindex="-1">Share your screen on the TV</h1>
+        <form id="shareForm" novalidate autocomplete="off">
+          <input id="code" class="code" name="code" type="text" inputmode="numeric" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"
+                 maxlength="120" placeholder="4-digit code" aria-label="TV code" aria-describedby="codeErr codeNote">
+          <p class="field-err" id="codeErr" role="alert" hidden></p>
+          <div class="notice" id="notice" role="status" hidden>
+            <svg class="ic"><use id="noticeIcon" href="#i-info"/></svg><p><strong id="noticeTitle"></strong><span id="noticeText"></span></p>
           </div>
-          <div class="field">
-            <label for="tvName">TV name <span class="opt">(optional)</span></label>
-            <input id="tvName" name="tvName" type="text" maxlength="40" placeholder="Conference Room">
-          </div>
-          <div class="notice bad" id="setupErr" role="alert" hidden>
-            <svg class="ic"><use href="#i-alert"/></svg><p><strong id="setupErrTitle"></strong><span id="setupErrText"></span></p>
-          </div>
-          <button class="btn btn-primary btn-big" id="connectBtn" type="submit">
-            <span class="spin" aria-hidden="true"></span><svg class="ic"><use href="#i-cast"/></svg><span id="connectLabel">Connect and share screen</span>
+          <button class="btn btn-primary btn-big" id="shareBtn" type="submit">
+            <span class="spin" aria-hidden="true"></span><svg class="ic"><use href="#i-cast"/></svg><span id="shareLabel">Share screen</span>
           </button>
-          <p class="fine">Your browser will then ask what to share.</p>
-          <div class="text-actions" id="setupBackRow" hidden>
-            <button class="link" type="button" id="setupBack">Back to my TVs</button>
-          </div>
+          <p class="fine" id="codeNote">The code is on the TV. It changes every time Office TV opens.</p>
         </form>
-      </section>
-
-      <!-- Returning visitor -->
-      <section class="card" id="homeCard" aria-labelledby="homeTitle" hidden>
-        <h2 id="homeTitle" tabindex="-1">Your TV</h2>
-        <div class="tvs" id="tvList" role="radiogroup" aria-labelledby="homeTitle"></div>
-        <div class="notice" id="offlineHint" hidden>
-          <svg class="ic"><use href="#i-info"/></svg><p><strong>The TV is not answering.</strong><span>Open the Office TV app on the TV once, then try again.</span></p>
-        </div>
-        <div class="notice" id="notice" role="status" hidden>
-          <svg class="ic"><use id="noticeIcon" href="#i-info"/></svg><p><strong id="noticeTitle"></strong><span id="noticeText"></span></p>
-        </div>
-        <button class="btn btn-primary btn-big" id="shareBtn" type="button">
-          <span class="spin" aria-hidden="true"></span><svg class="ic"><use href="#i-cast"/></svg><span id="shareLabel">Share my screen</span>
-        </button>
-        <p class="fine">Your browser will then ask what to share.</p>
-        <div class="text-actions">
-          <button class="link" type="button" id="addBtn">Add another TV</button>
-          <button class="link danger" type="button" id="forgetBtn">Forget this TV</button>
-        </div>
-        <div class="confirm" id="forgetConfirm" hidden>
-          <p id="forgetText"></p>
-          <div class="row">
-            <button class="btn btn-danger" type="button" id="forgetYes">Forget</button>
-            <button class="btn btn-quiet" type="button" id="forgetNo">Keep</button>
-          </div>
-        </div>
-        <p class="fine" id="storageNote" hidden>This browser will forget the TV when you close the tab.</p>
       </section>
 
       <!-- Phones, tablets and browsers without screen sharing -->
@@ -391,10 +276,7 @@ footer .ic { width: 16px; height: 16px; }
           <div class="live-actions">
             <button class="btn btn-stop" type="button" id="stopBtn"><svg class="ic" style="fill:currentColor;stroke:none"><use href="#i-stop"/></svg><span id="stopLabel">Stop sharing</span></button>
           </div>
-          <div class="sound-row" id="soundRow" hidden>
-            <p class="fine" id="soundNote"></p>
-            <button class="btn btn-quiet" type="button" id="soundBtn" hidden></button>
-          </div>
+          <p class="sound" id="soundNote" role="status" hidden><svg class="ic"><use id="soundIcon" href="#i-sound"/></svg><span id="soundText"></span></p>
           <p class="fine">Keep this tab open while you share. Closing it stops sharing.</p>
           <div class="conn" id="connInfo" hidden>
             <button class="conn-toggle" type="button" id="connToggle" aria-expanded="false" aria-controls="connDetails"><svg class="ic"><use href="#i-chevron"/></svg>Connection info</button>
@@ -414,10 +296,10 @@ footer .ic { width: 16px; height: 16px; }
   <section class="help" id="help" aria-labelledby="helpTitle">
     <h2 id="helpTitle">Help</h2>
     <div class="help-grid">
-      <div><h3>The TV shows as offline?</h3><p>Open the Office TV app on the TV once. It stays reachable after that.</p></div>
-      <div><h3>Smooth picture</h3><p>Works best when the laptop and TV are on the same Wi-Fi.</p></div>
+      <div><h3>No TV answered?</h3><p>Type the code the TV shows right now. It changes every time Office TV opens on the TV.</p></div>
+      <div><h3>Same Wi-Fi</h3><p>Connect the laptop to the same Wi-Fi as the TV. The picture goes straight from the laptop to the TV.</p></div>
+      <div><h3>Sound on the TV</h3><p>Share a Chrome tab with “Also share tab audio” on. The sound plays on the TV only, not on the laptop.</p></div>
       <div><h3>First time on a Mac?</h3><p>macOS may ask you to allow Screen Recording for your browser in System Settings. Allow it, then reopen the browser.</p></div>
-      <div><h3>Sound</h3><p>To play sound on the TV, share a browser tab and keep “Also share tab audio” on.</p></div>
     </div>
   </section>
 
