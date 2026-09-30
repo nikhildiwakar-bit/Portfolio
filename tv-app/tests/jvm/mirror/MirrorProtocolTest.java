@@ -31,6 +31,7 @@ public final class MirrorProtocolTest {
         link();
         base64();
         sizes();
+        audio();
         loopback();
         System.out.println(pass + " passed, " + fail + " failed");
         System.exit(fail == 0 ? 0 : 1);
@@ -226,6 +227,41 @@ public final class MirrorProtocolTest {
     }
 
     /** A TV-like server and a phone-like client over real TCP on 127.0.0.1. */
+    static void audio() throws IOException {
+        MirrorProtocol.AudioConfig c = new MirrorProtocol.AudioConfig(48000, 2, MirrorProtocol.AUDIO_PCM16);
+        MirrorProtocol.AudioConfig d = MirrorProtocol.AudioConfig.decode(c.encode());
+        ok(d.sampleRate == 48000 && d.channels == 2 && d.encoding == MirrorProtocol.AUDIO_PCM16, "AUDIO_CONFIG round trip");
+        ok(d.frameBytes() == 4 && d.bytesFor(10) == 1920, "48 kHz stereo: 1920 bytes per 10 ms");
+        for (byte[] bad : new byte[][] {
+            null, new byte[5],
+            new MirrorProtocol.AudioConfig(4000, 2, 1).encode(),
+            new MirrorProtocol.AudioConfig(48000, 3, 1).encode(),
+            new MirrorProtocol.AudioConfig(48000, 0, 1).encode(),
+            new MirrorProtocol.AudioConfig(48000, 2, 9).encode(),
+        }) {
+            boolean threw = false;
+            try {
+                MirrorProtocol.AudioConfig.decode(bad);
+            } catch (IOException e) {
+                threw = true;
+            }
+            ok(threw, "bad AUDIO_CONFIG refused (" + (bad == null ? "null" : bad.length + " bytes") + ")");
+        }
+        byte[] pcm = bytes(1920, 21);
+        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+        MirrorProtocol.writeAudio(bo, 123456789L, pcm, 0, pcm.length);
+        MirrorProtocol.Message m = MirrorProtocol.readMessage(new DataInputStream(new ByteArrayInputStream(bo.toByteArray())));
+        ok(m.type == MirrorProtocol.T_AUDIO && m.payload.length == 8 + 1920, "AUDIO framing");
+        ok(MirrorProtocol.getLong(m.payload, 0) == 123456789L, "AUDIO pts");
+        ok(Arrays.equals(MirrorProtocol.audioData(m.payload), pcm), "AUDIO data");
+        ok(MirrorProtocol.audioData(new byte[8]) == null && MirrorProtocol.audioData(null) == null, "empty AUDIO ignored");
+        ok(MirrorProtocol.pcmRms(new byte[1920], 0, 1920) == 0, "silence has RMS 0");
+        byte[] loud = new byte[4];
+        loud[0] = (byte) 0xFF; loud[1] = 0x7F; loud[2] = 0x01; loud[3] = (byte) 0x80; // +32767, -32767
+        ok(Math.abs(MirrorProtocol.pcmRms(loud, 0, 4) - 32767) < 0.01, "full scale RMS 32767");
+        ok(MirrorProtocol.T_AUDIO_CONFIG == 6 && MirrorProtocol.T_AUDIO == 7, "sound message types 6 and 7");
+    }
+
     static void loopback() throws Exception {
         System.out.println("-- TCP loopback session");
         final byte[] secret = bytes(32, 7);

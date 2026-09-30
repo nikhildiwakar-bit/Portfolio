@@ -31,6 +31,9 @@ import javax.crypto.spec.SecretKeySpec;
  *   PING    both ways    empty (keep-alive)
  *   BYE     both ways    empty, or kind u8 (BYE_NORMAL, BYE_ERROR) | reason text UTF-8 (session over)
  *   KEYREQ  TV -> phone  empty (send a sync frame as soon as possible)
+ *   AUDIO_CONFIG phone -> TV  sampleRate u32 | channels u8 (1, 2) | encoding u8 (AUDIO_PCM16)   (sound follows)
+ *   AUDIO   phone -> TV  pts i64 (microseconds) | PCM 16-bit little-endian, channels interleaved
+ * A receiver ignores message types it does not know, so older TVs simply show the video without sound.
  * </pre>
  */
 public final class MirrorProtocol {
@@ -52,6 +55,11 @@ public final class MirrorProtocol {
     public static final int T_PING = 3;
     public static final int T_BYE = 4;
     public static final int T_KEYREQ = 5;
+    public static final int T_AUDIO_CONFIG = 6;
+    public static final int T_AUDIO = 7;
+
+    public static final int AUDIO_PCM16 = 1;
+    public static final int AUDIO_HEADER_LEN = 8;
 
     public static final int FLAG_KEY = 1;
     public static final int BYE_NORMAL = 0;
@@ -298,6 +306,76 @@ public final class MirrorProtocol {
             if (p == null || p.length <= FRAME_HEADER_LEN) throw new IOException("FRAME too short");
             return new Frame((p[0] & FLAG_KEY) != 0, getLong(p, 1), p, nowMs);
         }
+    }
+
+    // ---------- sound ----------
+
+    /** AUDIO_CONFIG: the format of the AUDIO messages that follow. */
+    public static final class AudioConfig {
+        public final int sampleRate, channels, encoding;
+
+        public AudioConfig(int sampleRate, int channels, int encoding) {
+            this.sampleRate = sampleRate;
+            this.channels = channels;
+            this.encoding = encoding;
+        }
+
+        public byte[] encode() {
+            byte[] out = new byte[6];
+            putInt(out, 0, sampleRate);
+            out[4] = (byte) channels;
+            out[5] = (byte) encoding;
+            return out;
+        }
+
+        public static AudioConfig decode(byte[] p) throws IOException {
+            if (p == null || p.length < 6) throw new IOException("AUDIO_CONFIG too short");
+            int rate = getInt(p, 0), ch = p[4] & 0xFF, enc = p[5] & 0xFF;
+            if (rate < 8000 || rate > 96000) throw new IOException("AUDIO_CONFIG bad rate " + rate);
+            if (ch < 1 || ch > 2) throw new IOException("AUDIO_CONFIG bad channels " + ch);
+            if (enc != AUDIO_PCM16) throw new IOException("AUDIO_CONFIG unknown encoding " + enc);
+            return new AudioConfig(rate, ch, enc);
+        }
+
+        /** Bytes of one frame (one sample for every channel). */
+        public int frameBytes() {
+            return 2 * channels;
+        }
+
+        /** Bytes of ms milliseconds of sound. */
+        public int bytesFor(int ms) {
+            return (int) ((long) sampleRate * ms / 1000) * frameBytes();
+        }
+    }
+
+    /** Writes AUDIO in one write call: pts, then PCM data. */
+    public static void writeAudio(OutputStream out, long ptsUs, byte[] pcm, int off, int len) throws IOException {
+        byte[] buf = new byte[5 + AUDIO_HEADER_LEN + len];
+        buf[0] = (byte) T_AUDIO;
+        putInt(buf, 1, AUDIO_HEADER_LEN + len);
+        putLong(buf, 5, ptsUs);
+        System.arraycopy(pcm, off, buf, 5 + AUDIO_HEADER_LEN, len);
+        out.write(buf);
+    }
+
+    /** PCM data of an AUDIO payload (after the pts), or null if the payload is too short. */
+    public static byte[] audioData(byte[] p) {
+        if (p == null || p.length <= AUDIO_HEADER_LEN) return null;
+        byte[] d = new byte[p.length - AUDIO_HEADER_LEN];
+        System.arraycopy(p, AUDIO_HEADER_LEN, d, 0, d.length);
+        return d;
+    }
+
+    /** Root mean square of 16-bit little-endian PCM (0 = silence, 32767 = full scale), for diagnostics. */
+    public static double pcmRms(byte[] pcm, int off, int len) {
+        int n = len / 2;
+        if (n <= 0) return 0;
+        double sum = 0;
+        for (int i = 0; i < n; i++) {
+            int v = (short) ((pcm[off + 2 * i] & 0xFF) | (pcm[off + 2 * i + 1] << 8));
+            sum += (double) v * v;
+        }
+        return Math.sqrt(sum / n);
     }
 
     // ---------- Annex-B ----------
