@@ -6,8 +6,8 @@
 // opens; 10 letters and numbers on older TVs) and press Share screen. Nothing is saved: the code is typed
 // each time. Nothing talks to the relay until Share screen is pressed, and the relay connection is closed
 // again when sharing ends.
-import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=3';
-import { CastSender, captureScreen, senderSupport } from './cast.js?v=4';
+import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=4';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=5';
 
 const $ = id => document.getElementById(id);
 const INFO_KEY = 'officetv.info';

@@ -2,11 +2,11 @@
 // Signaling (SDP offer/answer, with every ICE candidate inside) travels over the same encrypted relay
 // topic as commands, in c2r (controller -> receiver) and r2c (receiver -> controller) messages that the
 // TV app ignores. Media goes directly between the browsers; the relay never sees it.
-import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, Relay, deriveKey, deriveTopic, isShortCode, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=3';
+import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, Relay, deriveKey, deriveTopic, isShortCode, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=4';
 import {
     RX_STALE_MS, STATS_MS, connectionRows, connectionVerdict, hardwareProbe, parseReceiverStats, parseSenderStats, readReceiverMessage,
     receiverStatsMessage, selectedPair,
-} from './stats.js?v=1';
+} from './stats.js?v=2';
 import { STEADY_FPS, steadyTrack } from './steady.js';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
