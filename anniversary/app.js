@@ -112,8 +112,15 @@ function pointerPos(e){
   return {x:e.clientX,y:e.clientY};
 }
 
+/* rest position viewport-relative hota hai, isliye scroll ke baad purana ho jaata hai — drag shuru hone par fresh lete hain */
+function refreshRest(){
+  const p = svgToScreen(slingSvg,150,55);
+  restX = p.x; restY = p.y;
+}
+
 function startDrag(e){
   if(hasFired) return;
+  refreshRest();
   dragging = true;
   hint.classList.add('hidden');
   pullLabel.classList.add('hidden');
