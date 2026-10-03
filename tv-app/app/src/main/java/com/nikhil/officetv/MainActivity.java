@@ -121,7 +121,12 @@ public class MainActivity extends Activity {
 
         page = vbox();
         page.setPadding(ui.dp(40), ui.dp(20), ui.dp(40), ui.dp(16));
-        page.addView(header(), fill(0, 0, 0, gap));
+        if (vw < 560) {
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, ui.dp(36));
+            blp.setMargins(0, 0, 0, ui.dp(8));
+            page.addView(schoolBadge(36), blp);
+        }
+        page.addView(header(vw >= 560), fill(0, 0, 0, gap));
         // Spacers above and below the content: centred on big screens, no gap when the page has to scroll.
         topSpace = new View(this);
         page.addView(topSpace, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -188,7 +193,20 @@ public class MainActivity extends Activity {
 
     // ---------- building the screen ----------
 
-    private View header() {
+    /** The school's logo on a white badge (its dark-blue lettering needs a light background). */
+    private View schoolBadge(int heightDp) {
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.school_logo);
+        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        logo.setAdjustViewBounds(true);
+        logo.setContentDescription("Fountainhead School");
+        int pad = ui.dp(Math.max(4, heightDp / 7));
+        logo.setPadding(pad * 2, pad, pad * 2, pad);
+        logo.setBackground(ui.rounded(0xFFFFFFFF, 0xFFFFFFFF, 12, 0));
+        return logo;
+    }
+
+    private View header(boolean withLogo) {
         LinearLayout h = new LinearLayout(this);
         h.setOrientation(LinearLayout.HORIZONTAL);
         h.setGravity(Gravity.CENTER_VERTICAL);
@@ -207,6 +225,13 @@ public class MainActivity extends Activity {
         tvName.setEllipsize(android.text.TextUtils.TruncateAt.END);
         names.addView(tvName);
         h.addView(names, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        if (withLogo) {
+            View badge = schoolBadge(52);
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, ui.dp(52));
+            blp.setMargins(ui.dp(12), 0, ui.dp(22), 0);
+            h.addView(badge, blp);
+        }
 
         LinearLayout time = vbox();
         time.setGravity(Gravity.END);

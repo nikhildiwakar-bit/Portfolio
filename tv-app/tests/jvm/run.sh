@@ -77,7 +77,7 @@ if [ -f "$ANDROID_ALL_JAR" ]; then
   cat > "$STUB/R.java" <<'J'
 package com.nikhil.officetv;
 public final class R {
-  public static final class drawable { public static final int ic_launcher = 1, banner = 2; }
+  public static final class drawable { public static final int ic_launcher = 1, banner = 2, school_logo = 10; }
   public static final class string { public static final int app_name = 3, a11y_desc = 4; }
   public static final class xml { public static final int a11y_config = 5; }
 }
