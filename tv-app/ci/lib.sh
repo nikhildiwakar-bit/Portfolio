@@ -331,6 +331,15 @@ else:
 PY
 }
 
+# refresh_code: the code can change when the app is opened (3.6+: 4 digits, new on every open), so read the
+# current one from the status instead of the log line printed at startup.
+refresh_code() {
+    local c
+    c=$(status_field code)
+    case $c in ''|'!json') return 0 ;; esac
+    CODE=$c
+}
+
 # status_field <key>: a field of GET /api/status (empty if the call fails).
 status_field() {
     [ "$(http GET /api/status)" = 200 ] || return 0

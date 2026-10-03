@@ -81,6 +81,7 @@ relay_connected() { RELAY_STATE=$(status_field relay); [ "$RELAY_STATE" = CONNEC
 # relay_step <step> [session] [expect]: runs relay-cast.mjs; sets RELAY_RC (0/1/2) and RELAY_OUT (RESULT json).
 relay_step() {
     local out
+    refresh_code
     out=$("$NODE" "$HERE/relay-cast.mjs" --relay "$RELAY" --code "$CODE" --step "$1" ${2:+--session "$2"} \
         --expect "${3:-ok}" --timeout 45 2>&1)
     RELAY_RC=$?
@@ -169,8 +170,9 @@ else
     S dumpsys activity activities > "$OUT/dumpsys-activities-start.txt"
 fi
 need_api "" "first start"
+refresh_code
 FIRST_CODE=$CODE
-if [ ${#CODE} = 10 ]; then pass "TV code looks valid ($CODE)"; else fail "TV code '$CODE' is not 10 characters"; fi
+if printf '%s' "$CODE" | grep -qE '^[0-9]{4}$'; then pass "TV code is 4 digits ($CODE)"; else fail "TV code '$CODE' is not 4 digits"; fi
 save_env
 
 # ---------------------------------------------------------------- status
@@ -202,7 +204,8 @@ fi
 # ---------------------------------------------------------------- home screen
 sleep 2
 screenshot 01-home
-DISPLAY_CODE="${CODE:0:5}-${CODE:5:5}"
+refresh_code
+DISPLAY_CODE="$CODE"
 if ui_dump home; then
     problems=$(ui_check "$OUT/ui-home.xml" "$DISPLAY_CODE" "$SITE")
     # With a too-old WebView the "Update Android System WebView" card takes focus and scrolls the
@@ -399,7 +402,8 @@ if wait_until 15 server_down; then pass "force-stop stopped the app"; else info 
 launch_app || fail "launcher could not start the app after force-stop"
 wait_app_on_screen 30 || fail "home screen not shown after force-stop (resumed: ${RESUMED:-nothing})"
 need_api "$old" "after force-stop + start"
-if [ "$CODE" = "$FIRST_CODE" ]; then pass "TV code kept after restart"; else fail "TV code changed after restart ($FIRST_CODE -> $CODE)"; fi
+refresh_code
+if printf '%s' "$CODE" | grep -qE '^[0-9]{4}$'; then pass "TV shows a 4-digit code after restart ($CODE)"; else fail "no 4-digit code after restart ('$CODE')"; fi
 case $GRANT in
     a11y | both) wait_until 20 a11y_on && pass "accessibility connected again after restart" || warn "accessibility not connected after restart" ;;
 esac
