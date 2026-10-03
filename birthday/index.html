@@ -250,19 +250,25 @@
   }
 
   /* ---------- BIRTHDAY PEOPLE ---------- */
-  .bday-people{display:flex;flex-wrap:wrap;justify-content:center;gap:18px;margin:0 0 18px;}
-  .bday-card{opacity:0;transform:translateY(10px) scale(.96);transition:opacity .9s ease, transform .9s ease;}
-  .reveal.show .bday-card{opacity:1;transform:none;}
+  .bday-people{display:flex;flex-wrap:wrap;justify-content:center;gap:22px;margin:14px 0 0;padding:0 16px;position:relative;z-index:3;}
+  .bday-card{text-align:center;animation:cardIn .8s ease both;}
+  @keyframes cardIn{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
   .bday-photo{
-    width:132px;height:132px;border-radius:50%;margin:0 auto 10px;overflow:hidden;
-    border:4px solid #fff;box-shadow:0 0 0 3px var(--brand-red),0 12px 28px rgba(182,44,44,.25);
-    background:linear-gradient(135deg,var(--brand-blue),var(--brand-blue-bright));
+    width:104px;height:104px;border-radius:50%;margin:0 auto;overflow:hidden;
+    border:4px solid #fff;
+    box-shadow:0 0 0 3px var(--brand-blue),0 0 0 6px rgba(182,44,44,.55),0 12px 28px rgba(12,84,160,.28);
+    background:var(--brand-blue);
     display:flex;align-items:center;justify-content:center;
-    color:#fff;font-family:'Parisienne',cursive;font-size:54px;
+    color:#fff;font-family:'Inter',sans-serif;font-weight:500;font-size:44px;
   }
   .bday-photo img{width:100%;height:100%;object-fit:cover;display:block;}
-  .bday-name{font-weight:600;font-size:19px;color:var(--ink);}
-  .bday-role{font-size:13px;color:var(--text-soft);letter-spacing:.04em;margin-top:2px;}
+  .bday-name{
+    display:inline-block;margin-top:-16px;position:relative;
+    background:var(--brand-blue);color:#fff;border:3px solid #fff;border-radius:999px;
+    padding:8px 18px;font:700 13px 'Inter',sans-serif;letter-spacing:.06em;text-transform:uppercase;
+    box-shadow:0 8px 18px rgba(12,84,160,.3);
+  }
+  .bday-role{font-size:12px;color:var(--text-soft);letter-spacing:.04em;margin-top:8px;}
   .bday-none{font-size:15px;color:var(--text-soft);}
 
   /* ---------- STAFF PANEL ---------- */
@@ -339,8 +345,9 @@
   <div class="ground"></div>
 </div>
 
+<div class="bday-people" id="bdayPeople"></div>
+
 <div class="reveal" id="reveal">
-  <div class="bday-people" id="bdayPeople"></div>
   <div class="eyebrow">with sincere appreciation and warm wishes</div>
   <div class="headline">Happy Birthday</div>
   <div class="subline">On this special day, I wanted to take a moment to wish you not just a happy birthday, but a year ahead filled with continued success, good health, and well-deserved recognition. Thank you for the guidance, trust, and support you extend so consistently &mdash; it truly does not go unnoticed. Wishing you all the very best, today and always.</div>
@@ -666,7 +673,7 @@ function renderPeople(list){
   list.forEach((p,i)=>{
     const card = document.createElement('div');
     card.className = 'bday-card';
-    card.style.transitionDelay = (i*0.15)+'s';
+    card.style.animationDelay = (i*0.15)+'s';
     const ph = document.createElement('div');
     ph.className = 'bday-photo';
     const showInitials = ()=>{ ph.textContent = initials(p.name); };
