@@ -264,6 +264,28 @@
   .bday-name{font-weight:600;font-size:19px;color:var(--ink);}
   .bday-role{font-size:13px;color:var(--text-soft);letter-spacing:.04em;margin-top:2px;}
   .bday-none{font-size:15px;color:var(--text-soft);}
+
+  /* ---------- STAFF PANEL ---------- */
+  .adm-btn{position:fixed;right:14px;bottom:14px;z-index:50;font:600 13px 'Inter',sans-serif;
+    background:var(--brand-blue);color:#fff;border:0;border-radius:999px;padding:10px 16px;cursor:pointer;
+    box-shadow:0 6px 18px rgba(12,84,160,.35);}
+  .adm{position:fixed;inset:0;z-index:60;background:rgba(18,58,99,.45);display:none;align-items:center;justify-content:center;padding:14px;}
+  .adm.open{display:flex;}
+  .adm-box{background:#fff;border-radius:16px;width:100%;max-width:460px;max-height:90vh;overflow:auto;padding:20px;
+    box-shadow:0 20px 50px rgba(0,0,0,.3);}
+  .adm-box h2{margin:0 0 12px;font-size:18px;color:var(--ink);display:flex;justify-content:space-between;align-items:center;}
+  .adm-box h2 button{border:0;background:none;font-size:22px;cursor:pointer;color:var(--text-soft);}
+  .adm-box label{display:block;font-size:12px;font-weight:600;color:var(--text-soft);margin:10px 0 4px;letter-spacing:.04em;}
+  .adm-box input{width:100%;padding:10px;border:1px solid #c9d6e6;border-radius:10px;font:14px 'Inter',sans-serif;}
+  .adm-prev{width:72px;height:72px;border-radius:50%;object-fit:cover;margin-top:8px;display:none;border:2px solid var(--brand-blue);}
+  .adm-add{margin-top:14px;width:100%;padding:11px;border:0;border-radius:10px;background:var(--brand-red);color:#fff;font:600 14px 'Inter',sans-serif;cursor:pointer;}
+  .adm-list{margin-top:16px;border-top:1px solid #e3ebf5;}
+  .adm-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #eef3f9;font-size:14px;}
+  .adm-row img,.adm-row .ini{width:38px;height:38px;border-radius:50%;object-fit:cover;background:var(--brand-blue);color:#fff;
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex:none;}
+  .adm-row .info{flex:1;min-width:0;}
+  .adm-row .info small{display:block;color:var(--text-soft);}
+  .adm-row button{border:1px solid #c9d6e6;background:#fff;border-radius:8px;padding:6px 9px;font-size:12px;cursor:pointer;}
 </style>
 </head>
 <body>
@@ -336,6 +358,20 @@
     </div>
   </div>
   <div class="video-caption">for you 🎂</div>
+  </div>
+</div>
+
+<button class="adm-btn" id="admOpen">+ Staff</button>
+<div class="adm" id="adm">
+  <div class="adm-box">
+    <h2>Staff birthdays <button id="admClose" aria-label="Close">&times;</button></h2>
+    <label>Name</label><input id="fName" placeholder="e.g. Mrs. Priya Shah">
+    <label>Designation (optional)</label><input id="fRole" placeholder="e.g. Mathematics Teacher">
+    <label>Date of birth</label><input id="fDob" type="date">
+    <label>Photo</label><input id="fPhoto" type="file" accept="image/*">
+    <img class="adm-prev" id="fPrev" alt="">
+    <button class="adm-add" id="fAdd">Save staff</button>
+    <div class="adm-list" id="admList"></div>
   </div>
 </div>
 
@@ -656,13 +692,94 @@ function renderPeople(list){
   }
 }
 
-fetch(DATA_URL, {cache:'no-store'})
-  .then(r=>r.json())
-  .then(all=>{
-    const md = todayMD();
-    renderPeople(all.filter(p=>p.dob && p.dob.slice(5,10)===md));
-  })
-  .catch(()=>{});
+
+/* ---------- staff panel (name + photo), stored in this browser ---------- */
+const STORE_KEY = 'bdayStaff';
+const $ = id=>document.getElementById(id);
+let staff = [];
+
+function loadLocal(){ try{ return JSON.parse(localStorage.getItem(STORE_KEY)); }catch(e){ return null; } }
+function saveLocal(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(staff)); }catch(e){ alert('Storage full - use a smaller photo.'); } }
+
+function showToday(){
+  const md = todayMD();
+  renderPeople(staff.filter(p=>p.dob && p.dob.slice(5,10)===md));
+}
+
+function previewPerson(p){
+  renderPeople([p]);
+  $('adm').classList.remove('open');
+  reveal.classList.add('show');
+  reveal.scrollIntoView({behavior:'smooth'});
+}
+
+function renderList(){
+  const box = $('admList');
+  box.textContent = '';
+  staff.forEach((p,i)=>{
+    const row = document.createElement('div');
+    row.className = 'adm-row';
+    let av;
+    if(p.photo){ av = document.createElement('img'); av.src = p.photo; }
+    else { av = document.createElement('div'); av.className='ini'; av.textContent = initials(p.name); }
+    const info = document.createElement('div');
+    info.className = 'info';
+    info.textContent = p.name;
+    const sm = document.createElement('small');
+    sm.textContent = (p.dob||'') + (p.designation ? ' · '+p.designation : '');
+    info.appendChild(sm);
+    const pv = document.createElement('button'); pv.textContent = 'Preview';
+    pv.onclick = ()=>previewPerson(p);
+    const del = document.createElement('button'); del.textContent = 'Delete';
+    del.onclick = ()=>{ staff.splice(i,1); saveLocal(); renderList(); showToday(); };
+    row.append(av, info, pv, del);
+    box.appendChild(row);
+  });
+}
+
+// shrink photo to 300px square-ish JPEG so it fits in localStorage
+function readPhoto(file){
+  return new Promise(res=>{
+    const fr = new FileReader();
+    fr.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const side = Math.min(img.width, img.height), size = 300;
+        const c = document.createElement('canvas'); c.width = c.height = size;
+        c.getContext('2d').drawImage(img,(img.width-side)/2,(img.height-side)/2,side,side,0,0,size,size);
+        res(c.toDataURL('image/jpeg',.85));
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+let newPhoto = '';
+$('fPhoto').addEventListener('change', async e=>{
+  const f = e.target.files[0];
+  newPhoto = f ? await readPhoto(f) : '';
+  $('fPrev').src = newPhoto; $('fPrev').style.display = newPhoto ? 'block' : 'none';
+});
+$('fAdd').addEventListener('click', ()=>{
+  const name = $('fName').value.trim(), dob = $('fDob').value;
+  if(!name || !dob){ alert('Name and date of birth are required.'); return; }
+  staff.push({name, dob, designation:$('fRole').value.trim(), photo:newPhoto});
+  saveLocal(); renderList(); showToday();
+  ['fName','fRole','fDob','fPhoto'].forEach(id=>$(id).value='');
+  newPhoto=''; $('fPrev').style.display='none';
+});
+$('admOpen').onclick = ()=>$('adm').classList.add('open');
+$('admClose').onclick = ()=>$('adm').classList.remove('open');
+
+// saved list wins; otherwise start from staff.json
+(async()=>{
+  staff = loadLocal();
+  if(!Array.isArray(staff)){
+    try{ staff = await (await fetch(DATA_URL,{cache:'no-store'})).json(); }catch(e){ staff = []; }
+  }
+  renderList(); showToday();
+})();
 </script>
 
 </body>
