@@ -7,7 +7,7 @@ import {
     RX_STALE_MS, STATS_MS, connectionRows, connectionVerdict, hardwareProbe, parseReceiverStats, parseSenderStats, readReceiverMessage,
     receiverStatsMessage, selectedPair,
 } from './stats.js?v=2';
-import { STEADY_FPS, steadyTrack } from './steady.js';
+import { STEADY_FPS, steadyTrack } from './steady.js?v=2';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -17,6 +17,9 @@ export const MAX_SIGNAL_PARTS = 8;
 /** Video budget: the laptop's native resolution (up to 4K) at up to 30 fps and 15 Mbps, so text is as sharp as on the laptop. */
 export const MAX_BITRATE = 15000000;
 export const MAX_FPS = 60;
+/** The rates the sender may fall back to on a slow computer, and how often it checks. */
+export const FPS_STEPS = [60, 30, 20, 15];
+export const ADAPT_MS = 3000;
 /** Keep the resolution (sharp text) and let the encoder lower the frame rate when bandwidth or the processor runs short. */
 export const DEGRADATION = 'maintain-resolution';
 /** Screen content (text, slides, spreadsheets): the encoder keeps fine detail instead of smooth motion. */
@@ -161,14 +164,14 @@ export function videoEncoding() {
  * plain caps only. Where degradationPreference is not accepted, Chrome still keeps the resolution for a
  * 'detail' track (CONTENT_HINT).
  */
-export async function tuneSender(sender) {
+export async function tuneSender(sender, fps = MAX_FPS) {
     if (!sender || typeof sender.getParameters !== 'function' || typeof sender.setParameters !== 'function') return false;
     const apply = async (priority, degradation) => {
         const p = sender.getParameters();
         if (!p || !Array.isArray(p.encodings) || !p.encodings.length) return false;
         for (const e of p.encodings) {
             e.maxBitrate = MAX_BITRATE;
-            e.maxFramerate = MAX_FPS;
+            e.maxFramerate = fps;
             if (priority) { e.priority = 'high'; e.networkPriority = 'high'; }
         }
         if (degradation) p.degradationPreference = DEGRADATION;
@@ -848,6 +851,11 @@ export class CastSender {
         this.rxStatsAt = 0;
         this.rxStatsCount = 0;
         this._txPrev = null;
+        this.fpsLevel = MAX_FPS; // the frame rate asked of the encoder; _adapt() lowers it on a slow computer
+        this._adaptTimer = null;
+        this._adaptPrev = null;
+        this._adaptBad = 0;
+        this._adaptGood = 0;
         this._encoderHw = hardwareProbe(this._w.navigator && this._w.navigator.mediaCapabilities, 'encoding');
         this._tvStarted = false;
         this._waiter = null;
@@ -1021,6 +1029,42 @@ export class CastSender {
         }
     }
 
+    /**
+     * A slow computer (a Chromebook with YouTube and other tabs open) cannot encode 60 frames a second without
+     * making everything else lag. Every ADAPT_MS the encoder's own numbers are checked: if the processor is the
+     * limit, or one frame takes longer to encode than the frame budget allows, the rate steps down
+     * (60, 30, 20, 15 fps); after a long calm stretch it may step back up once. The picture's sharpness and size
+     * are never reduced, only how often it is sent.
+     */
+    _startAdapt() {
+        if (this._adaptTimer || typeof setInterval !== 'function') return;
+        this._adaptTimer = setInterval(() => { this._adapt().catch(() => {}); }, ADAPT_MS);
+    }
+
+    async _adapt() {
+        const pc = this.pc;
+        if (!pc || this.state !== 'sharing' || typeof pc.getStats !== 'function') return;
+        const tx = parseSenderStats(await pc.getStats(), this._adaptPrev);
+        if (this.pc !== pc) return;
+        this._adaptPrev = tx;
+        const enc = typeof tx.encodeMs === 'number' ? tx.encodeMs : null;
+        const level = this.fpsLevel;
+        const budget = 1000 / level; // ms per frame at this rate
+        const slow = tx.limit === 'cpu' || (enc !== null && enc > budget * 0.8);
+        if (slow) { this._adaptBad++; this._adaptGood = 0; } else { this._adaptBad = 0; this._adaptGood++; }
+        const i = FPS_STEPS.indexOf(level);
+        let next = level;
+        if (this._adaptBad >= 2 && i < FPS_STEPS.length - 1) next = FPS_STEPS[i + 1];
+        else if (this._adaptGood >= 12 && i > 0 && enc !== null && enc < (1000 / FPS_STEPS[i - 1]) * 0.35) next = FPS_STEPS[i - 1];
+        if (next === level) return;
+        this._adaptBad = 0;
+        this._adaptGood = 0;
+        this.fpsLevel = next;
+        if (this.steady && typeof this.steady.setFps === 'function') this.steady.setFps(next);
+        await tuneSender(this.videoSender, next);
+        if (this._log) this._log('fps', next + (slow ? ' (this computer is busy)' : ' (calm again)'));
+    }
+
     /** Sends the picture at the TV's screen size (fitScale), again whenever the shared window or the TV changes. */
     _fitToTv(screen) {
         const sender = this.videoSender;
@@ -1082,7 +1126,8 @@ export class CastSender {
                 clearTimeout(this._restartTimer);
                 if (this._log) this._log(this.state === 'connecting' ? 'connected' : 'reconnected');
                 this._set('sharing');
-                tuneSender(this.videoSender);
+                tuneSender(this.videoSender, this.fpsLevel);
+                this._startAdapt();
             }
         } else if (s === 'failed') {
             this._dropped();
@@ -1155,6 +1200,8 @@ export class CastSender {
         clearTimeout(this._dropTimer);
         clearTimeout(this._restartTimer);
         clearTimeout(this._connectTimer);
+        clearInterval(this._adaptTimer);
+        this._adaptTimer = null;
         const w = this._waiter;
         this._waiter = null;
         if (w) w.reject(castError('closed', 'closed'));

@@ -20,7 +20,7 @@ export function steadySupported(w = globalThis) {
 }
 
 /**
- * Wraps a live video track. Returns {track, stop, stats} or null (APIs missing, or the track is not a live
+ * Wraps a live video track. Returns {track, stop, stats, setFps} or null (APIs missing, or the track is not a live
  * video track). track = the generated track to send (same contentHint), stop() ends it and frees the
  * processor, the worker and the frames it holds, stats = {frames: new frames sent, repeats: frames sent
  * again}. A frame keeps the source's timestamp, a repeat gets that time plus how long ago the frame came;
@@ -28,7 +28,7 @@ export function steadySupported(w = globalThis) {
  */
 export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = globalThis } = {}) {
     if (!steadySupported(w) || !track || track.kind !== 'video' || track.readyState === 'ended' || !workerUrl) return null;
-    const periodMs = 1000 / Math.max(1, Math.min(60, fps));
+    let periodMs = 1000 / Math.max(1, Math.min(60, fps));
     const clock = () => (w.performance && typeof w.performance.now === 'function' ? w.performance.now() : Date.now());
     let processor = null;
     let generator = null;
@@ -122,5 +122,12 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
         last = null;
     }
 
-    return { track: generator, stop, stats };
+    /** Changes the steady rate while sharing (a slow computer asks for less); 1-60 frames per second. */
+    function setFps(n) {
+        if (stopped) return;
+        periodMs = 1000 / Math.max(1, Math.min(60, +n || STEADY_FPS));
+        try { worker.postMessage(Math.round(periodMs)); } catch (e) { /* ignore */ }
+    }
+
+    return { track: generator, stop, stats, setFps };
 }

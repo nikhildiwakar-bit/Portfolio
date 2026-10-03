@@ -5,7 +5,7 @@ import * as otv from '../../../tv/otv.js';
 import {
     CastChannel, CastReceiver, CastSender, CONTENT_HINT, DEGRADATION, MAX_BITRATE, MAX_FPS, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, captureScreen, decodeSignal,
     displayMediaOptions, encodeSignal, parseReceiverFragment, preferCodec, preferH264, receiverUrl, senderSupport, signalMessages,
-    tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS, fitScale,
+    tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS, fitScale, FPS_STEPS,
 } from '../../../tv/cast.js';
 
 const CODE = '7K3M9QX2TD';
@@ -604,6 +604,55 @@ test('sender: the TV\'s screen size from its stats scales the picture to fit, on
     stats('1920x1080');
     await sleep(20);
     assert.equal(sets, 3);
+    assert.equal(sender.state, 'sharing');
+    sender.stop('user');
+    link.close();
+    tv.rx.close();
+});
+
+test('sender: a busy computer steps the frame rate down (60, 30, 20, 15) and a calm one may step back up', async () => {
+    const { tv, link, sender, stream } = await castRig();
+    sender.start(stream);
+    await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
+    const pc = FakePC.last;
+    pc.dc._open();
+    pc._conn('connected');
+    assert.equal(sender.state, 'sharing');
+    assert.deepEqual(FPS_STEPS, [60, 30, 20, 15]);
+    assert.equal(sender.fpsLevel, 60);
+    const calls = [];
+    sender.steady = { setFps: n => calls.push(n), stop() {} };
+    let n = 0;
+    const stat = (limit, encMs) => {
+        n++;
+        pc.stats = [
+            { id: 'c', type: 'codec', mimeType: 'video/H264' },
+            { id: 'o', type: 'outbound-rtp', kind: 'video', timestamp: 1000 + n * 3000, ssrc: 1, codecId: 'c', frameWidth: 1366, frameHeight: 768,
+                framesPerSecond: 40, bytesSent: n * 1e6, framesEncoded: n * 100, totalEncodeTime: n * 100 * encMs / 1000,
+                packetsSent: n * 100, totalPacketSendDelay: 0, qualityLimitationReason: limit },
+        ];
+    };
+    sender._stopAdaptTimerForTest = true;
+    clearInterval(sender._adaptTimer);
+    // Two busy readings in a row step down once; one is not enough.
+    stat('cpu', 10); await sender._adapt();
+    assert.equal(sender.fpsLevel, 60, 'one busy reading is not enough');
+    stat('cpu', 10); await sender._adapt();
+    assert.equal(sender.fpsLevel, 30);
+    assert.deepEqual(calls, [30]);
+    assert.equal(sender.videoSender.getParameters().encodings[0].maxFramerate, 30, 'the encoder is asked for 30 fps');
+    // Encoding slower than 80 % of the frame budget counts as busy even without "cpu".
+    stat('none', 30); await sender._adapt();
+    stat('none', 30); await sender._adapt();
+    assert.equal(sender.fpsLevel, 20);
+    for (let i = 0; i < 4; i++) { stat('cpu', 10); await sender._adapt(); }
+    assert.equal(sender.fpsLevel, 15);
+    for (let i = 0; i < 6; i++) { stat('cpu', 10); await sender._adapt(); }
+    assert.equal(sender.fpsLevel, 15, 'never below 15');
+    // A long calm stretch with cheap frames steps up one level.
+    for (let i = 0; i < 14; i++) { stat('none', 2); await sender._adapt(); }
+    assert.equal(sender.fpsLevel, 20);
+    assert.equal(calls[calls.length - 1], 20);
     assert.equal(sender.state, 'sharing');
     sender.stop('user');
     link.close();
