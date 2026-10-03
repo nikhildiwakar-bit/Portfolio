@@ -7,7 +7,7 @@ import {
     RX_STALE_MS, STATS_MS, connectionRows, connectionVerdict, hardwareProbe, parseReceiverStats, parseSenderStats, readReceiverMessage,
     receiverStatsMessage, selectedPair,
 } from './stats.js?v=2';
-import { STEADY_FPS, steadyTrack } from './steady.js?v=2';
+import { STEADY_FPS, steadyTrack } from './steady.js';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
