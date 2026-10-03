@@ -234,6 +234,9 @@ public class CastActivity extends Activity {
     private View overlay;
     private TextView overlayTitle, overlayText, overlayHint;
     private WebView web;
+    /** The laptop's own H.264 stream decoded natively (low latency), when both sides support it. */
+    private NativeVideo nativeVideo;
+    private android.net.wifi.WifiManager.WifiLock lowLatencyWifi;
     private String session = "";
     private boolean pageLoaded, pageFailed, visible, ending;
 
@@ -261,6 +264,15 @@ public class CastActivity extends Activity {
         root.addView(overlay, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
         setContentView(root);
+        nativeVideo = new NativeVideo(this, root, name -> ui.post(() -> {
+            WebView v = web;
+            if (v == null) return;
+            try {
+                v.evaluateJavascript("window.__otvVideoEvent && window.__otvVideoEvent('" + name + "')", null);
+            } catch (RuntimeException ignored) {
+            }
+        }));
+        if (Build.VERSION.SDK_INT >= 30) minimalPostProcessing(w);
         synchronized (LOCK) {
             current = new WeakReference<>(this);
         }
@@ -389,6 +401,7 @@ public class CastActivity extends Activity {
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true);
         // Only close() is exposed; it carries no data, so it is harmless even if another page ever saw it.
         w.addJavascriptInterface(new Bridge(forSession), "OfficeTvCast");
+        w.addJavascriptInterface(new VideoBridge(forSession), "OfficeTvVideo");
         w.setWebViewClient(new Client());
         w.setWebChromeClient(new Chrome());
     }
@@ -405,6 +418,74 @@ public class CastActivity extends Activity {
             ui.post(() -> {
                 if (forSession.equals(session)) end("receiver", true);
             });
+        }
+    }
+
+    /**
+     * The receiver page's way to the native decoder (PROTOCOL.md section 8, "direct video"). Called on the
+     * WebView's bridge thread, never the UI thread. Only the page of this session can use it.
+     */
+    private final class VideoBridge {
+        private final String forSession;
+
+        VideoBridge(String forSession) {
+            this.forSession = forSession;
+        }
+
+        private boolean ours() {
+            return forSession.equals(session) && nativeVideo != null && !ending;
+        }
+
+        @JavascriptInterface
+        public int version() {
+            return 1;
+        }
+
+        /** {"codecs":[...],"maxWidth":1920,"maxHeight":1080,"maxFps":60} */
+        @JavascriptInterface
+        public String caps() {
+            StringBuilder b = new StringBuilder("{\"codecs\":[");
+            String[] c = NativeVideo.codecs();
+            for (int i = 0; i < c.length; i++) b.append(i == 0 ? "" : ",").append('"').append(c[i]).append('"');
+            return b.append("],\"maxWidth\":1920,\"maxHeight\":1080,\"maxFps\":60}").toString();
+        }
+
+        @JavascriptInterface
+        public boolean start(String codec, int width, int height) {
+            return ours() && nativeVideo.start(codec, width, height);
+        }
+
+        /** One encoded frame, base64 (standard alphabet). */
+        @JavascriptInterface
+        public void frame(String base64, boolean key) {
+            if (!ours() || base64 == null) return;
+            byte[] data;
+            try {
+                data = android.util.Base64.decode(base64, android.util.Base64.DEFAULT);
+            } catch (IllegalArgumentException e) {
+                return;
+            }
+            nativeVideo.frame(data, key);
+        }
+
+        @JavascriptInterface
+        public void stop() {
+            if (nativeVideo != null) nativeVideo.stop();
+        }
+
+        @JavascriptInterface
+        public String stats() {
+            return nativeVideo == null ? "{}" : nativeVideo.stats();
+        }
+    }
+
+    /** Android 11+: ask the panel for its low-latency picture mode (no extra picture processing), if it has one. */
+    @android.annotation.TargetApi(30)
+    private void minimalPostProcessing(Window w) {
+        try {
+            android.view.Display d = getWindowManager().getDefaultDisplay();
+            if (d != null && d.isMinimalPostProcessingSupported()) w.setPreferMinimalPostProcessing(true);
+        } catch (RuntimeException ignored) {
         }
     }
 
@@ -629,6 +710,14 @@ public class CastActivity extends Activity {
     protected void onStart() {
         super.onStart();
         visible = true;
+        // Wi-Fi without power-save pauses while a picture is shown (Android 10+).
+        if (Build.VERSION.SDK_INT >= 29 && lowLatencyWifi == null) lowLatencyWifi = wifiLock();
+        if (lowLatencyWifi != null && !lowLatencyWifi.isHeld()) {
+            try {
+                lowLatencyWifi.acquire();
+            } catch (RuntimeException ignored) {
+            }
+        }
         ui.removeCallbacks(endHidden);
     }
 
@@ -639,9 +728,31 @@ public class CastActivity extends Activity {
         if (web != null) web.requestFocus();
     }
 
+    @android.annotation.TargetApi(29)
+    @SuppressWarnings("deprecation")
+    private android.net.wifi.WifiManager.WifiLock wifiLock() {
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext()
+                    .getSystemService(Context.WIFI_SERVICE);
+            if (wm == null) return null;
+            android.net.wifi.WifiManager.WifiLock l = wm.createWifiLock(
+                    android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "OfficeTV:cast");
+            l.setReferenceCounted(false);
+            return l;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
     @Override
     protected void onStop() {
         visible = false;
+        if (lowLatencyWifi != null && lowLatencyWifi.isHeld()) {
+            try {
+                lowLatencyWifi.release();
+            } catch (RuntimeException ignored) {
+            }
+        }
         if (!isChangingConfigurations() && !isFinishing()) ui.postDelayed(endHidden, HIDDEN_END_MS);
         super.onStop();
     }
@@ -661,6 +772,7 @@ public class CastActivity extends Activity {
     }
 
     private void releaseWeb() {
+        if (nativeVideo != null) nativeVideo.stop();
         WebView w = web;
         web = null;
         if (w == null) return;
@@ -678,6 +790,7 @@ public class CastActivity extends Activity {
         try {
             w.stopLoading();
             w.removeJavascriptInterface("OfficeTvCast");
+            w.removeJavascriptInterface("OfficeTvVideo");
             w.destroy();
         } catch (Throwable ignored) {
         }

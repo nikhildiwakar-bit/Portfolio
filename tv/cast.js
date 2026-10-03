@@ -8,6 +8,7 @@ import {
     receiverStatsMessage, selectedPair,
 } from './stats.js?v=2';
 import { STEADY_FPS, steadyTrack } from './steady.js';
+import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direct.js';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -15,13 +16,17 @@ export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 export const SIGNAL_CHUNK = 2400;
 export const MAX_SIGNAL_PARTS = 8;
 /** Video budget: the laptop's native resolution (up to 4K) at up to 30 fps and 15 Mbps, so text is as sharp as on the laptop. */
-export const MAX_BITRATE = 15000000;
+export const MAX_BITRATE = 8000000;
 export const MAX_FPS = 60;
 /** The rates the sender may fall back to on a slow computer, and how often it checks. */
-export const FPS_STEPS = [60, 30, 20, 15];
+export const FPS_STEPS = [60, 30];
+/** What a busy laptop steps down through: resolution first (sharp enough at TV distance), 30 fps last. */
+export const QUALITY_STEPS = [{ height: 1080, fps: 60 }, { height: 900, fps: 60 }, { height: 720, fps: 60 }, { height: 720, fps: 30 }];
 export const ADAPT_MS = 3000;
 /** Keep the resolution (sharp text) and let the encoder lower the frame rate when bandwidth or the processor runs short. */
 export const DEGRADATION = 'maintain-resolution';
+/** Chrome 144+: never cut the frame rate or size for load (frames are skipped instead), so the TV keeps a fresh picture. */
+export const DEGRADATION_NEW = 'maintain-framerate-and-resolution';
 /** Screen content (text, slides, spreadsheets): the encoder keeps fine detail instead of smooth motion. */
 export const CONTENT_HINT = 'detail';
 /** ICE gathering wait: stop at 1.5 s, or as soon as a host and a server-reflexive (STUN) address are known. */
@@ -77,7 +82,7 @@ function networkError() {
  */
 export function displayMediaOptions() {
     return {
-        video: { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: MAX_FPS, max: MAX_FPS } },
+        video: { width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 }, frameRate: { ideal: MAX_FPS, max: MAX_FPS } },
         audio: { suppressLocalAudioPlayback: true },
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
@@ -174,11 +179,11 @@ export async function tuneSender(sender, fps = MAX_FPS) {
             e.maxFramerate = fps;
             if (priority) { e.priority = 'high'; e.networkPriority = 'high'; }
         }
-        if (degradation) p.degradationPreference = DEGRADATION;
+        if (degradation) p.degradationPreference = degradation;
         await sender.setParameters(p);
         return true;
     };
-    for (const [priority, degradation] of [[true, true], [false, true], [false, false]]) {
+    for (const [priority, degradation] of [[true, DEGRADATION_NEW], [true, DEGRADATION], [false, DEGRADATION], [false, false]]) {
         try {
             return await apply(priority, degradation);
         } catch (e) { /* try the next, smaller set */ }
@@ -199,6 +204,15 @@ export function fitScale(srcW, srcH, tvScreen) {
     if (tw < 640 || th < 360) return 1;
     const s = Math.max(srcW / tw, srcH / th);
     return s > 1.05 ? Math.min(4, Math.round(s * 100) / 100) : 1;
+}
+
+/** A control message on the 'otv' data channel ({type:'native'|'keyframe'|'video'}), or null. */
+export function readControl(data) {
+    if (typeof data !== 'string' || data.length > 2048 || data[0] !== '{') return null;
+    let m;
+    try { m = JSON.parse(data); } catch (e) { return null; }
+    if (!m || (m.type !== 'native' && m.type !== 'keyframe' && m.type !== 'video')) return null;
+    return m;
 }
 
 /** Codecs for the TV's answer: H.264 (packetization-mode=1, constrained baseline first), then VP8, VP9, the rest. */
@@ -263,7 +277,9 @@ function addMedia(pc, stream, w) {
     for (const track of stream.getTracks()) {
         let tr = null;
         if (typeof pc.addTransceiver === 'function') {
-            const init = { direction: 'sendonly', streams: [stream] };
+            // Audio in its own stream: the TV then never holds the picture back to line it up with the sound.
+            const own = track.kind === 'audio' && typeof MediaStream === 'function' ? new MediaStream([track]) : stream;
+            const init = { direction: 'sendonly', streams: [own] };
             if (track.kind === 'video') init.sendEncodings = [videoEncoding()];
             try { tr = pc.addTransceiver(track, init); } catch (e) { tr = null; }
         }
@@ -945,6 +961,8 @@ export class CastSender {
             if (this.dc !== dc) return;
             if (e.data === 'bye') { this.stop('tv'); return; }
             if (e.data === 'bye:network') { this._fail(networkError(), false); return; }
+            const ctl = readControl(e.data);
+            if (ctl) { this._onControl(ctl); return; }
             const st = readReceiverMessage(e.data);
             if (st) {
                 this.rxStats = st;
@@ -1029,6 +1047,73 @@ export class CastSender {
         }
     }
 
+    // ---------- direct video (direct.js): the TV app decodes the laptop's own stream natively ----------
+
+    _onControl(m) {
+        if (m.type === 'native') {
+            if (m.off) this._stopDirect('tv');
+            else if (!this.direct && !this._directTried && directSupported(this._w)) this._startDirect(m).catch(() => this._stopDirect('error'));
+        } else if (m.type === 'keyframe' && this.direct) {
+            this.direct.requestKey();
+        }
+    }
+
+    /** A control message to the TV over the 'otv' channel. */
+    _control(obj) {
+        const dc = this.dc;
+        if (dc && dc.readyState === 'open') {
+            try { dc.send(JSON.stringify(obj)); } catch (e) { /* the TV keeps what it has */ }
+        }
+    }
+
+    async _startDirect(caps) {
+        this._directTried = true;
+        const video = this.stream && this.stream.getVideoTracks ? this.stream.getVideoTracks()[0] : null;
+        const pc = this.pc;
+        if (!video || !pc || !this.active) return;
+        let vdc;
+        try {
+            vdc = pc.createDataChannel('otv-video', { ordered: true });
+            vdc.binaryType = 'arraybuffer';
+        } catch (e) { return; }
+        await new Promise(res => {
+            if (vdc.readyState === 'open') { res(); return; }
+            const t = setTimeout(res, 5000);
+            vdc.addEventListener('open', () => { clearTimeout(t); res(); });
+        });
+        if (vdc.readyState !== 'open' || !this.active || this.pc !== pc) { try { vdc.close(); } catch (e) { /* ignore */ } return; }
+        const d = new DirectSender({
+            track: video, dc: vdc, caps, tickUrl: TICK_URL, log: this._log, window: this._w,
+            onstart: (codec, width, height) => this._control({ type: 'video', v: 1, state: 'start', codec, width, height }),
+            onfail: reason => this._stopDirect(reason),
+        });
+        this.direct = d;
+        this.videoDc = vdc;
+        // The steady wrapper reads the same captured track: not needed any more.
+        if (this.steady) { this.steady.stop(); this.steady = null; }
+        if (!await d.start()) {
+            this._stopDirect('unsupported');
+            return;
+        }
+        // The TV shows the direct picture: stop sending the WebRTC one (saves the laptop an encoder and bandwidth).
+        try { if (this.videoSender) await this.videoSender.replaceTrack(null); } catch (e) { /* ignore */ }
+        if (this._log) this._log('direct', 'on');
+    }
+
+    /** Back to the normal WebRTC picture (the TV refused, or this browser could not encode). */
+    _stopDirect(reason) {
+        const d = this.direct;
+        if (!d) return;
+        this.direct = null;
+        d.stop();
+        this._control({ type: 'video', v: 1, state: 'stop' });
+        if (this.videoDc) { try { this.videoDc.close(); } catch (e) { /* ignore */ } }
+        this.videoDc = null;
+        const video = this.stream && this.stream.getVideoTracks ? this.stream.getVideoTracks()[0] : null;
+        if (this.active && video && this.videoSender) this.videoSender.replaceTrack(video).catch(() => {});
+        if (this._log) this._log('direct', 'off (' + reason + ')');
+    }
+
     /**
      * A slow computer (a Chromebook with YouTube and other tabs open) cannot encode 60 frames a second without
      * making everything else lag. Every ADAPT_MS the encoder's own numbers are checked: if the processor is the
@@ -1044,25 +1129,42 @@ export class CastSender {
     async _adapt() {
         const pc = this.pc;
         if (!pc || this.state !== 'sharing' || typeof pc.getStats !== 'function') return;
-        const tx = parseSenderStats(await pc.getStats(), this._adaptPrev);
-        if (this.pc !== pc) return;
-        this._adaptPrev = tx;
-        const enc = typeof tx.encodeMs === 'number' ? tx.encodeMs : null;
-        const level = this.fpsLevel;
-        const budget = 1000 / level; // ms per frame at this rate
-        const slow = tx.limit === 'cpu' || (enc !== null && enc > budget * 0.8);
+        const i = Math.max(0, QUALITY_STEPS.findIndex(q => q.fps === this.fpsLevel && q.height === (this.heightLevel || 1080)));
+        let slow;
+        if (this.direct) {
+            // Direct video: busy when many frames had to be skipped (the encoder or the Wi-Fi cannot keep up).
+            slow = this.direct.busy();
+        } else {
+            const tx = parseSenderStats(await pc.getStats(), this._adaptPrev);
+            if (this.pc !== pc) return;
+            this._adaptPrev = tx;
+            const enc = typeof tx.encodeMs === 'number' ? tx.encodeMs : null;
+            // Busy: the browser itself says the processor is the limit, or encoding takes far longer than a frame.
+            slow = tx.limit === 'cpu' || (enc !== null && enc > 2.5 * (1000 / QUALITY_STEPS[i].fps));
+        }
         if (slow) { this._adaptBad++; this._adaptGood = 0; } else { this._adaptBad = 0; this._adaptGood++; }
-        const i = FPS_STEPS.indexOf(level);
-        let next = level;
-        if (this._adaptBad >= 2 && i < FPS_STEPS.length - 1) next = FPS_STEPS[i + 1];
-        else if (this._adaptGood >= 12 && i > 0 && enc !== null && enc < (1000 / FPS_STEPS[i - 1]) * 0.35) next = FPS_STEPS[i - 1];
-        if (next === level) return;
+        let j = i;
+        if (this._adaptBad >= 2 && i < QUALITY_STEPS.length - 1) j = i + 1;
+        else if (this._adaptGood >= 12 && i > 0) j = i - 1;
+        if (j === i) return;
         this._adaptBad = 0;
         this._adaptGood = 0;
-        this.fpsLevel = next;
-        if (this.steady && typeof this.steady.setFps === 'function') this.steady.setFps(next);
-        await tuneSender(this.videoSender, next);
-        if (this._log) this._log('fps', next + (slow ? ' (this computer is busy)' : ' (calm again)'));
+        await this._applyQuality(QUALITY_STEPS[j], slow);
+    }
+
+    /** Smaller picture first (scaled at capture, cheap), frame rate last and never below 30. */
+    async _applyQuality(q, slow) {
+        this.fpsLevel = q.fps;
+        this.heightLevel = q.height;
+        const track = this.stream && this.stream.getVideoTracks ? this.stream.getVideoTracks()[0] : null;
+        if (track && typeof track.applyConstraints === 'function') {
+            try {
+                await track.applyConstraints({ width: { max: Math.round(q.height * 16 / 9) }, height: { max: q.height }, frameRate: { max: q.fps } });
+            } catch (e) { /* the browser keeps the size */ }
+        }
+        if (this.steady && typeof this.steady.setFps === 'function') this.steady.setFps(q.fps);
+        await tuneSender(this.videoSender, q.fps);
+        if (this._log) this._log('quality', q.height + 'p' + q.fps + (slow ? ' (this computer is busy)' : ' (calm again)'));
     }
 
     /** Sends the picture at the TV's screen size (fitScale), again whenever the shared window or the TV changes. */
@@ -1220,6 +1322,7 @@ export class CastSender {
         // Give the "bye" a moment to leave before closing the connection.
         if (pc) setTimeout(() => { try { pc.close(); } catch (e) { /* ignore */ } }, told ? 300 : 0);
         if (this.steady) this.steady.stop(); // the worker, the processor and the last frame
+        if (this.direct) { this.direct.stop(); this.direct = null; }
         if (this.stream) for (const t of this.stream.getTracks()) { try { t.stop(); } catch (e) { /* ignore */ } }
         if (this.channel) this.channel.close();
     }
@@ -1236,9 +1339,17 @@ export class CastSender {
         try {
             const tx = parseSenderStats(await pc.getStats(), this._txPrev);
             if (this.pc !== pc) return null;
-            tx.steady = !!this.steady; // false: this browser sends a still screen at its own (low) frame rate
+            tx.steady = !!this.steady || !!this.direct; // false: this browser sends a still screen at its own (low) frame rate
             this._txPrev = tx;
             await this._encoderHw(tx);
+            if (this.direct) {
+                const d = this.direct.stats();
+                Object.assign(tx, {
+                    codec: 'video/' + ({ avc: 'H264', vp9: 'VP9', vp8: 'VP8' }[d.codec] || d.codec), width: d.width, height: d.height,
+                    fps: d.fps, bitrate: d.bitrate, encodeMs: d.encodeMs, encoder: 'WebCodecs, direct to the TV\'s video chip',
+                    hardware: d.hardware, hardwareFrom: 'stats', limit: d.skipped ? 'other' : 'none', direct: true,
+                });
+            }
             const rx = this.rxStats && Date.now() - this.rxStatsAt < RX_STALE_MS ? this.rxStats : null;
             const verdict = connectionVerdict(tx, rx);
             return { tx, rx, verdict, rows: connectionRows(tx, rx, verdict) };
@@ -1278,7 +1389,7 @@ export class CastSender {
 export class CastReceiver {
     constructor({
         code, relay, session, ip = '', RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES, WebSocket: WS, brokers, repeatMs,
-        offerTimeoutMs = 90000, graceMs = 25000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w,
+        offerTimeoutMs = 90000, graceMs = 25000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w, video = null,
     } = {}) {
         this._w = w || globalThis;
         // The TV's LAN address (receiver URL ip=): added to the answer next to the hidden .local candidates, and
@@ -1290,6 +1401,8 @@ export class CastReceiver {
         this._media = null; // [stream, track] waiting for the network check before it is shown
         this._statsMs = statsMs;
         this._extraStats = extraStats;
+        this.video = video;          // the TV app's native decoder bridge (OfficeTvVideo), or null
+        this.nativeActive = false;
         this._statsTimer = null;
         this._statsBusy = false;
         this._rxPrev = null;
@@ -1372,8 +1485,14 @@ export class CastReceiver {
         this.pc = pc;
         pc.addEventListener('track', e => {
             this.lowLatency = lowLatencyReceiver(e.receiver) || this.lowLatency || '';
-            const stream = (e.streams && e.streams[0]) || null;
+            // Video and sound arrive in separate streams (no lip-sync delay); play them as one here.
+            if (!e.track) return;
+            if (!this._combined) {
+                this._combined = typeof MediaStream === 'function' ? new MediaStream() : ((e.streams && e.streams[0]) || null);
+            }
+            const stream = this._combined;
             if (!stream) return;
+            try { if (stream.getTracks().indexOf(e.track) < 0) stream.addTrack(e.track); } catch (err) { /* already there */ }
             // 4-digit codes: nothing is shown before the laptop is known to be on this network.
             if (this.lanOnly && !this.lanChecked) this._media = [stream, e.track];
             else this._show(stream, e.track);
@@ -1453,12 +1572,82 @@ export class CastReceiver {
     /** The laptop's data channel: 'bye' and its closing end the session; once open, stats go out on it. */
     _watchChannel(dc) {
         if (!dc) return;
+        if (dc.label === 'otv-video') { this._watchVideo(dc); return; }
         this.dc = dc;
-        dc.addEventListener('message', m => { if (m.data === 'bye') this.end('stopped'); });
+        dc.addEventListener('message', m => {
+            if (m.data === 'bye') { this.end('stopped'); return; }
+            const ctl = readControl(m.data);
+            if (ctl && ctl.type === 'video') this._onVideoControl(ctl);
+        });
+        // Tell the laptop this TV can show its own stream through the hardware decoder (direct video).
+        const hello = () => this._helloNative();
+        if (dc.readyState === 'open') hello();
+        else dc.addEventListener('open', hello);
         // The laptop closed the connection (tab closed, sharing stopped).
         dc.addEventListener('close', () => this.end('stopped'));
         if (dc.readyState === 'open') this._startStats();
         else dc.addEventListener('open', () => this._startStats());
+    }
+
+    // ---------- direct video: the laptop's own stream, decoded by the TV app (direct.js) ----------
+
+    _helloNative() {
+        const v = this.video;
+        if (!v || typeof v.caps !== 'function' || this._helloSent) return;
+        let caps;
+        try { caps = JSON.parse(v.caps()); } catch (e) { return; }
+        if (!caps || !Array.isArray(caps.codecs) || !caps.codecs.length) return;
+        this._helloSent = true;
+        const w = this._w || globalThis;
+        w.__otvVideoEvent = name => this._onVideoEvent(name);
+        this._sendControl(Object.assign({ type: 'native', v: 1 }, caps));
+        if (this._log) this._log('native-offered', caps.codecs.join(','));
+    }
+
+    _sendControl(obj) {
+        const dc = this.dc;
+        if (dc && dc.readyState === 'open') {
+            try { dc.send(JSON.stringify(obj)); } catch (e) { /* ignore */ }
+        }
+    }
+
+    _onVideoControl(m) {
+        const v = this.video;
+        if (!v) return;
+        if (m.state === 'start') {
+            let ok = false;
+            try { ok = !!v.start(String(m.codec || ''), m.width | 0, m.height | 0); } catch (e) { ok = false; }
+            this.nativeActive = ok;
+            if (this._log) this._log('native', (ok ? 'on ' : 'refused ') + m.codec + ' ' + m.width + 'x' + m.height);
+            if (!ok) this._sendControl({ type: 'native', v: 1, off: true });
+        } else if (m.state === 'stop') {
+            this._stopNative();
+        }
+    }
+
+    /** From the TV app: 'keyframe' (the decoder needs one) or 'error' (back to the WebRTC picture). */
+    _onVideoEvent(name) {
+        if (name === 'keyframe') this._sendControl({ type: 'keyframe' });
+        else if (name === 'error') {
+            this._stopNative();
+            this._sendControl({ type: 'native', v: 1, off: true });
+        }
+    }
+
+    _stopNative() {
+        if (this.video && this.nativeActive) { try { this.video.stop(); } catch (e) { /* ignore */ } }
+        this.nativeActive = false;
+    }
+
+    _watchVideo(dc) {
+        try { dc.binaryType = 'arraybuffer'; } catch (e) { /* ignore */ }
+        const asm = new FrameAssembler();
+        dc.addEventListener('message', m => {
+            if (!this.nativeActive || !this.video) return;
+            const f = asm.push(m.data);
+            if (!f) return;
+            try { this.video.frame(toBase64(f.data), f.key); } catch (e) { /* the app went away */ }
+        });
     }
 
     _startStats() {
@@ -1476,6 +1665,16 @@ export class CastReceiver {
             const rx = parseReceiverStats(await pc.getStats(), this._rxPrev);
             this._rxPrev = rx;
             await this._decoderHw(rx);
+            if (this.nativeActive && this.video && typeof this.video.stats === 'function') {
+                try {
+                    const n = JSON.parse(this.video.stats());
+                    Object.assign(rx, {
+                        fps: n.fps, decodeMs: n.decodeMs, framesDropped: n.dropped, framesDecoded: n.decoded, jitterMs: 0,
+                        decoder: 'Office TV direct: ' + String(n.decoder || 'MediaCodec') + (n.lowLatency ? ' (low latency)' : ''),
+                        hardware: true, hardwareFrom: 'stats', width: n.width, height: n.height,
+                    });
+                } catch (e) { /* keep the WebRTC numbers */ }
+            }
             let extra = {};
             if (typeof this._extraStats === 'function') {
                 try { extra = this._extraStats() || {}; } catch (e) { extra = {}; }
@@ -1546,6 +1745,7 @@ export class CastReceiver {
         clearTimeout(this._graceTimer);
         clearInterval(this._statsTimer);
         this._statsTimer = null;
+        this._stopNative();
         this._set('ended', { reason, error: err });
         this.state = 'ended';
         if (this.pc) { try { this.pc.close(); } catch (e) { /* ignore */ } }

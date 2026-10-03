@@ -5,7 +5,7 @@ import * as otv from '../../../tv/otv.js';
 import {
     CastChannel, CastReceiver, CastSender, CONTENT_HINT, DEGRADATION, MAX_BITRATE, MAX_FPS, MAX_SIGNAL_PARTS, SIGNAL_CHUNK, SignalAssembler, captureScreen, decodeSignal,
     displayMediaOptions, encodeSignal, parseReceiverFragment, preferCodec, preferH264, receiverUrl, senderSupport, signalMessages,
-    tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS, fitScale, FPS_STEPS,
+    tuneSender, validSession, receiverCodecOrder, preferReceiveCodecs, lowLatencyReceiver, iceGathered, ICE_WAIT_MS, fitScale, QUALITY_STEPS,
 } from '../../../tv/cast.js';
 
 const CODE = '7K3M9QX2TD';
@@ -204,7 +204,7 @@ test('channel reports relay limits', async () => {
 
 test('getDisplayMedia options: native resolution (ideal 1440p, up to 4K) at 60 fps, audio on the TV only, own tab excluded, tab switching allowed', async () => {
     const o = displayMediaOptions();
-    assert.deepEqual(o.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 60, max: 60 } });
+    assert.deepEqual(o.video, { width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 }, frameRate: { ideal: 60, max: 60 } });
     assert.deepEqual(o.audio, { suppressLocalAudioPlayback: true }, 'a shared tab is silent on the laptop and plays on the TV');
     assert.equal(o.selfBrowserSurface, 'exclude');
     assert.equal(o.surfaceSwitching, 'include');
@@ -269,17 +269,17 @@ test('preferH264 only reorders when this browser can send H.264, and never throw
     assert.equal(preferH264({}, {}), false);
 });
 
-test('tuneSender caps the encoder at 15 Mbps and 60 fps and keeps the resolution', async () => {
+test('tuneSender caps the encoder at 8 Mbps and 60 fps and keeps the resolution', async () => {
     let params = { transactionId: 't1', encodings: [{ active: true }] };
     const sender = { getParameters: () => JSON.parse(JSON.stringify(params)), setParameters: async p => { params = p; } };
     assert.equal(await tuneSender(sender), true);
     assert.equal(params.encodings[0].maxBitrate, MAX_BITRATE);
     assert.equal(params.encodings[0].maxFramerate, MAX_FPS);
-    assert.equal(MAX_BITRATE, 15000000);
+    assert.equal(MAX_BITRATE, 8000000);
     assert.equal(MAX_FPS, 60);
     assert.equal(DEGRADATION, 'maintain-resolution');
     assert.equal(CONTENT_HINT, 'detail');
-    assert.equal(params.degradationPreference, 'maintain-resolution');
+    assert.equal(params.degradationPreference, 'maintain-framerate-and-resolution', 'Chrome 144+: no frame-rate cuts');
     assert.equal(params.encodings[0].priority, 'high');
     assert.equal(params.encodings[0].networkPriority, 'high');
     // A browser that rejects only the priorities still keeps the resolution.
@@ -288,14 +288,14 @@ test('tuneSender caps the encoder at 15 Mbps and 60 fps and keeps the resolution
         setParameters: async p => { if (p.encodings[0].networkPriority) throw new Error('InvalidModificationError'); p1 = p; } };
     assert.equal(await tuneSender(noPrio), true);
     assert.equal(p1.degradationPreference, 'maintain-resolution');
-    assert.equal(p1.encodings[0].maxBitrate, 15000000);
+    assert.equal(p1.encodings[0].maxBitrate, 8000000);
     assert.equal(p1.encodings[0].networkPriority, undefined);
     // A browser that rejects the newer fields still gets the caps.
     let p2 = { encodings: [{}] };
     const picky = { getParameters: () => JSON.parse(JSON.stringify(p2)),
         setParameters: async p => { if (p.degradationPreference || p.encodings[0].networkPriority) throw new Error('InvalidModificationError'); p2 = p; } };
     assert.equal(await tuneSender(picky), true);
-    assert.equal(p2.encodings[0].maxBitrate, 15000000);
+    assert.equal(p2.encodings[0].maxBitrate, 8000000);
     assert.equal(p2.degradationPreference, undefined);
     assert.equal(await tuneSender({ getParameters: () => ({ encodings: [{}] }), setParameters: async () => { throw new Error('no'); } }), false);
     assert.equal(await tuneSender({ getParameters: () => ({ encodings: [] }), setParameters: async () => {} }), false);
@@ -396,7 +396,7 @@ test('sender: cast start, offer, answer, sharing; stop says bye on the data chan
     assert.equal(stream.getVideoTracks()[0].contentHint, 'detail');
     const [vt, at] = pc.transceivers;
     assert.equal(vt.init.direction, 'sendonly');
-    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 15000000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]);
+    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 8000000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]);
     assert.equal(at.init.sendEncodings, undefined);
     assert.equal(sender.state, 'connecting');
     pc.dc._open();
@@ -610,50 +610,47 @@ test('sender: the TV\'s screen size from its stats scales the picture to fit, on
     tv.rx.close();
 });
 
-test('sender: a busy computer steps the frame rate down (60, 30, 20, 15) and a calm one may step back up', async () => {
+test('sender: a busy computer steps the picture size down first (1080p60, 900p60, 720p60, 720p30) and back up when calm', async () => {
     const { tv, link, sender, stream } = await castRig();
+    const constraints = [];
+    stream.tracks[0].applyConstraints = async c => { constraints.push(c); };
     sender.start(stream);
     await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
     const pc = FakePC.last;
     pc.dc._open();
     pc._conn('connected');
-    assert.equal(sender.state, 'sharing');
-    assert.deepEqual(FPS_STEPS, [60, 30, 20, 15]);
-    assert.equal(sender.fpsLevel, 60);
-    const calls = [];
-    sender.steady = { setFps: n => calls.push(n), stop() {} };
+    clearInterval(sender._adaptTimer);
+    assert.deepEqual(QUALITY_STEPS.map(q => q.height + 'p' + q.fps), ['1080p60', '900p60', '720p60', '720p30']);
+    const fps = [];
+    sender.steady = { setFps: n => fps.push(n), stop() {} };
     let n = 0;
     const stat = (limit, encMs) => {
         n++;
         pc.stats = [
             { id: 'c', type: 'codec', mimeType: 'video/H264' },
-            { id: 'o', type: 'outbound-rtp', kind: 'video', timestamp: 1000 + n * 3000, ssrc: 1, codecId: 'c', frameWidth: 1366, frameHeight: 768,
+            { id: 'o', type: 'outbound-rtp', kind: 'video', timestamp: 1000 + n * 3000, ssrc: 1, codecId: 'c', frameWidth: 1920, frameHeight: 1080,
                 framesPerSecond: 40, bytesSent: n * 1e6, framesEncoded: n * 100, totalEncodeTime: n * 100 * encMs / 1000,
                 packetsSent: n * 100, totalPacketSendDelay: 0, qualityLimitationReason: limit },
         ];
     };
-    sender._stopAdaptTimerForTest = true;
-    clearInterval(sender._adaptTimer);
-    // Two busy readings in a row step down once; one is not enough.
     stat('cpu', 10); await sender._adapt();
-    assert.equal(sender.fpsLevel, 60, 'one busy reading is not enough');
+    assert.equal(constraints.length, 0, 'one busy reading is not enough');
     stat('cpu', 10); await sender._adapt();
-    assert.equal(sender.fpsLevel, 30);
-    assert.deepEqual(calls, [30]);
-    assert.equal(sender.videoSender.getParameters().encodings[0].maxFramerate, 30, 'the encoder is asked for 30 fps');
-    // Encoding slower than 80 % of the frame budget counts as busy even without "cpu".
-    stat('none', 30); await sender._adapt();
-    stat('none', 30); await sender._adapt();
-    assert.equal(sender.fpsLevel, 20);
-    for (let i = 0; i < 4; i++) { stat('cpu', 10); await sender._adapt(); }
-    assert.equal(sender.fpsLevel, 15);
+    assert.deepEqual(constraints[0], { width: { max: 1600 }, height: { max: 900 }, frameRate: { max: 60 } }, 'smaller picture first');
+    assert.equal(sender.fpsLevel, 60);
+    for (let i = 0; i < 2; i++) { stat('cpu', 10); await sender._adapt(); }
+    assert.equal(sender.heightLevel, 720);
+    assert.equal(sender.fpsLevel, 60, 'still 60 fps at 720p');
+    for (let i = 0; i < 2; i++) { stat('cpu', 10); await sender._adapt(); }
+    assert.equal(sender.fpsLevel, 30, 'frame rate only last');
     for (let i = 0; i < 6; i++) { stat('cpu', 10); await sender._adapt(); }
-    assert.equal(sender.fpsLevel, 15, 'never below 15');
-    // A long calm stretch with cheap frames steps up one level.
-    for (let i = 0; i < 14; i++) { stat('none', 2); await sender._adapt(); }
-    assert.equal(sender.fpsLevel, 20);
-    assert.equal(calls[calls.length - 1], 20);
-    assert.equal(sender.state, 'sharing');
+    assert.equal(sender.fpsLevel, 30, 'never below 30 fps');
+    assert.equal(sender.videoSender.getParameters().encodings[0].maxFramerate, 30);
+    // Encoding a hardware frame in 20 ms at 60 fps is normal (pipelined), not "busy".
+    for (let i = 0; i < 14; i++) { stat('none', 20); await sender._adapt(); }
+    assert.equal(sender.fpsLevel, 60, 'calm again: one step back up');
+    assert.equal(sender.heightLevel, 720);
+    assert.deepEqual(fps.slice(-1), [60]);
     sender.stop('user');
     link.close();
     tv.rx.close();

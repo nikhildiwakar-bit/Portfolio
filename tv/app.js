@@ -7,7 +7,7 @@
 // each time. Nothing talks to the relay until Share screen is pressed, and the relay connection is closed
 // again when sharing ends.
 import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=4';
-import { CastSender, captureScreen, senderSupport } from './cast.js?v=7';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=8';
 
 const $ = id => document.getElementById(id);
 const INFO_KEY = 'officetv.info';
@@ -431,13 +431,21 @@ function render() {
         const pv = $('preview');
         if (pv.srcObject !== s.stream) {
             pv.srcObject = s.stream;
-            const p = pv.play && pv.play();
-            if (p && p.catch) p.catch(() => {});
+            // A still picture, refreshed every 3 s: playing the shared screen here all the time costs a slow laptop
+            // a full extra video, and with the whole screen shared it would never let the screen go still.
+            const glimpse = () => {
+                if (pv.srcObject !== s.stream) { clearInterval(pv._otvGlimpse); return; }
+                const p = pv.play && pv.play();
+                if (p && p.then) p.then(() => setTimeout(() => { try { pv.pause(); } catch (e) { /* ignore */ } }, 250), () => {});
+            };
+            clearInterval(pv._otvGlimpse);
+            pv._otvGlimpse = setInterval(glimpse, 3000);
+            glimpse();
         }
         renderSound(s);
         document.title = (s.phase === 'sharing' ? 'Sharing to ' : s.phase === 'reconnecting' ? 'Reconnecting to ' : 'Connecting to ') + name + ' · Office TV';
     } else {
-        if ($('preview').srcObject) $('preview').srcObject = null;
+        if ($('preview').srcObject) { clearInterval($('preview')._otvGlimpse); $('preview').srcObject = null; }
         document.title = 'Office TV · Share your laptop screen';
     }
     tick();

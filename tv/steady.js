@@ -12,6 +12,12 @@
 // returns null and the caller sends the original track.
 
 export const STEADY_FPS = 60;
+/**
+ * Repeats after each real frame. The TV's decoder holds a frame until the next one arrives, so a few repeats
+ * push the newest picture out at once; after that nothing more is sent until the screen changes (no constant
+ * 60 fps of copies that would load a slow laptop).
+ */
+export const PUSH_OUT = 3;
 
 /** True when this browser can wrap a video track (MediaStreamTrackProcessor/Generator, VideoFrame, Worker). */
 export function steadySupported(w = globalThis) {
@@ -58,6 +64,7 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
     let lastTs = -1;
     let pending = 0;
     let stopped = false;
+    let repeatsLeft = 0;   // push-out repeats still to send after the newest real frame
 
     /** Writes a new VideoFrame on `last` (the generator takes it; closed here too once written). */
     function send(repeat) {
@@ -83,11 +90,11 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
     }
 
     worker.onmessage = () => {
-        if (stopped || !last) return;
+        if (stopped || !last || repeatsLeft <= 0) return;
         const now = clock();
         // The first repeat after a real frame waits for the source's own next frame; later ones every period.
         const wait = lastSentAt > lastNewAt ? periodMs : Math.min(2 * periodMs, Math.max(periodMs, srcMs * 1.25));
-        if (now - lastSentAt >= wait - 2) send(true);
+        if (now - lastSentAt >= wait - 2) { repeatsLeft--; send(true); }
     };
     worker.postMessage(Math.round(periodMs));
 
@@ -104,6 +111,7 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
                 if (gap > 0 && gap < 250) srcMs = srcMs * 0.7 + gap * 0.3; // motion, not a still screen's rare refresh
                 lastNewAt = now;
                 srcTs = typeof value.timestamp === 'number' && isFinite(value.timestamp) ? value.timestamp : Math.round(now * 1000);
+                repeatsLeft = PUSH_OUT;
                 send(false);
             }
         } catch (e) { /* the source ended or the reader was cancelled */ }

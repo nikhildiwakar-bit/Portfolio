@@ -151,6 +151,16 @@ sound travels as uncompressed 16-bit PCM, 48 kHz stereo, in 10 ms chunks on the 
 (about 1.5 Mbit/s, PROTOCOL.md section 10); the TV keeps at most about 150 ms of it waiting, so it stays in step
 with the picture. A TV with an older Office TV shows the picture without sound.
 
+## Office TV 3.7 changes
+
+- Direct video: on Chrome/Edge (Windows, ChromeOS, Ubuntu, Mac) the laptop encodes the screen itself
+  (WebCodecs, H.264 hardware first) and sends it over the `otv-video` data channel; the TV app decodes it
+  with MediaCodec in low-latency mode straight onto a SurfaceView, not inside the browser. If either side
+  cannot do this, the normal WebRTC video is used.
+- Automatic quality per laptop: 1080p60, then 900p60, 720p60, 720p30 when the laptop or network is slow.
+- Sound plays on the TV only, as its own track (no lip-sync delay on the picture).
+- The phone option is removed from the TV app.
+
 ## For developers
 
 - `app/`: the Android app (Java, minSdk 21, targetSdk 33, one library: ZXing core for the QR code; flavors
