@@ -83,8 +83,19 @@ a { color: var(--accent); }
     <p id="noWeb" hidden style="margin:12px 0 0"><small>This phone's browser cannot share its screen by itself, so the Office TV app is needed once.</small></p>
   </section>
 
+  <section class="card" id="castAlt" hidden>
+    <h1>No install: use your phone's built-in Cast</h1>
+    <p>Chrome on Android cannot share the phone screen from a web page. Your phone can do it by itself, without any app:</p>
+    <ol>
+      <li>Swipe down from the top of the screen to open the quick settings.</li>
+      <li>Tap <b>Cast</b>, <b>Smart View</b> or <b>Screen cast</b> (the name depends on the phone brand).</li>
+      <li>Choose this TV from the list, then tap <b>Start now</b>.</li>
+    </ol>
+    <p><small>It works on TVs with Google Cast built in (Android TV and Google TV). The phone and the TV must be on the same Wi-Fi.</small></p>
+  </section>
+
   <section class="card" id="install" hidden>
-    <h1>Install Office TV on this phone</h1>
+    <h1>Or install Office TV on this phone</h1>
     <p>It is the same free app the TV uses. You only need to install it once.</p>
     <ol>
       <li>Download the app below and open the downloaded file.</li>
@@ -110,6 +121,6 @@ a { color: var(--accent); }
 
   <p id="bad" hidden><small>This QR code is incomplete. Scan the code on the TV again.</small></p>
 </main>
-<script type="module" src="phone.js?v=3"></script>
+<script type="module" src="phone.js?v=4"></script>
 </body>
 </html>

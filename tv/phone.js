@@ -148,6 +148,7 @@ if (ios) {
 } else if (!android) {
     show('desktop');
 } else {
+    show('castAlt');
     show('install');
     const fromIntent = /[?&]install=1/.test(location.search);
     if (hash && !validApp) show('bad');
