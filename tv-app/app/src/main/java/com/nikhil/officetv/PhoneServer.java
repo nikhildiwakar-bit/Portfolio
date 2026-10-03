@@ -28,6 +28,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Runs inside ControlService on background threads and never throws into the caller.
  */
 final class PhoneServer {
+    /**
+     * Phone mirroring is switched off in this version (the school shares from laptops only): the TV opens no
+     * local port and shows no phone QR code. Set to true to bring the feature back; the code is kept and tested.
+     */
+    static final boolean ENABLED = false;
+
     private static final int HANDSHAKE_TIMEOUT_MS = 4000;
     private static final int READ_TIMEOUT_MS = 12000;
     private static final int PING_MS = 2000;
@@ -51,6 +57,7 @@ final class PhoneServer {
     }
 
     static void start(Context c) {
+        if (!ENABLED) return;
         synchronized (LOCK) {
             app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
             if (server != null && !server.isClosed()) return;

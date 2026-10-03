@@ -18,6 +18,8 @@ final class Device {
 
     /** True on a phone (touchscreen, not a TV, small screen). Debug builds default to TV so CI emulators test the TV. */
     static boolean isPhone(Context c) {
+        // Phone mirroring is off in this version: every install is a TV receiver.
+        if (!PhoneServer.ENABLED) return false;
         String mode = Prefs.deviceMode(c);
         if ("phone".equals(mode)) return true;
         if ("tv".equals(mode)) return false;

@@ -107,8 +107,10 @@ final class Commands implements RelayClient.Handler {
         o.put("android", Build.VERSION.RELEASE);
         o.put("appVersion", BuildConfig.VERSION_NAME);
         o.put("flavor", BuildConfig.FLAVOR);
-        o.put("features", new org.json.JSONArray().put("cast").put("phone"));
-        o.put("phone", true);
+        org.json.JSONArray features = new org.json.JSONArray().put("cast");
+        if (PhoneServer.ENABLED) features.put("phone");
+        o.put("features", features);
+        o.put("phone", PhoneServer.ENABLED);
         o.put("phonePort", PhoneServer.port());
         o.put("phoneConnected", PhoneServer.current() != null);
         o.put("accessibility", Actions.accessibilityOn());

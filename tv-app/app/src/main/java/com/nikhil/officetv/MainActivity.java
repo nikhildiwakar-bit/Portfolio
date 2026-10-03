@@ -145,7 +145,7 @@ public class MainActivity extends Activity {
             left.addView(settings, fill(0, 0, 0, 0));
             right.addView(setupCard, fill(0, 0, 0, 0));
             right.addView(howCard, fill(0, 0, 0, gap));
-            right.addView(phoneCard, fill(0, 0, 0, 0));
+            if (PhoneServer.ENABLED) right.addView(phoneCard, fill(0, 0, 0, 0));
             LinearLayout.LayoutParams l = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.3f);
             l.setMargins(0, 0, gap / 2, 0);
             LinearLayout.LayoutParams r = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
@@ -157,7 +157,7 @@ public class MainActivity extends Activity {
             page.addView(hero, fill(0, 0, 0, gap));
             page.addView(setupCard, fill(0, 0, 0, gap));
             page.addView(howCard, fill(0, 0, 0, gap));
-            page.addView(phoneCard, fill(0, 0, 0, gap));
+            if (PhoneServer.ENABLED) page.addView(phoneCard, fill(0, 0, 0, gap));
             page.addView(settings, fill(0, 0, 0, gap));
         }
 
@@ -507,7 +507,7 @@ public class MainActivity extends Activity {
         howCard.setVisibility(twoCols && setup ? View.GONE : View.VISIBLE);
 
         refreshStatus();
-        refreshPhone();
+        if (PhoneServer.ENABLED) refreshPhone();
 
         StringBuilder d = new StringBuilder();
         String wv = WebViewInfo.version(this);
@@ -556,7 +556,7 @@ public class MainActivity extends Activity {
                 col = UiKit.WARN;
             } else {
                 text = "Online · Ready for screen sharing";
-                hint = "Waiting for a laptop or phone.";
+                hint = "Waiting for a laptop.";
                 col = UiKit.OK;
             }
         } else if (s == RelayClient.State.RATE_LIMITED) {
@@ -627,7 +627,7 @@ public class MainActivity extends Activity {
         try {
             new AlertDialog.Builder(this)
                     .setTitle("Rename this TV")
-                    .setMessage("Laptops and phones see this name when they connect.")
+                    .setMessage("Laptops see this name when they connect.")
                     .setView(box)
                     .setPositiveButton("Save", (dlg, w) -> {
                         String n = input.getText().toString().trim();
@@ -641,26 +641,13 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** "New TV code": a new 4-digit code at once (the code also changes every time Office TV opens). */
     private void newCodeDialog() {
-        try {
-            new AlertDialog.Builder(this)
-                    .setTitle("Create a new TV code?")
-                    .setMessage("Laptops that saved the current code will need to enter the new one, and phones "
-                            + "will need to scan the new QR code. "
-                            + "Use this if the code was shared with someone who should no longer use this TV.")
-                    .setPositiveButton("Create new code", (dlg, w) -> {
-                        Prefs.newPairCode(this);
-                        Prefs.newPhoneSecret(this);
-                        PhoneServer.disconnectAll("The TV code was changed. Scan the new QR code on the TV.");
-                        RelayManager.restart(this);
-                        DebugHooks.event("code=changed");
-                        refresh();
-                    })
-                    .setNegativeButton("Cancel", null)
-                    .show();
-        } catch (RuntimeException e) {
-            CrashLog.note(this, "New code dialog failed: " + e);
-        }
+        Prefs.newPhoneSecret(this);
+        PhoneServer.disconnectAll("The TV code was changed. Scan the new QR code on the TV.");
+        RelayManager.newCode(this, "button");
+        DebugHooks.event("code=changed");
+        refresh();
     }
 
     private void openOverlaySettings() {
