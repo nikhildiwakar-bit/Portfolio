@@ -16,7 +16,7 @@ export const SIGNAL_CHUNK = 2400;
 export const MAX_SIGNAL_PARTS = 8;
 /** Video budget: the laptop's native resolution (up to 4K) at up to 30 fps and 15 Mbps, so text is as sharp as on the laptop. */
 export const MAX_BITRATE = 15000000;
-export const MAX_FPS = 30;
+export const MAX_FPS = 60;
 /** Keep the resolution (sharp text) and let the encoder lower the frame rate when bandwidth or the processor runs short. */
 export const DEGRADATION = 'maintain-resolution';
 /** Screen content (text, slides, spreadsheets): the encoder keeps fine detail instead of smooth motion. */

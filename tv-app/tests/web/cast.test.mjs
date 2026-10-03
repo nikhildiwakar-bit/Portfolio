@@ -65,7 +65,7 @@ test('a 4-digit code: one click shares with TV-only sound; the TV plays a steady
     const gdm = await sender.evaluate(() => window.__gdm.calls);
     assert.ok(gdm.length >= 1);
     assert.equal(gdm[0].active, true, 'still inside the user gesture');
-    assert.deepEqual(gdm[0].options.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 30, max: 30 } });
+    assert.deepEqual(gdm[0].options.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 60, max: 60 } });
     assert.deepEqual(gdm[0].options.audio, { suppressLocalAudioPlayback: true }, 'a shared tab is silent on the laptop');
     assert.equal(gdm[0].options.selfBrowserSurface, 'exclude');
     assert.equal(gdm[0].options.surfaceSwitching, 'include');
@@ -129,7 +129,7 @@ test('a 4-digit code: one click shares with TV-only sound; the TV plays a steady
     assert.equal(q.sentLive, 'live');
     assert.equal(q.tick, true, 'the tick worker runs (tv/tick.js)');
     assert.equal(q.enc.maxBitrate, 15000000);
-    assert.equal(q.enc.maxFramerate, 30);
+    assert.equal(q.enc.maxFramerate, 60);
     assert.ok(q.enc.scaleResolutionDownBy === 1 || q.enc.scaleResolutionDownBy === 2, 'scale ' + q.enc.scaleResolutionDownBy);
     assert.equal(q.degradation, 'maintain-resolution');
     await until(() => sender.evaluate(() => window.__otvCastSender.videoSender.getParameters().encodings[0].scaleResolutionDownBy === 2),
@@ -252,7 +252,7 @@ test('connection info: codec, resolution and ~30 fps from getStats; the TV\'s nu
         'sent at the TV screen size (1280 x 720 window), captured at full size');
     // ~30 fps (the software encoder on a slow test machine may manage a little less at 2560 x 1440).
     const fps = await until(async () => { const m = /^(\d+) fps$/.exec(await row('fps')); return m && +m[1] >= 15 && +m[1]; }, 10000, 'frame rate sent ~30 fps');
-    assert.ok(fps <= 31, 'frame rate sent ' + fps);
+    assert.ok(fps <= 61, 'frame rate sent ' + fps);
     assert.match(await row('bitrate'), /^[\d.]+ [Mk]bps/);
     assert.match(await row('encoder'), / · (hardware|software)$/, 'the capturing laptop names its encoder');
     assert.match(await row('limit'), /^(Nothing|The laptop's processor|Network bandwidth|Other)$/);

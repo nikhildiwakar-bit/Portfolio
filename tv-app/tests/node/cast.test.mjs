@@ -202,9 +202,9 @@ test('channel reports relay limits', async () => {
 
 // ---------- capture options, codecs, bitrate ----------
 
-test('getDisplayMedia options: native resolution (ideal 1440p, up to 4K) at 30 fps, audio on the TV only, own tab excluded, tab switching allowed', async () => {
+test('getDisplayMedia options: native resolution (ideal 1440p, up to 4K) at 60 fps, audio on the TV only, own tab excluded, tab switching allowed', async () => {
     const o = displayMediaOptions();
-    assert.deepEqual(o.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 30, max: 30 } });
+    assert.deepEqual(o.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 60, max: 60 } });
     assert.deepEqual(o.audio, { suppressLocalAudioPlayback: true }, 'a shared tab is silent on the laptop and plays on the TV');
     assert.equal(o.selfBrowserSurface, 'exclude');
     assert.equal(o.surfaceSwitching, 'include');
@@ -269,14 +269,14 @@ test('preferH264 only reorders when this browser can send H.264, and never throw
     assert.equal(preferH264({}, {}), false);
 });
 
-test('tuneSender caps the encoder at 15 Mbps and 30 fps and keeps the resolution', async () => {
+test('tuneSender caps the encoder at 15 Mbps and 60 fps and keeps the resolution', async () => {
     let params = { transactionId: 't1', encodings: [{ active: true }] };
     const sender = { getParameters: () => JSON.parse(JSON.stringify(params)), setParameters: async p => { params = p; } };
     assert.equal(await tuneSender(sender), true);
     assert.equal(params.encodings[0].maxBitrate, MAX_BITRATE);
     assert.equal(params.encodings[0].maxFramerate, MAX_FPS);
     assert.equal(MAX_BITRATE, 15000000);
-    assert.equal(MAX_FPS, 30);
+    assert.equal(MAX_FPS, 60);
     assert.equal(DEGRADATION, 'maintain-resolution');
     assert.equal(CONTENT_HINT, 'detail');
     assert.equal(params.degradationPreference, 'maintain-resolution');
@@ -396,7 +396,7 @@ test('sender: cast start, offer, answer, sharing; stop says bye on the data chan
     assert.equal(stream.getVideoTracks()[0].contentHint, 'detail');
     const [vt, at] = pc.transceivers;
     assert.equal(vt.init.direction, 'sendonly');
-    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 15000000, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]);
+    assert.deepEqual(vt.init.sendEncodings, [{ maxBitrate: 15000000, maxFramerate: 60, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]);
     assert.equal(at.init.sendEncodings, undefined);
     assert.equal(sender.state, 'connecting');
     pc.dc._open();

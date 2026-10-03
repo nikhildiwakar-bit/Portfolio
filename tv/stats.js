@@ -379,7 +379,7 @@ export function connectionVerdict(tx, rx) {
     // still screen goes out at about 1 fps and TVs that hold each frame until the next show changes late.
     if (tx.steady === false && num(tx.fps) !== null && tx.fps < 10) {
         const f = Math.max(1, Math.round(tx.fps));
-        add('warn', 'This browser sends a still screen at only ' + f + (f === 1 ? ' frame' : ' frames') + ' per second, so changes can reach the TV late. Chrome or Edge keep it at 30');
+        add('warn', 'This browser sends a still screen at only ' + f + (f === 1 ? ' frame' : ' frames') + ' per second, so changes can reach the TV late. Chrome or Edge keep it at 60');
     }
     if (tx.width && tx.srcWidth && tx.width < tx.srcWidth * 0.95) {
         add('warn', 'Sending ' + tx.width + ' x ' + tx.height + ', less than the captured ' + tx.srcWidth + ' x ' + tx.srcHeight);

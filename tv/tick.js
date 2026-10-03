@@ -1,6 +1,6 @@
-// Office TV steady frame rate (steady.js): a dedicated worker that posts a tick every 33 ms. Timers on a
+// Office TV steady frame rate (steady.js): a dedicated worker that posts a tick every 16 ms. Timers on a
 // background tab's main thread are throttled (down to once a second or less), a worker's are not, and the
-// page handles its message events at once, so the laptop keeps sending about 30 frames per second even
+// page handles its message events at once, so the laptop keeps sending about 60 frames per second even
 // while the Office TV tab is hidden behind the shared window.
 // Messages in: a number = the tick interval in ms (restarts the timer), 0 = stop.
 var timer = null;
@@ -19,4 +19,4 @@ onmessage = function (e) {
     }
 };
 
-start(33);
+start(16);

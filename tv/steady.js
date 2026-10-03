@@ -11,7 +11,7 @@
 // Needs MediaStreamTrackProcessor + MediaStreamTrackGenerator (Chrome, Edge); elsewhere steadyTrack()
 // returns null and the caller sends the original track.
 
-export const STEADY_FPS = 30;
+export const STEADY_FPS = 60;
 
 /** True when this browser can wrap a video track (MediaStreamTrackProcessor/Generator, VideoFrame, Worker). */
 export function steadySupported(w = globalThis) {
