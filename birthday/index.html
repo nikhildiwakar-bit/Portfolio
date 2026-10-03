@@ -269,6 +269,7 @@
     box-shadow:0 8px 18px rgba(12,84,160,.3);
   }
   .bday-role{font-size:12px;color:var(--text-soft);letter-spacing:.04em;margin-top:8px;}
+  .bday-card.off{display:none;}
   .bday-none{font-size:15px;color:var(--text-soft);}
 
 </style>
@@ -657,11 +658,24 @@ function renderPeople(list){
     }
     peopleEl.appendChild(card);
   });
+  // show one person at a time; if several share the day, rotate every 6s
+  clearInterval(window.bdayTimer);
+  const cards = [...peopleEl.children];
+  cards.forEach((c,i)=>c.classList.toggle('off', i>0));
+  if(cards.length>1){
+    let cur = 0;
+    window.bdayTimer = setInterval(()=>{
+      cards[cur].classList.add('off');
+      cur = (cur+1) % cards.length;
+      cards[cur].classList.remove('off');
+      headlineEl.textContent = 'Happy Birthday, ' + list[cur].name.replace(/^(mr|mrs|ms|dr)\.?\s+/i,'').split(/\s+/)[0];
+    }, 6000);
+  }
   if(!list.length){
     peopleEl.innerHTML = '<div class="bday-card"><div class="bday-photo" style="font-size:46px">🎂</div><div class="bday-name">No birthday today</div><div class="bday-role">Add staff with the + Staff button</div></div>';
   }
   if(list.length){
-    headlineEl.textContent = 'Happy Birthday' + (list.length===1 ? ', '+list[0].name.replace(/^(mr|mrs|ms|dr)\.?\s+/i,'').split(/\s+/)[0] : '');
+    headlineEl.textContent = 'Happy Birthday' + ', '+list[0].name.replace(/^(mr|mrs|ms|dr)\.?\s+/i,'').split(/\s+/)[0];
   }
 }
 
