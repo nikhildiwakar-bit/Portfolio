@@ -35,15 +35,17 @@
 
   /* ---------- SCENE ---------- */
   .brand-header{
-    width:100%;display:flex;justify-content:center;
-    padding:clamp(10px,2.4dvh,22px) 20px clamp(4px,1.2dvh,10px);
+    width:100%;max-width:520px;display:flex;justify-content:center;
+    padding:22px 20px 10px;
   }
-  .brand-header img{height:clamp(44px,8dvh,84px);width:auto;display:block;}
+  .brand-header img{height:68px;width:auto;display:block;}
 
   .scene{
     position:relative;
-    width:min(calc(100% - 24px), 57dvh, 900px);
-    aspect-ratio:1/1;
+    width:100%;
+    max-width:520px;
+    height:min(78vh,640px);
+    min-height:460px;
     overflow:hidden;
     border-radius:14px;
     background:linear-gradient(180deg,var(--bg-top) 0%, var(--bg-mid) 55%, var(--bg-bottom) 100%);
@@ -51,7 +53,6 @@
     user-select:none;
   }
 
-  @media (max-aspect-ratio:4/5){ .scene{width:calc(100% - 24px);max-width:560px;aspect-ratio:4/5;max-height:62dvh;} }
   .stars{position:absolute;inset:0;pointer-events:none;overflow:hidden;}
   .stars span{
     position:absolute;font-size:15px;opacity:.16;color:var(--brand-blue);
@@ -71,7 +72,7 @@
   .hint{
     position:absolute;top:6%;left:0;right:0;
     text-align:center;font-family:'Inter',sans-serif;
-    font-size:clamp(12px,2.3dvh,20px);font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+    font-size:14px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
     color:var(--brand-blue);opacity:1;
     text-shadow:0 1px 3px rgba(255,255,255,.9), 0 0 10px rgba(255,255,255,.6);
     transition:opacity .6s ease;
@@ -127,7 +128,7 @@
 
   .pull-label{
     position:absolute;bottom:2%;left:0;right:0;text-align:center;
-    font-family:'Inter',sans-serif;font-size:clamp(11px,1.9dvh,16px);font-weight:700;letter-spacing:.12em;
+    font-family:'Inter',sans-serif;font-size:12px;font-weight:700;letter-spacing:.12em;
     text-transform:uppercase;color:var(--brand-blue);opacity:1;
     text-shadow:0 1px 3px rgba(255,255,255,.9), 0 0 10px rgba(255,255,255,.6);
     transition:opacity .6s ease;
@@ -136,7 +137,7 @@
 
   /* ---------- TEXT REVEAL ---------- */
   .reveal{
-    text-align:center;padding:34px 20px 10px;width:100%;max-width:600px;
+    text-align:center;padding:34px 24px 10px;max-width:560px;
   }
   .eyebrow{
     font-family:'Inter',sans-serif;font-size:12px;font-weight:600;letter-spacing:.22em;
@@ -177,7 +178,7 @@
 
   /* ---------- VIDEO ---------- */
   .video-block{
-    width:100%;max-width:600px;
+    width:100%;max-width:560px;
     display:grid;grid-template-rows:0fr;
     opacity:0;
     transition:grid-template-rows .7s ease, opacity .7s ease;
@@ -255,36 +256,25 @@
   .bday-card{text-align:center;animation:cardIn .8s ease both;}
   @keyframes cardIn{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
   .bday-photo{
-    width:clamp(88px,15dvh,160px);height:clamp(88px,15dvh,160px);border-radius:50%;margin:0 auto;overflow:hidden;
+    width:104px;height:104px;border-radius:50%;margin:0 auto;overflow:hidden;
     border:4px solid #fff;
     box-shadow:0 0 0 3px var(--brand-blue),0 0 0 6px rgba(182,44,44,.55),0 12px 28px rgba(12,84,160,.28);
     background:var(--brand-blue);
     display:flex;align-items:center;justify-content:center;
-    color:#fff;font-family:'Inter',sans-serif;font-weight:500;font-size:clamp(34px,6dvh,60px);
+    color:#fff;font-family:'Inter',sans-serif;font-weight:500;font-size:44px;
   }
   .bday-photo img{width:100%;height:100%;object-fit:cover;display:block;}
   .bday-name{
     display:inline-block;max-width:92vw;white-space:normal;margin-top:-16px;position:relative;
     background:var(--brand-blue);color:#fff;border:3px solid #fff;border-radius:999px;
-    padding:.6em 1.4em;font:700 clamp(13px,2.1dvh,19px) 'Inter',sans-serif;letter-spacing:.06em;text-transform:uppercase;
+    padding:8px 18px;font:700 13px 'Inter',sans-serif;letter-spacing:.06em;text-transform:uppercase;
     box-shadow:0 8px 18px rgba(12,84,160,.3);
   }
-  .bday-role{font-size:clamp(12px,1.9dvh,16px);color:var(--text-soft);letter-spacing:.04em;margin-top:8px;}
+  .bday-role{font-size:12px;color:var(--text-soft);letter-spacing:.04em;margin-top:8px;}
   .bday-card.off{display:none;}
   .bday-none{font-size:15px;color:var(--text-soft);}
 
 
-  /* wide screens (laptop / desktop / Mac): card on the left, photo + name on the right */
-  @media (min-aspect-ratio:5/4) and (min-width:900px){
-    body{display:grid;grid-template-columns:auto minmax(260px,420px);justify-content:center;align-content:start;column-gap:clamp(28px,5vw,80px);}
-    .brand-header{grid-column:1 / -1;}
-    .scene{width:min(72dvh, 52vw, 900px);justify-self:end;}
-    .bday-people{margin:0;align-self:center;flex-direction:column;flex-wrap:nowrap;justify-self:start;}
-    .bday-photo{width:clamp(140px,26dvh,260px);height:clamp(140px,26dvh,260px);font-size:clamp(50px,10dvh,100px);}
-    .bday-name{font-size:clamp(15px,2.8dvh,26px);margin-top:-22px;}
-    .bday-role{font-size:clamp(13px,2.2dvh,20px);}
-    .reveal,.video-block,footer{grid-column:1 / -1;justify-self:center;}
-  }
 </style>
 </head>
 <body>
