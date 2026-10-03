@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Happy Birthday</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Parisienne&family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -21,29 +21,30 @@
     --text-soft:#4a5b72;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-  html,body{margin:0;padding:0;height:100%;background:var(--bg-bottom);overflow-x:hidden;}
+  html,body{margin:0;padding:0;background:var(--bg-bottom);overflow-x:hidden;-webkit-text-size-adjust:100%;}
+  img,video{max-width:100%;}
   body{
     font-family:'Inter',sans-serif;
     color:var(--text-dark);
     display:flex;
     flex-direction:column;
     align-items:center;
-    min-height:100vh;
+    min-height:100vh;min-height:100dvh;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 
   /* ---------- SCENE ---------- */
   .brand-header{
-    width:100%;max-width:520px;display:flex;justify-content:center;
-    padding:22px 20px 10px;
+    width:100%;display:flex;justify-content:center;
+    padding:clamp(10px,2.4dvh,22px) 20px clamp(4px,1.2dvh,10px);
   }
-  .brand-header img{height:68px;width:auto;display:block;}
+  .brand-header img{height:clamp(44px,8dvh,72px);width:auto;display:block;}
 
   .scene{
     position:relative;
-    width:100%;
-    max-width:520px;
-    height:min(78vh,640px);
-    min-height:460px;
+    width:calc(100% - 24px);
+    max-width:clamp(340px, 62dvh, 700px);
+    height:clamp(380px, 62dvh, 700px);
     overflow:hidden;
     border-radius:14px;
     background:linear-gradient(180deg,var(--bg-top) 0%, var(--bg-mid) 55%, var(--bg-bottom) 100%);
@@ -135,7 +136,7 @@
 
   /* ---------- TEXT REVEAL ---------- */
   .reveal{
-    text-align:center;padding:34px 24px 10px;max-width:560px;
+    text-align:center;padding:34px 20px 10px;width:100%;max-width:600px;
   }
   .eyebrow{
     font-family:'Inter',sans-serif;font-size:12px;font-weight:600;letter-spacing:.22em;
@@ -176,7 +177,7 @@
 
   /* ---------- VIDEO ---------- */
   .video-block{
-    width:100%;max-width:560px;
+    width:100%;max-width:600px;
     display:grid;grid-template-rows:0fr;
     opacity:0;
     transition:grid-template-rows .7s ease, opacity .7s ease;
@@ -254,16 +255,16 @@
   .bday-card{text-align:center;animation:cardIn .8s ease both;}
   @keyframes cardIn{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
   .bday-photo{
-    width:104px;height:104px;border-radius:50%;margin:0 auto;overflow:hidden;
+    width:clamp(84px,14dvh,124px);height:clamp(84px,14dvh,124px);border-radius:50%;margin:0 auto;overflow:hidden;
     border:4px solid #fff;
     box-shadow:0 0 0 3px var(--brand-blue),0 0 0 6px rgba(182,44,44,.55),0 12px 28px rgba(12,84,160,.28);
     background:var(--brand-blue);
     display:flex;align-items:center;justify-content:center;
-    color:#fff;font-family:'Inter',sans-serif;font-weight:500;font-size:44px;
+    color:#fff;font-family:'Inter',sans-serif;font-weight:500;font-size:clamp(34px,5.5dvh,50px);
   }
   .bday-photo img{width:100%;height:100%;object-fit:cover;display:block;}
   .bday-name{
-    display:inline-block;margin-top:-16px;position:relative;
+    display:inline-block;max-width:92vw;white-space:normal;margin-top:-16px;position:relative;
     background:var(--brand-blue);color:#fff;border:3px solid #fff;border-radius:999px;
     padding:8px 18px;font:700 13px 'Inter',sans-serif;letter-spacing:.06em;text-transform:uppercase;
     box-shadow:0 8px 18px rgba(12,84,160,.3);
@@ -544,6 +545,7 @@ window.addEventListener('touchmove', moveDrag, {passive:false});
 window.addEventListener('mouseup', endDrag);
 window.addEventListener('touchend', endDrag);
 window.addEventListener('resize', ()=>{ if(!hasFired) layout(); });
+window.addEventListener('orientationchange', ()=>setTimeout(()=>{ if(!hasFired) layout(); }, 250));
 
 window.addEventListener('load', layout);
 setTimeout(layout, 60);
