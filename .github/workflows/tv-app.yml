@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - 'tv-app/app/**'
+      # The APK bundles the website's receiver files (tv/*.js, receive.html), so a site change needs a new APK.
+      - 'tv/**'
       - '.github/workflows/tv-app.yml'
   workflow_dispatch:
 
