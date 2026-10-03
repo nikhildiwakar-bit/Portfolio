@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.os.Build;
 
 import com.nikhil.officetv.mirror.MirrorProtocol;
+import com.nikhil.officetv.relay.Pairing;
 
 import java.security.SecureRandom;
 import java.util.Locale;
@@ -14,9 +15,6 @@ import java.util.Locale;
  * (TV) and the last TV a phone shared to (phone).
  */
 final class Prefs {
-    /** Crockford base32 (PROTOCOL.md section 1). */
-    static final String PAIR_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    static final int PAIR_LENGTH = 10;
     static final String DEFAULT_RELAY = "https://ntfy.sh";
     static final int NAME_MAX = 40;
 
@@ -36,38 +34,27 @@ final class Prefs {
         p(c).edit().putBoolean("keep_awake", on).apply();
     }
 
-    /** The TV's 10-symbol pairing code (normalized, no dash). Created on first use. */
+    /**
+     * The TV's 4-digit code (PROTOCOL.md section 1). Created on first use; a code from an older app version
+     * (10 symbols) is replaced by a 4-digit one.
+     */
     static synchronized String pairCode(Context c) {
         String raw = p(c).getString("pair_code", null);
-        String v = normalizePairCode(raw);
-        if (v == null) return newPairCode(c);
+        String v = Pairing.normalize(raw);
+        if (!Pairing.isShort(v)) return newPairCode(c);
         if (!v.equals(raw)) p(c).edit().putString("pair_code", v).apply();
         return v;
     }
 
-    /** Makes a new pairing code; every laptop that used the old one has to enter the new one. */
+    /** Makes a new 4-digit code (never the current one). Laptops have to enter the new one. */
     static synchronized String newPairCode(Context c) {
-        char[] out = new char[PAIR_LENGTH];
-        for (int i = 0; i < out.length; i++) out[i] = PAIR_ALPHABET.charAt(RNG.nextInt(PAIR_ALPHABET.length()));
-        String v = new String(out);
+        String old = p(c).getString("pair_code", null);
+        String v;
+        do {
+            v = Pairing.newShortCode(RNG);
+        } while (v.equals(old));
         p(c).edit().putString("pair_code", v).apply();
         return v;
-    }
-
-    /** Uppercase, drop spaces and dashes, O->0, I/L->1; null unless exactly 10 alphabet symbols remain. */
-    static String normalizePairCode(String s) {
-        if (s == null) return null;
-        String up = s.toUpperCase(Locale.ROOT);
-        StringBuilder b = new StringBuilder(PAIR_LENGTH);
-        for (int i = 0; i < up.length(); i++) {
-            char ch = up.charAt(i);
-            if (ch == '-' || Character.isWhitespace(ch) || Character.isSpaceChar(ch)) continue;
-            if (ch == 'O') ch = '0';
-            else if (ch == 'I' || ch == 'L') ch = '1';
-            if (PAIR_ALPHABET.indexOf(ch) < 0 || b.length() >= PAIR_LENGTH) return null;
-            b.append(ch);
-        }
-        return b.length() == PAIR_LENGTH ? b.toString() : null;
     }
 
     /** Name shown to controllers, e.g. "Conference Dahua". Defaults to the TV's maker and model. */

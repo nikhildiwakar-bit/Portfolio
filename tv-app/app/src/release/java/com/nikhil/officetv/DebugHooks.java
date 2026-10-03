@@ -14,4 +14,6 @@ final class DebugHooks {
     static void stop() {}
 
     static void event(String what) {}
+
+    static void codeChanged(String code, String why) {}
 }

@@ -5,6 +5,9 @@
 // frame came for one frame period the last one is sent again (a new VideoFrame on the same picture, so
 // nothing is copied). The period comes from a worker (tick.js), because timers on a background tab's main
 // thread are throttled and the shared window usually hides the Office TV tab.
+// While the source itself delivers frames steadily (a video playing at 24 fps, say), the first repeat waits a
+// little longer than the source's own interval (at most two periods): the encoder keeps at most `fps` frames
+// per second, so a repeat just before the next real frame would make it drop that real frame.
 // Needs MediaStreamTrackProcessor + MediaStreamTrackGenerator (Chrome, Edge); elsewhere steadyTrack()
 // returns null and the caller sends the original track.
 
@@ -20,7 +23,8 @@ export function steadySupported(w = globalThis) {
  * Wraps a live video track. Returns {track, stop, stats} or null (APIs missing, or the track is not a live
  * video track). track = the generated track to send (same contentHint), stop() ends it and frees the
  * processor, the worker and the frames it holds, stats = {frames: new frames sent, repeats: frames sent
- * again}. Every frame written gets a timestamp from this page's own clock, strictly increasing.
+ * again}. A frame keeps the source's timestamp, a repeat gets that time plus how long ago the frame came;
+ * timestamps always increase.
  */
 export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = globalThis } = {}) {
     if (!steadySupported(w) || !track || track.kind !== 'video' || track.readyState === 'ended' || !workerUrl) return null;
@@ -48,6 +52,9 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
     const stats = { frames: 0, repeats: 0 };
     let last = null;        // the newest captured frame, kept open so it can be sent again
     let lastSentAt = -Infinity;
+    let lastNewAt = -Infinity;
+    let srcMs = periodMs;   // recent interval between the source's own frames (smoothed)
+    let srcTs = 0;          // timestamp (microseconds) of the newest captured frame
     let lastTs = -1;
     let pending = 0;
     let stopped = false;
@@ -56,7 +63,9 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
     function send(repeat) {
         if (stopped || !last || pending > 1) return;
         const now = clock();
-        const ts = Math.max(lastTs + 1, Math.round(now * 1000));
+        // The source's own timestamp (even spacing, so the encoder's frame rate limit keeps every real frame);
+        // a repeat is that time plus how long ago the frame came. Always strictly increasing.
+        const ts = Math.max(lastTs + 1, srcTs + (repeat ? Math.round((now - lastNewAt) * 1000) : 0));
         let f;
         try { f = new w.VideoFrame(last, { timestamp: ts }); } catch (e) { return; }
         lastTs = ts;
@@ -74,7 +83,11 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
     }
 
     worker.onmessage = () => {
-        if (!stopped && last && clock() - lastSentAt >= periodMs - 2) send(true);
+        if (stopped || !last) return;
+        const now = clock();
+        // The first repeat after a real frame waits for the source's own next frame; later ones every period.
+        const wait = lastSentAt > lastNewAt ? periodMs : Math.min(2 * periodMs, Math.max(periodMs, srcMs * 1.25));
+        if (now - lastSentAt >= wait - 2) send(true);
     };
     worker.postMessage(Math.round(periodMs));
 
@@ -86,6 +99,11 @@ export function steadyTrack(track, { fps = STEADY_FPS, workerUrl, window: w = gl
                 if (stopped) { try { value.close(); } catch (e) { /* ignore */ } break; }
                 if (last) { try { last.close(); } catch (e) { /* ignore */ } }
                 last = value;
+                const now = clock();
+                const gap = now - lastNewAt;
+                if (gap > 0 && gap < 250) srcMs = srcMs * 0.7 + gap * 0.3; // motion, not a still screen's rare refresh
+                lastNewAt = now;
+                srcTs = typeof value.timestamp === 'number' && isFinite(value.timestamp) ? value.timestamp : Math.round(now * 1000);
                 send(false);
             }
         } catch (e) { /* the source ended or the reader was cancelled */ }

@@ -29,7 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>For the emulator smoke test (tv-app/ci/smoke.sh): logs "OTV_TEST ..." lines and serves a tiny JSON API
  * on 127.0.0.1 only (reach it with "adb forward"), protected by a random token that is printed in the log:
  * <pre>
- *   OTV_TEST port=8080 token=&lt;hex&gt; code=&lt;pairing code&gt;
+ *   OTV_TEST port=8080 token=&lt;hex&gt; code=&lt;pairing code&gt;   (logged again whenever the code changes)
  *   GET  /api/status   (header X-Token)      status object + relay state + cast state
  *   POST /api/cmd      {"cmd":..,"args":{}}  runs a command exactly like one that came through the relay
  *   POST /api/tone?ms=8000                   plays a 440 Hz test tone (USAGE_MEDIA) for that long (ms=0 stops
@@ -97,6 +97,18 @@ final class DebugHooks {
     /** One "OTV_TEST <what>" log line (relay state, cast screen, accessibility). */
     static void event(String what) {
         Log.i(TAG, "OTV_TEST " + what);
+    }
+
+    /**
+     * The TV code changed (why: start, opened, button, taken): logs "OTV_TEST code=&lt;code&gt; reason=&lt;why&gt;" and,
+     * once the test API runs, the port line again with the new code, so the last "OTV_TEST port=" line always has
+     * the current code (GET /api/status "code" has it too).
+     */
+    static synchronized void codeChanged(String code, String why) {
+        Log.i(TAG, "OTV_TEST code=" + code + " reason=" + why);
+        if (server != null && !server.isClosed()) {
+            Log.i(TAG, "OTV_TEST port=" + port + " token=" + token + " code=" + code);
+        }
     }
 
     private static void acceptLoop(ServerSocket s) {

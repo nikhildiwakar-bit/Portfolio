@@ -41,7 +41,8 @@ import java.util.Locale;
 /**
  * The TV's home screen: the TV code and where to enter it, whether the TV is online, the one-time setup
  * (only when something is missing) and three settings. Everything is built in code, scaled to the screen
- * (see UiKit) and usable with the remote's D-pad or by touch.
+ * (see UiKit) and usable with the remote's D-pad or by touch. The 4-digit code is new every time Office TV is
+ * opened from the launcher (not when a shared screen closes and the home screen comes back).
  */
 public class MainActivity extends Activity {
     static final String SITE = "nikhildiwakar-bit.github.io/Portfolio/tv";
@@ -65,12 +66,24 @@ public class MainActivity extends Activity {
             handler.postDelayed(this, TICK_MS);
         }
     };
-    private final Runnable relayChanged = this::refreshStatus;
+    /** Relay state or TV code changed: the whole screen when the code (and so the phone QR code) is new. */
+    private final Runnable relayChanged = () -> {
+        String shown = MainActivity.this.codeShown;
+        if (shown != null && !shown.equals(Prefs.pairCode(MainActivity.this))) refresh();
+        else refreshStatus();
+    };
 
     private UiKit ui;
     private boolean twoCols;
     private boolean holdTop;
     private TextView tvName, code, clock, date, statusDot, statusText, statusHint, diag;
+    private String codeShown;
+    /** For sizing the TV code: the page, its flexible spacers and (two columns) the body and the code's column. */
+    private ScrollView scroll;
+    private LinearLayout page, body, codeColumn;
+    private View hero, topSpace, bottomSpace;
+    private int gap;
+    private float codeMinPx, codeMaxPx;
     private GradientDrawable statusPill;
     private View setupCard, howCard, allowSection, engineSection;
     private TextView allowText, allowHint, engineText;
@@ -97,28 +110,32 @@ public class MainActivity extends Activity {
             finish();
             return;
         }
+        // Opened from the launcher: a new code (a restored screen or the way back from a shared screen keeps it).
+        if (state == null && openedFromLauncher(getIntent())) RelayManager.opened(this, "opened");
         ControlService.start(this);
         RelayManager.start(this);
         ui = new UiKit(this);
         float vw = ui.widthDp / ui.scale;
         twoCols = vw >= 820 && ui.widthDp > ui.heightDp * 1.2f;
-        int gap = ui.dp(18);
+        gap = ui.dp(16);
 
-        LinearLayout page = vbox();
-        page.setPadding(ui.dp(40), ui.dp(24), ui.dp(40), ui.dp(20));
+        page = vbox();
+        page.setPadding(ui.dp(40), ui.dp(20), ui.dp(40), ui.dp(16));
         page.addView(header(), fill(0, 0, 0, gap));
         // Spacers above and below the content: centred on big screens, no gap when the page has to scroll.
-        page.addView(new View(this), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        topSpace = new View(this);
+        page.addView(topSpace, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        View hero = heroCard();
+        hero = heroCard();
         View settings = settingsRow(twoCols || vw >= 560);
         setupCard = setupCard();
         howCard = howCard();
         phoneCard = phoneCard();
         if (twoCols) {
-            LinearLayout body = new LinearLayout(this);
+            body = new LinearLayout(this);
             body.setOrientation(LinearLayout.HORIZONTAL);
             LinearLayout left = vbox(), right = vbox();
+            codeColumn = left;
             left.addView(hero, fill(0, 0, 0, gap));
             left.addView(settings, fill(0, 0, 0, 0));
             right.addView(setupCard, fill(0, 0, 0, 0));
@@ -139,12 +156,13 @@ public class MainActivity extends Activity {
             page.addView(settings, fill(0, 0, 0, gap));
         }
 
-        page.addView(new View(this), new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        bottomSpace = new View(this);
+        page.addView(bottomSpace, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         diag = ui.text("", 12, UiKit.MUTED, false);
         diag.setAlpha(0.85f);
         page.addView(diag, fill(ui.dp(4), 0, ui.dp(4), 0));
 
-        ScrollView scroll = new ScrollView(this) {
+        scroll = new ScrollView(this) {
             /** While holdTop is set, focusing a button further down does not scroll the TV code away. */
             @Override
             protected int computeScrollDeltaToGetChildRectOnScreen(Rect rect) {
@@ -161,6 +179,11 @@ public class MainActivity extends Activity {
 
         refresh();
         scroll.post(this::focusDefault);
+    }
+
+    /** The launcher's intent (also from recents or the TV's app row), not a plain "back to the home screen" one. */
+    private static boolean openedFromLauncher(Intent i) {
+        return i != null && Intent.ACTION_MAIN.equals(i.getAction());
     }
 
     // ---------- building the screen ----------
@@ -197,25 +220,27 @@ public class MainActivity extends Activity {
         return h;
     }
 
+    /** Open the website on the laptop and enter this code: the 4 digits as large as the screen allows. */
     private View heroCard() {
-        LinearLayout c = cardBox(26, 22);
+        LinearLayout c = cardBox(26, 20);
         c.setBackground(ui.rounded(UiKit.CARD, UiKit.ACCENT_DARK, 20, 1.5f));
         c.setGravity(Gravity.CENTER_HORIZONTAL);
-        c.addView(center(eyebrow("SHARE YOUR LAPTOP SCREEN")), fill(0, 0, 0, ui.dp(12)));
-        c.addView(center(ui.text("On your laptop, open", 18, UiKit.FG, false)), fill(0, 0, 0, ui.dp(2)));
+        c.addView(center(ui.text("Open this website on the laptop", 18, UiKit.FG, false)), fill(0, 0, 0, ui.dp(2)));
         TextView site = center(ui.text(SITE, 22, UiKit.FG, true));
         site.setSingleLine(true);
         fitWidth(site);
         c.addView(site, fill(0, 0, 0, ui.dp(2)));
-        c.addView(center(ui.text("and enter this code", 18, UiKit.FG, false)), fill(0, 0, 0, ui.dp(6)));
+        c.addView(center(ui.text("and enter this code", 18, UiKit.FG, false)), fill(0, 0, 0, ui.dp(4)));
 
-        code = center(ui.text("", 64, UiKit.ACCENT, true));
+        // Monospace digits with wide spacing, readable across the room; fitCode sets the size.
+        codeMinPx = ui.sp(56);
+        codeMaxPx = ui.sp(170);
+        code = center(ui.text("", 96, UiKit.ACCENT, true));
         code.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        code.setLetterSpacing(0.06f);
+        code.setLetterSpacing(0.25f);
         code.setSingleLine(true);
         code.setIncludeFontPadding(false);
-        fitWidth(code);
-        c.addView(code, fill(0, ui.dp(4), 0, ui.dp(16)));
+        c.addView(code, fill(0, ui.dp(6), 0, ui.dp(14)));
 
         LinearLayout pill = new LinearLayout(this);
         pill.setOrientation(LinearLayout.HORIZONTAL);
@@ -410,6 +435,8 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        // Opened again from the launcher (not "back to home" from a shared screen): a new code each time.
+        if (openedFromLauncher(intent)) RelayManager.opened(this, "opened");
         refresh();
     }
 

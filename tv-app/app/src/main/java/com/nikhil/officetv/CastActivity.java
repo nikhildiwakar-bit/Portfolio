@@ -34,11 +34,22 @@ import android.widget.TextView;
 
 import com.nikhil.officetv.relay.Pairing;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.lang.ref.WeakReference;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Full-screen receiver for "Share my screen" (PROTOCOL.md section 8). A WebView loads the receiver page
- * that is hosted with the website (https, so WebRTC has a secure context). The pairing code and session
+ * at the website's https address (so WebRTC has a secure context), but the page and its scripts come from the
+ * app's own copy of the website files (assets/receiver), so it opens at once and without the internet; files
+ * the app does not have load from the network as usual. The pairing code and session
  * travel in the URL fragment, which the WebView never sends to any server; the page cannot navigate
  * anywhere else, so the code never reaches another site. The page does the WebRTC signaling itself over
  * the encrypted relay and calls OfficeTvCast.close() when sharing ends.
@@ -76,9 +87,81 @@ public class CastActivity extends Activity {
     }
 
     static String receiverUrl(String session, String code, String relay) {
+        return receiverUrl(session, code, relay, null);
+    }
+
+    /**
+     * RECEIVER_URL#s=SESSION&code=CODE[&ip=TV_LAN_IPV4][&relay=URL] (same order as tv/cast.js receiverUrl). ip lets
+     * the laptop reach the TV's real address at once and, for 4-digit codes, limits sharing to its network.
+     */
+    static String receiverUrl(String session, String code, String relay, String ip) {
         StringBuilder b = new StringBuilder(RECEIVER_URL).append("#s=").append(session).append("&code=").append(code);
+        if (ip != null && IPV4.matcher(ip).matches()) b.append("&ip=").append(ip);
         if (relay != null && !Pairing.isDefaultRelay(relay)) b.append("&relay=").append(Uri.encode(relay));
         return b.toString();
+    }
+
+    // ---------- the receiver page from the app itself (no internet needed to open it) ----------
+
+    /** Website files the app bundles (build.gradle copies ../tv/*.js and receive.html to assets/receiver/). */
+    static final String SITE_BASE = "https://nikhildiwakar-bit.github.io/Portfolio/tv/";
+    private static final String ASSET_DIR = "receiver";
+    private static final Pattern IPV4 = Pattern.compile("(\\d{1,3}\\.){3}\\d{1,3}");
+    private static final Pattern FILE_NAME = Pattern.compile("[A-Za-z0-9_-][A-Za-z0-9._-]*");
+    private static volatile Set<String> bundled;
+
+    /** The bundled file for a website URL (query and fragment ignored), or null if the app has none. */
+    static String bundledFile(String url, Set<String> files) {
+        if (url == null || !url.startsWith(SITE_BASE)) return null;
+        String name = url.substring(SITE_BASE.length());
+        int cut = name.length();
+        int q = name.indexOf('?'), h = name.indexOf('#');
+        if (q >= 0) cut = q;
+        if (h >= 0 && h < cut) cut = h;
+        name = name.substring(0, cut);
+        if (!FILE_NAME.matcher(name).matches() || mimeType(name) == null) return null;
+        return files != null && files.contains(name) ? name : null;
+    }
+
+    /** MIME type of a bundled file, or null for types the app does not serve. */
+    static String mimeType(String name) {
+        String n = name.toLowerCase(Locale.US);
+        if (n.endsWith(".html")) return "text/html";
+        if (n.endsWith(".js") || n.endsWith(".mjs")) return "text/javascript";
+        if (n.endsWith(".css")) return "text/css";
+        if (n.endsWith(".json")) return "application/json";
+        if (n.endsWith(".svg")) return "image/svg+xml";
+        return null;
+    }
+
+    private static Set<String> bundledFiles(Context c) {
+        Set<String> s = bundled;
+        if (s != null) return s;
+        s = new HashSet<>();
+        try {
+            String[] names = c.getAssets().list(ASSET_DIR);
+            if (names != null) Collections.addAll(s, names);
+        } catch (IOException | RuntimeException e) {
+            CrashLog.note(c, "Bundled receiver files: " + e);
+        }
+        bundled = s;
+        return s;
+    }
+
+    /** The response for a GET of a bundled website file, or null to load it from the network as usual. */
+    private WebResourceResponse bundledResponse(String url) {
+        String name = bundledFile(url, bundledFiles(this));
+        if (name == null) return null;
+        try {
+            InputStream in = getAssets().open(ASSET_DIR + "/" + name);
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Cache-Control", "no-store");
+            headers.put("Access-Control-Allow-Origin", "*");
+            return new WebResourceResponse(mimeType(name), "UTF-8", 200, "OK", headers, in);
+        } catch (IOException | RuntimeException e) {
+            CrashLog.note(this, "Bundled receiver file " + name + ": " + e);
+            return null;
+        }
     }
 
     static Intent intent(Context c, String url, String session) {
@@ -335,6 +418,20 @@ public class CastActivity extends Activity {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             return true;
+        }
+
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            // Called on a WebView background thread.
+            if (request == null || request.getUrl() == null || !"GET".equalsIgnoreCase(request.getMethod())) return null;
+            return bundledResponse(request.getUrl().toString());
+        }
+
+        @Override
+        @SuppressWarnings("deprecation")
+        public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+            // Only engines that do not call the overload above use this one; it knows no method, and pages only GET files.
+            return bundledResponse(url);
         }
 
         @Override

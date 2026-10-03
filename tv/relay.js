@@ -48,8 +48,10 @@ function envelopeKey(text) {
  *   ready(ms) -> Promise<boolean>: true once publish() can go out without waiting (a broker, or ntfy when no broker
  *     came up within MQTT_GRACE_MS or every broker failed), false after ms with nothing connected.
  *   publish(envelope, {via}) -> Promise<{via, ok, status?, body?, error?}>: via undefined or 'mqtt' = every connected
- *     broker, or ntfy if none is; via 'ntfy' = ntfy only. ntfy failures carry the HTTP status (0 = network error)
- *     and, for 429, the response body.
+ *     broker, or ntfy if none is; via 'ntfy' = ntfy only; via 'mqtt-only' = every connected broker, never ntfy
+ *     (ok false with status 0 when none is connected; for repeats that ntfy's history makes unnecessary).
+ *     count = the brokers it went to. ntfy failures carry the HTTP status (0 = network error) and, for 429,
+ *     the response body.
  * Options: ntfy base URL (false = no ntfy, tests and CI only), brokers ([] = no MQTT), since (ntfy history for the
  * first subscription, e.g. '5m'), injectable WebSocket / EventSource / fetch, mqtt (MqttClient timing options).
  */
@@ -289,12 +291,13 @@ export class Relay {
 
     /** Publishes one envelope (contract in the class comment). Never throws. */
     async publish(envelope, { via } = {}) {
-        if (this._closed) return { via: via || 'ntfy', ok: false, status: 0, error: new Error('relay closed') };
+        if (this._closed) return { via: via === 'ntfy' || !this.brokers.length ? 'ntfy' : 'mqtt', ok: false, status: 0, error: new Error('relay closed') };
         this.start();
         if (via !== 'ntfy') {
             let n = 0;
             for (const c of this._clients) if (c.publish(envelope)) n++;
             if (n) return { via: 'mqtt', ok: true, count: n };
+            if (via === 'mqtt-only') return { via: 'mqtt', ok: false, status: 0, error: new Error('no broker connected') };
         }
         return this._ntfyPublish(envelope);
     }

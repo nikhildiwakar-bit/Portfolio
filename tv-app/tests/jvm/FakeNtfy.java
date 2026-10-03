@@ -12,7 +12,6 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -22,11 +21,8 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.KeyStore;
 import java.security.SecureRandom;
-import java.security.cert.Certificate;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -38,10 +34,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManagerFactory;
 
 /**
  * A tiny ntfy-compatible relay for tests (com.sun.net.httpserver, in-memory):
@@ -73,6 +67,8 @@ public final class FakeNtfy implements Closeable {
     private final SSLSocketFactory clientFactory;
     private final Path certPem;
     private volatile long keepaliveMs;
+    /** Added to the server clock (event times), to play a relay whose clock differs from the TV's. */
+    private volatile long skewMs;
 
     private final Map<String, Topic> topics = new ConcurrentHashMap<>();
     private final Map<String, byte[]> files = new ConcurrentHashMap<>();
@@ -121,37 +117,10 @@ public final class FakeNtfy implements Closeable {
         this.scheme = https ? "https" : "http";
         InetSocketAddress addr = new InetSocketAddress(host, port);
         if (https) {
-            Path dir = Files.createTempDirectory("fake-ntfy");
-            File ks = dir.resolve("fake.p12").toFile();
-            String keytool = System.getProperty("java.home") + File.separator + "bin" + File.separator + "keytool";
-            Process p = new ProcessBuilder(keytool, "-genkeypair", "-alias", "fake", "-keyalg", "EC", "-groupname", "secp256r1",
-                    "-validity", "30", "-dname", "CN=localhost", "-ext", "SAN=dns:localhost,ip:127.0.0.1,ip:::1",
-                    "-keystore", ks.getPath(), "-storetype", "PKCS12", "-storepass", "changeit", "-keypass", "changeit",
-                    "-noprompt").redirectErrorStream(true).start();
-            String out = new String(readAll(p.getInputStream(), 1 << 20), StandardCharsets.UTF_8);
-            if (p.waitFor() != 0) throw new IOException("keytool failed: " + out);
-            KeyStore store = KeyStore.getInstance("PKCS12");
-            try (InputStream in = new FileInputStream(ks)) {
-                store.load(in, "changeit".toCharArray());
-            }
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-            kmf.init(store, "changeit".toCharArray());
-            SSLContext serverCtx = SSLContext.getInstance("TLS");
-            serverCtx.init(kmf.getKeyManagers(), null, null);
-            Certificate cert = store.getCertificate("fake");
-            KeyStore trust = KeyStore.getInstance(KeyStore.getDefaultType());
-            trust.load(null, null);
-            trust.setCertificateEntry("fake", cert);
-            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            tmf.init(trust);
-            SSLContext clientCtx = SSLContext.getInstance("TLS");
-            clientCtx.init(null, tmf.getTrustManagers(), null);
-            clientFactory = clientCtx.getSocketFactory();
-            certPem = dir.resolve("fake-ntfy.pem");
-            String pem = "-----BEGIN CERTIFICATE-----\n"
-                    + Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII)).encodeToString(cert.getEncoded())
-                    + "\n-----END CERTIFICATE-----\n";
-            Files.write(certPem, pem.getBytes(StandardCharsets.US_ASCII));
+            TestTls tls = TestTls.localhost();
+            clientFactory = tls.client;
+            certPem = tls.pem;
+            SSLContext serverCtx = tls.server;
             HttpsServer s = HttpsServer.create(addr, 64);
             s.setHttpsConfigurator(new HttpsConfigurator(serverCtx));
             server = s;
@@ -237,6 +206,15 @@ public final class FakeNtfy implements Closeable {
         keepaliveMs = ms;
     }
 
+    /** Shifts the server clock (the "time" of every event) by ms. */
+    public void setClockSkewMs(long ms) {
+        skewMs = ms;
+    }
+
+    private long nowSec() {
+        return (System.currentTimeMillis() + skewMs) / 1000;
+    }
+
     /** Answer the next n matching requests with HTTP 429. kind: subscribe, publish, file or any. */
     public void fail429(int n, String kind, String uaContains) {
         synchronized (failures) {
@@ -281,7 +259,7 @@ public final class FakeNtfy implements Closeable {
 
     /** Publishes a message from inside the process (no HTTP). */
     public JSONObject publish(String topic, String message) {
-        return publishAt(topic, message, System.currentTimeMillis() / 1000);
+        return publishAt(topic, message, nowSec());
     }
 
     /** Like publish(), but with a chosen server receive time (unix seconds), e.g. to fake an old backlog. */
@@ -514,7 +492,7 @@ public final class FakeNtfy implements Closeable {
         os.write(s.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static List<JSONObject> since(Topic t, String since) {
+    private List<JSONObject> since(Topic t, String since) {
         List<JSONObject> h = t.history;
         if (since == null || since.isEmpty() || since.equals("none")) return new ArrayList<>();
         if (since.equals("all")) return new ArrayList<>(h);
@@ -526,7 +504,7 @@ public final class FakeNtfy implements Closeable {
             long n = Long.parseLong(since.substring(0, since.length() - 1));
             long mul = "smhd".indexOf(since.charAt(since.length() - 1));
             long[] secs = {1, 60, 3600, 86400};
-            minTime = System.currentTimeMillis() / 1000 - n * secs[(int) mul];
+            minTime = nowSec() - n * secs[(int) mul];
         }
         List<JSONObject> out = new ArrayList<>();
         if (minTime >= 0) {
@@ -548,10 +526,10 @@ public final class FakeNtfy implements Closeable {
         return t;
     }
 
-    private static JSONObject event(String type, String topic) {
+    private JSONObject event(String type, String topic) {
         JSONObject o = new JSONObject();
         o.put("id", id());
-        o.put("time", System.currentTimeMillis() / 1000);
+        o.put("time", nowSec());
         o.put("event", type);
         o.put("topic", topic);
         return o;

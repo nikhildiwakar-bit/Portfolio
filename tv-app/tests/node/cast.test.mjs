@@ -127,7 +127,14 @@ test('receiver URL keeps the pairing code in the fragment only', () => {
     const u = receiverUrl({ session: SESSION, code: CODE, relay: 'https://ntfy.sh' });
     assert.equal(u, 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html#s=' + SESSION + '&code=' + CODE);
     assert.equal(new URL(u).search, '');
-    assert.deepEqual(parseReceiverFragment(new URL(u).hash), { session: SESSION, code: CODE, relay: 'https://ntfy.sh' });
+    assert.deepEqual(parseReceiverFragment(new URL(u).hash), { session: SESSION, code: CODE, relay: 'https://ntfy.sh', ip: '' });
+    // The TV's LAN address (Office TV 3.6+), for its answer's candidates and the same-network check.
+    const withIp = receiverUrl({ session: SESSION, code: '0427', ip: '192.168.1.40' });
+    assert.equal(withIp, 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html#s=' + SESSION + '&code=0427&ip=192.168.1.40');
+    assert.deepEqual(parseReceiverFragment(new URL(withIp).hash), { session: SESSION, code: '0427', relay: 'https://ntfy.sh', ip: '192.168.1.40' });
+    assert.equal(parseReceiverFragment('#s=' + SESSION + '&code=0427&ip=999.1.1.1').ip, '', 'not an IPv4 address');
+    assert.equal(parseReceiverFragment('#s=' + SESSION + '&code=0427&ip=fe80::1').ip, '');
+    assert.equal(receiverUrl({ session: SESSION, code: '0427', ip: 'evil.example' }).indexOf('ip='), -1);
     const r = receiverUrl({ session: SESSION, code: CODE, relay: 'https://relay.example.com/' });
     assert.equal(parseReceiverFragment(new URL(r).hash).relay, 'https://relay.example.com');
     assert.equal(parseReceiverFragment('#s=short&code=' + CODE), null);
@@ -195,10 +202,10 @@ test('channel reports relay limits', async () => {
 
 // ---------- capture options, codecs, bitrate ----------
 
-test('getDisplayMedia options: native resolution (ideal 1440p, up to 4K) at 30 fps, audio, own tab excluded, tab switching allowed', async () => {
+test('getDisplayMedia options: native resolution (ideal 1440p, up to 4K) at 30 fps, audio on the TV only, own tab excluded, tab switching allowed', async () => {
     const o = displayMediaOptions();
     assert.deepEqual(o.video, { width: { ideal: 2560, max: 3840 }, height: { ideal: 1440, max: 2160 }, frameRate: { ideal: 30, max: 30 } });
-    assert.equal(o.audio, true);
+    assert.deepEqual(o.audio, { suppressLocalAudioPlayback: true }, 'a shared tab is silent on the laptop and plays on the TV');
     assert.equal(o.selfBrowserSurface, 'exclude');
     assert.equal(o.surfaceSwitching, 'include');
     assert.equal(o.systemAudio, 'include');

@@ -282,6 +282,8 @@ export const NTFY_FALLBACK_MS = 2500;
  * needs no second connection. suspend() closes the transports while nothing needs them.
  * transports: 'auto' (the website), 'mqtt' (brokers only, no ntfy) or 'ntfy' (no brokers); the last two are
  * for CI and tests. lastAckVia: the transport the last completed ack came over ('mqtt' | 'ntfy').
+ * brokers (default tv/relay.js BROKERS), WebSocket, EventSource and fetch can be injected (tests, CI).
+ * Every message is handled once per id, however many brokers and ntfy deliver it.
  */
 export class TvLink {
     constructor({
@@ -476,17 +478,21 @@ export class TvLink {
      * Sends one command and resolves with its ack {ok, msg, data} (plus partial: true if some parts of a
      * multi-part ack never came). Rejects with err.code 'timeout' | 'rate_limit' | 'network' | 'relay' | 'closed';
      * rate_limit errors also carry err.limit 'burst' | 'daily' | 'unknown'.
-     * 4-digit codes: sent to every connected MQTT broker; if no ack came within 2.5 s, the same envelope goes
-     * out once more over ntfy (the TV may reach other brokers, or none). Without a broker it goes over ntfy.
+     * 4-digit codes: sent to every connected MQTT broker; if no ack came within 2.5 s (fallbackMs), the same
+     * envelope goes out once more over ntfy (the TV may reach other brokers, or none), unless heard() showed the
+     * TV already has it. Without a broker it goes over ntfy.
      */
-    async send(cmd, args, { timeoutMs = 15000 } = {}) {
+    async send(cmd, args, { timeoutMs = 15000, fallbackMs = this._fallbackMs } = {}) {
         await this.init();
         if (this._closed) throw linkError('closed', 'link closed');
         const id = newId();
         this._remember(id);
         if (cmd === 'ping') this.lastPingAt = Date.now();
         return new Promise((resolve, reject) => {
-            const p = { id, cmd, got: new Map(), parts: 1, resolve, reject, timer: null, fallback: null, via: '' };
+            const p = {
+                id, cmd, args: args || {}, got: new Map(), parts: 1, resolve, reject, timer: null, fallback: null,
+                fallbackMs, heard: false, via: '',
+            };
             this._pending.set(id, p);
             p.timer = setTimeout(() => {
                 if (p.got.size) this._finish(p, true);
@@ -516,13 +522,13 @@ export class TvLink {
             return;
         }
         const t = this.transport;
-        if (r.via === 'mqtt' && this._fallbackMs > 0 && t && t.ntfy) {
-            p.fallback = setTimeout(() => this._fallback(p, envelope), this._fallbackMs);
+        if (r.via === 'mqtt' && p.fallbackMs > 0 && t && t.ntfy && !p.heard) {
+            p.fallback = setTimeout(() => this._fallback(p, envelope), p.fallbackMs);
         }
     }
 
     async _fallback(p, envelope) {
-        if (!this._pending.has(p.id) || p.got.size || !this.transport) return;
+        if (!this._pending.has(p.id) || p.got.size || p.heard || !this.transport) return;
         const r = await this.transport.publish(envelope, { via: 'ntfy' });
         // The MQTT copy may still be answered, so a failed ntfy copy does not fail the command.
         if (!r.ok) p.fallbackError = publishError(r);
@@ -531,6 +537,21 @@ export class TvLink {
     _failPublish(p, r) {
         const e = publishError(r);
         this._fail(p, e.code, e.message, e.extra);
+    }
+
+    /**
+     * The TV's screen sharing receiver for `session` spoke (its 'ready' signal, tv/cast.js), so the TV has the
+     * 'cast start' of that session: its ntfy copy is not needed. The TV acks 'cast start' only once its screen is
+     * open, often later than 2.5 s; this keeps a normal share free of ntfy messages (daily quota).
+     */
+    heard(session) {
+        for (const p of this._pending.values()) {
+            if (p.cmd === 'cast' && p.args.action === 'start' && p.args.session === session) {
+                p.heard = true;
+                clearTimeout(p.fallback);
+                p.fallback = null;
+            }
+        }
     }
 
     ping(opts) {

@@ -20,6 +20,7 @@ import java.net.UnknownHostException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -35,6 +36,19 @@ import javax.net.ssl.SSLSocketFactory;
 /**
  * TV side of the relay protocol (PROTOCOL.md sections 4-6): subscribes to the ntfy topic, runs fresh c2t
  * commands through the {@link Handler} and posts encrypted acks. Pure Java, safe on Android API 21.
+ * <p>
+ * 10-symbol codes (Office TV 3.5 and older): ntfy only, exactly as before. 4-digit codes (3.6+,
+ * {@link Pairing#isShort}): the three public MQTT brokers of {@link MqttBrokers#DEFAULT_URLS} as well, all at the
+ * same time, next to the ntfy stream (topic {@code "officetv/" + topic()}, same envelopes). A command is handled
+ * once, whichever transport brings it first, and its ack goes back the way it came: over MQTT to every connected
+ * broker (or ntfy if none is connected any more), over ntfy to ntfy. MQTT has no server clock: a command that came
+ * over MQTT must be within 300 s of the ntfy server's clock when that is known, otherwise only the id check applies.
+ * The state is CONNECTED while any transport is, with a detail like "ntfy.sh + 2 of 3 brokers".
+ * <p>
+ * API for the app: {@link #start}, {@link #stop} (both return at once, safe on the main thread), {@link #state},
+ * {@link #topic}, {@link #brokersConnected}, {@link #usesMqtt} and {@link #probeForOtherTv}, which blocks (call it on
+ * a worker thread after {@link #start}) and tells whether another TV answers on this code's topic, i.e. whether a
+ * new 4-digit code collides with a TV that is already using it.
  */
 public final class RelayClient {
     public enum State { STOPPED, CONNECTING, CONNECTED, OFFLINE, RATE_LIMITED }
@@ -65,11 +79,22 @@ public final class RelayClient {
     volatile int connectTimeoutMs = 15000;
     volatile int readTimeoutMs = 90000;
 
+    /** Probe: how long to wait for a broker before a ping goes out over ntfy instead (ntfy costs daily quota). */
+    static final long PROBE_GRACE_MS = 1500;
+
+    // MQTT timings passed to the brokers at start(); package-private so JVM tests can shorten them.
+    volatile long mqttBackoffUnitMs = 1000;
+    volatile long mqttPingMs = 25000;
+    volatile long mqttPongTimeoutMs = 10000;
+
     private final String relay;
     private final URL relayUrl;
     private final RelayCrypto crypto;
     private final Handler handler;
     private final SSLSocketFactory ssl;
+    /** MQTT broker URLs; empty for 10-symbol codes (ntfy only). */
+    private final String[] brokerUrls;
+    private MqttBrokers brokers; // guarded by lock; the running generation's, null when stopped
 
     private final Object lock = new Object();
     private volatile boolean running;
@@ -83,6 +108,9 @@ public final class RelayClient {
     private final Object stateLock = new Object();
     private volatile State state = State.STOPPED;
     private String stateDetail;
+    /** The ntfy stream's own state (for 10-symbol codes the same as state). Guarded by stateLock. */
+    private volatile State ntfyState = State.STOPPED;
+    private String ntfyDetail;
     private volatile boolean streamOpen;
 
     private volatile String lastId;
@@ -96,17 +124,27 @@ public final class RelayClient {
             return size() > SEEN_MAX;
         }
     };
+    /** Running probes: ping id -> answered by another TV. Guarded by itself. */
+    private final Map<String, Boolean> probes = new HashMap<>();
 
     /** Commands accepted by the reader (fresh, new, valid). For tests. */
     final AtomicInteger accepted = new AtomicInteger();
     /** Stream connections attempted. For tests. */
     final AtomicInteger connects = new AtomicInteger();
 
+    /** Commands accepted from MQTT (a subset of accepted). For tests. */
+    final AtomicInteger acceptedMqtt = new AtomicInteger();
+
     /**
      * @param relayUrl relay base URL, e.g. https://ntfy.sh (null, empty or malformed -> default relay)
-     * @param code     normalized pairing code
+     * @param code     normalized pairing code (4-digit codes also use the MQTT brokers)
      */
     public RelayClient(String relayUrl, String code, Handler handler, SSLSocketFactory sslOrNull) {
+        this(relayUrl, code, handler, sslOrNull, MqttBrokers.DEFAULT_URLS);
+    }
+
+    /** For tests: other MQTT broker URLs (ws:// allowed; null or empty = none). Ignored for 10-symbol codes. */
+    RelayClient(String relayUrl, String code, Handler handler, SSLSocketFactory sslOrNull, String[] brokerUrls) {
         if (handler == null) throw new IllegalArgumentException("handler");
         String base = normalizeRelay(relayUrl);
         URL u;
@@ -125,6 +163,8 @@ public final class RelayClient {
         this.crypto = new RelayCrypto(code);
         this.handler = handler;
         this.ssl = sslOrNull;
+        String n = Pairing.normalize(code);
+        this.brokerUrls = Pairing.isShort(n) && brokerUrls != null ? brokerUrls.clone() : new String[0];
     }
 
     static String normalizeRelay(String r) {
@@ -147,6 +187,23 @@ public final class RelayClient {
         return state;
     }
 
+    /** True for 4-digit codes: the MQTT brokers are used next to ntfy. */
+    public boolean usesMqtt() {
+        return brokerUrls.length > 0;
+    }
+
+    /** MQTT brokers connected right now (0 for 10-symbol codes and while stopped). */
+    public int brokersConnected() {
+        MqttBrokers b = currentBrokers();
+        return b == null ? 0 : b.connectedCount();
+    }
+
+    private MqttBrokers currentBrokers() {
+        synchronized (lock) {
+            return running ? brokers : null;
+        }
+    }
+
     // ---------------------------------------------------------------- lifecycle
 
     /** Starts the background reader. Safe to call repeatedly. */
@@ -155,11 +212,33 @@ public final class RelayClient {
             if (running) return;
             running = true;
             final int g = ++generation;
+            synchronized (stateLock) {
+                ntfyState = State.CONNECTING;
+                ntfyDetail = relayUrl.getHost();
+            }
             exec = Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "otv-relay-cmd-" + g);
                 t.setDaemon(true);
                 return t;
             });
+            if (brokerUrls.length > 0) {
+                brokers = new MqttBrokers(brokerUrls, MqttBrokers.TOPIC_PREFIX + topic(), ssl != null ? ssl
+                        : HttpsURLConnection.getDefaultSSLSocketFactory(), new MqttBrokers.Listener() {
+                    @Override
+                    public void onMessage(String text, String brokerUrl) {
+                        onMqttMessage(g, text);
+                    }
+
+                    @Override
+                    public void onChange(int connected, int total) {
+                        refreshState(g);
+                    }
+                });
+                brokers.backoffUnitMs = mqttBackoffUnitMs;
+                brokers.pingMs = mqttPingMs;
+                brokers.pongTimeoutMs = mqttPongTimeoutMs;
+                brokers.start();
+            }
             reader = new Thread(() -> readLoop(g), "otv-relay-read-" + g);
             reader.setDaemon(true);
             reader.start();
@@ -172,6 +251,7 @@ public final class RelayClient {
         HttpURLConnection conn;
         TrackingFactory socks;
         ExecutorService ex;
+        MqttBrokers b;
         int g;
         synchronized (lock) {
             if (!running) return;
@@ -184,9 +264,12 @@ public final class RelayClient {
             ex = exec;
             exec = null;
             reader = null;
+            b = brokers;
+            brokers = null;
             lock.notifyAll();
         }
         if (ex != null) ex.shutdownNow();
+        if (b != null) b.stop();
         closeAsync(conn, socks);
         streamOpen = false;
         setState(g, State.STOPPED, null);
@@ -218,17 +301,49 @@ public final class RelayClient {
         }
     }
 
+    /** Sets the ntfy stream's state; the reported state also counts the MQTT brokers (4-digit codes). */
     private void setState(int g, State s, String detail) {
         synchronized (stateLock) {
             if (g != generation) return;
-            if (s == state && (detail == null ? stateDetail == null : detail.equals(stateDetail))) return;
-            state = s;
-            stateDetail = detail;
-            try {
-                handler.onState(s, detail);
-            } catch (Throwable ignored) {
-                // UI callbacks must never break the client.
+            ntfyState = s;
+            ntfyDetail = detail;
+            emitState();
+        }
+    }
+
+    /** A broker connected or disconnected. */
+    private void refreshState(int g) {
+        synchronized (stateLock) {
+            if (g != generation) return;
+            emitState();
+        }
+    }
+
+    /** Reports ntfy's state as is (10-symbol codes), or combined with the brokers. Holds stateLock. */
+    private void emitState() {
+        State s = ntfyState;
+        String detail = ntfyDetail;
+        MqttBrokers b = currentBrokers();
+        if (b != null && s != State.STOPPED) {
+            int n = b.connectedCount();
+            String mq = n + " of " + b.size() + " brokers";
+            String host = relayUrl.getHost();
+            if (s == State.CONNECTED) {
+                detail = host + " + " + mq;
+            } else if (s == State.CONNECTING) {
+                detail = mq + ", connecting to " + host;
+            } else {
+                detail = mq + ". " + (detail == null ? host + " offline." : detail);
             }
+            if (n > 0) s = State.CONNECTED;
+        }
+        if (s == state && (detail == null ? stateDetail == null : detail.equals(stateDetail))) return;
+        state = s;
+        stateDetail = detail;
+        try {
+            handler.onState(s, detail);
+        } catch (Throwable ignored) {
+            // UI callbacks must never break the client.
         }
     }
 
@@ -357,9 +472,14 @@ public final class RelayClient {
         String eventId = ev.optString("id", "");
         JSONObject msg = decode(ev.optString("message", ""));
         String dir = msg == null ? "" : msg.optString("dir", "");
-        // Our own acks are sent with cache=no, so their ids are useless for ?since=.
-        if (!"t2c".equals(dir) && !eventId.isEmpty() && eventId.length() <= 64) lastId = eventId;
-        if (msg == null || !"c2t".equals(dir) || msg.optInt("v", 0) != 1) return;
+        // Our own acks and probes are sent with cache=no, so their ids are useless for ?since=.
+        if (!"t2c".equals(dir) && !isProbe(msg) && !eventId.isEmpty() && eventId.length() <= 64) lastId = eventId;
+        if (msg == null || msg.optInt("v", 0) != 1) return;
+        if ("t2c".equals(dir)) {
+            probeAnswered(msg);
+            return;
+        }
+        if (!"c2t".equals(dir)) return;
 
         String id = msg.optString("id", "");
         String cmd = msg.optString("cmd", "");
@@ -370,7 +490,35 @@ public final class RelayClient {
         if (!markSeen(id)) return;
         JSONObject args = msg.optJSONObject("args");
         accepted.incrementAndGet();
-        submit(g, id, cmd, args != null ? args : new JSONObject());
+        submit(g, id, cmd, args != null ? args : new JSONObject(), false);
+    }
+
+    /**
+     * An envelope from an MQTT broker (4-digit codes). There is no server time: the command must be within 300 s
+     * of the ntfy server's clock when that is known, otherwise only the id check applies. The same message from
+     * several brokers and ntfy is handled once (the seen ids are shared).
+     */
+    private void onMqttMessage(int g, String envelope) {
+        if (!alive(g) || envelope == null || !envelope.startsWith(RelayCrypto.PREFIX)) return;
+        JSONObject msg = decode(envelope);
+        if (msg == null || msg.optInt("v", 0) != 1) return;
+        String dir = msg.optString("dir", "");
+        if ("t2c".equals(dir)) {
+            probeAnswered(msg);
+            return;
+        }
+        if (!"c2t".equals(dir)) return;
+        String id = msg.optString("id", "");
+        String cmd = msg.optString("cmd", "");
+        if (id.isEmpty() || id.length() > 64 || cmd.isEmpty()) return;
+        long ts = msg.optLong("ts", 0);
+        if (ts <= 0) return;
+        if (serverClockKnown && !isFresh(ts, 0, System.currentTimeMillis() + serverOffsetMs)) return;
+        if (!markSeen(id)) return;
+        JSONObject args = msg.optJSONObject("args");
+        accepted.incrementAndGet();
+        acceptedMqtt.incrementAndGet();
+        submit(g, id, cmd, args != null ? args : new JSONObject(), true);
     }
 
     private JSONObject decode(String body) {
@@ -401,20 +549,21 @@ public final class RelayClient {
 
     // ---------------------------------------------------------------- commands and acks
 
-    private void submit(final int g, final String id, final String cmd, final JSONObject args) {
+    private void submit(final int g, final String id, final String cmd, final JSONObject args, final boolean viaMqtt) {
         ExecutorService ex;
         synchronized (lock) {
             ex = alive(g) ? exec : null;
         }
         if (ex == null) return;
         try {
-            ex.execute(() -> runCommand(g, id, cmd, args));
+            ex.execute(() -> runCommand(g, id, cmd, args, viaMqtt));
         } catch (RejectedExecutionException ignored) {
             // Stopped meanwhile.
         }
     }
 
-    private void runCommand(int g, String id, String cmd, JSONObject args) {
+    /** Runs a command; the ack goes back the way the command came (MQTT: every connected broker, else ntfy). */
+    private void runCommand(int g, String id, String cmd, JSONObject args, boolean viaMqtt) {
         try {
             JSONObject result;
             try {
@@ -426,6 +575,7 @@ public final class RelayClient {
             if (!alive(g)) return;
             for (String env : buildAcks(crypto, id, result, System.currentTimeMillis())) {
                 if (!alive(g)) return;
+                if (viaMqtt && publishMqtt(g, env) > 0) continue;
                 postAck(g, env);
             }
         } catch (Throwable ignored) {
@@ -433,26 +583,140 @@ public final class RelayClient {
         }
     }
 
-    private void postAck(int g, String envelope) {
+    /** Publishes to every connected broker of generation g; returns how many it went to. */
+    private int publishMqtt(int g, String envelope) {
+        MqttBrokers b;
+        synchronized (lock) {
+            b = alive(g) ? brokers : null;
+        }
+        return b == null ? 0 : b.publish(envelope);
+    }
+
+    /** Posts to ntfy (retries once). Returns true when ntfy accepted it. */
+    private boolean postAck(int g, String envelope) {
         for (int attempt = 0; attempt < 2 && alive(g); attempt++) {
             try {
                 int code = post(relay + "/" + topic() + "?firebase=no&cache=no", envelope);
                 if (code == 429) {
-                    if (state == State.CONNECTED) {
+                    if (ntfyState == State.CONNECTED) {
                         setState(g, State.RATE_LIMITED,
                                 relayUrl.getHost() + " rate limit reached (HTTP 429). Could not send the reply.");
                     }
-                    return;
+                    return false;
                 }
                 if (code >= 200 && code < 300) {
-                    if (state == State.RATE_LIMITED && streamOpen) setState(g, State.CONNECTED, relayUrl.getHost());
-                    return;
+                    if (ntfyState == State.RATE_LIMITED && streamOpen) setState(g, State.CONNECTED, relayUrl.getHost());
+                    return true;
                 }
-                if (code < 500) return;
+                if (code < 500) return false;
             } catch (IOException e) {
                 // Retry once below.
             }
             sleep(g, backoffUnitMs);
+        }
+        return false;
+    }
+
+    // ---------------------------------------------------------------- probe
+
+    /**
+     * Does another TV use this code right now? Publishes a c2t "ping" with a fresh id on this TV's own topic (to
+     * every connected broker, or over ntfy when no broker came up within {@link #PROBE_GRACE_MS}) and waits up to
+     * timeoutMs for an ack of that id. This TV never answers its own ping (its id is marked as seen first), so any
+     * ack comes from another TV: a 4-digit code collision. Returns false when nobody answered, when nothing
+     * could be sent (no transport connected within timeoutMs, ntfy refused it), when stopped meanwhile and when
+     * interrupted. Blocks for up to about 2 * timeoutMs: call it from a worker thread, after {@link #start}.
+     */
+    public boolean probeForOtherTv(long timeoutMs) {
+        int g;
+        MqttBrokers b;
+        synchronized (lock) {
+            if (!running) return false;
+            g = generation;
+            b = brokers;
+        }
+        long start = System.currentTimeMillis();
+        String id = newId();
+        markSeen(id);
+        synchronized (probes) {
+            probes.put(id, Boolean.FALSE);
+        }
+        try {
+            // A transport: a broker, or ntfy once the brokers had a moment (every ntfy message costs daily quota).
+            long end = start + timeoutMs;
+            while (true) {
+                if (!alive(g)) return false;
+                long now = System.currentTimeMillis();
+                if (b != null && b.connectedCount() > 0) break;
+                if (streamOpen && (b == null || now - start >= Math.min(PROBE_GRACE_MS, timeoutMs))) break;
+                if (now >= end || !waitProbe(id, Math.min(50, end - now))) return false;
+            }
+            JSONObject o = new JSONObject();
+            o.put("v", 1);
+            o.put("dir", "c2t");
+            o.put("id", id);
+            // The other TV checks the time against the ntfy server's clock, so ours must not be off.
+            o.put("ts", System.currentTimeMillis() + (serverClockKnown ? serverOffsetMs : 0));
+            o.put("cmd", "ping");
+            o.put("args", new JSONObject());
+            String env = crypto.seal(o.toString());
+            boolean sent = b != null && b.publish(env) > 0;
+            if (!sent) {
+                int code;
+                try {
+                    code = post(relay + "/" + topic() + "?firebase=no&cache=no", env);
+                } catch (IOException e) {
+                    code = 0;
+                }
+                if (code < 200 || code >= 300) return false;
+            }
+            long answerBy = System.currentTimeMillis() + timeoutMs;
+            while (alive(g)) {
+                synchronized (probes) {
+                    if (Boolean.TRUE.equals(probes.get(id))) return true;
+                }
+                long left = answerBy - System.currentTimeMillis();
+                if (left <= 0 || !waitProbe(id, Math.min(100, left))) return false;
+            }
+            return false;
+        } catch (JSONException e) {
+            return false;
+        } finally {
+            synchronized (probes) {
+                probes.remove(id);
+            }
+        }
+    }
+
+    /** Waits up to ms for a probe answer; false if the thread was interrupted. */
+    private boolean waitProbe(String id, long ms) {
+        synchronized (probes) {
+            if (ms <= 0 || Boolean.TRUE.equals(probes.get(id))) return true;
+            try {
+                probes.wait(ms);
+                return true;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+    }
+
+    private boolean isProbe(JSONObject msg) {
+        if (msg == null) return false;
+        synchronized (probes) {
+            return probes.containsKey(msg.optString("id", ""));
+        }
+    }
+
+    /** A t2c ack: if it answers one of our probes, another TV has this code. */
+    private void probeAnswered(JSONObject ack) {
+        String re = ack.optString("re", "");
+        if (re.isEmpty()) return;
+        synchronized (probes) {
+            if (!probes.containsKey(re)) return;
+            probes.put(re, Boolean.TRUE);
+            probes.notifyAll();
         }
     }
 

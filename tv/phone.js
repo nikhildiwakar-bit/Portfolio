@@ -65,13 +65,28 @@ function stopStream(s) {
     if (s) for (const t of s.getTracks()) { try { t.stop(); } catch (e) { /* ignore */ } }
 }
 
+/** Closes the relay link once a last 'cast stop' (a share cancelled before it was up) got its ack, at most ~10 s. */
+function retire(link) {
+    let tries = 0;
+    const attempt = () => {
+        let idle = false;
+        try { idle = link.suspend(); } catch (e) { idle = true; }
+        if (idle || ++tries > 40) {
+            try { link.close(); } catch (e) { /* ignore */ }
+            return;
+        }
+        setTimeout(attempt, 250);
+    };
+    setTimeout(attempt, 0);
+}
+
 function end(text, kind) {
     const s = session;
     session = null;
     if (s) {
         if (s.sender) { try { s.sender.stop('user'); } catch (e) { /* ignore */ } }
         stopStream(s.stream);
-        try { s.link.close(); } catch (e) { /* ignore */ }
+        retire(s.link);
     }
     render('idle');
     setStatus(text || '', kind || '');

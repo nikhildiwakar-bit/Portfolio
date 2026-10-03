@@ -65,6 +65,7 @@ suite() {
 }
 suite "VectorsTest (org.json $(basename "$ORGJSON_JAR"))" -cp "$CP" $PKG.VectorsTest "$VECTORS"
 suite "RelayClientTest" -cp "$CP" $PKG.RelayClientTest
+suite "MqttTest (WebSocket + MQTT client against a fake broker)" -cp "$CP" $PKG.MqttTest
 suite "MirrorProtocolTest (phone mirroring handshake and framing)" -cp "$OUT/classes" com.nikhil.officetv.mirror.MirrorProtocolTest
 if [ -f "$ANDROID_ALL_JAR" ]; then
   suite "VectorsTest with Android's org.json" -cp "$OUT/classes:$ANDROID_ALL_JAR" $PKG.VectorsTest "$VECTORS"

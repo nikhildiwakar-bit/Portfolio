@@ -1,11 +1,12 @@
-// Local servers for the browser tests: a static file server for the repo (serves /tv/ like GitHub Pages)
-// and HTTP/HTTPS listeners for the mock relay.
+// Local servers for the browser tests: a static file server for the repo (serves /tv/ like GitHub Pages),
+// HTTP/HTTPS listeners for the mock relay and a local MQTT broker (ws:// or wss://) for 4-digit codes.
 import http from 'node:http';
 import https from 'node:https';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
+import { startFakeMqtt } from '../node/fake-mqtt.mjs';
 
 const TYPES = {
     '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -72,4 +73,18 @@ export async function startRelayServers(relay, { tls = null } = {}) {
         await Promise.all(servers.map(closeServer));
     };
     return out;
+}
+
+/**
+ * A local MQTT 3.1.1 broker over WebSocket (tests/node/fake-mqtt.mjs) standing in for the public brokers:
+ * {url, port, publish, subscribe, drop, published, close(), ...}. With tls (makeCert()) it is wss://, which the
+ * pages' Content-Security-Policy needs (receive.html allows wss: only, phone.html only the three public brokers).
+ * Two ways to point pages at it:
+ *   - Chromium --host-resolver-rules 'MAP broker.emqx.io 127.0.0.1:<port>' (the page keeps its real broker list;
+ *     contexts need ignoreHTTPSErrors for the self-signed certificate), or
+ *   - window.__otvRelayConfig = {brokers: [url]} before the page's scripts run (page.addInitScript), which
+ *     tv/relay.js reads for every new connection (index.html has no CSP, so ws:// works there too).
+ */
+export function startMqttBroker({ tls = null } = {}) {
+    return startFakeMqtt({ tls });
 }

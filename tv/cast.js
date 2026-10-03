@@ -2,7 +2,7 @@
 // Signaling (SDP offer/answer, with every ICE candidate inside) travels over the same encrypted relay
 // topic as commands, in c2r (controller -> receiver) and r2c (receiver -> controller) messages that the
 // TV app ignores. Media goes directly between the browsers; the relay never sees it.
-import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, deriveKey, deriveTopic, isShortCode, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=3';
+import { MAX_ENVELOPE_BYTES, DEFAULT_RELAY, Relay, deriveKey, deriveTopic, isShortCode, newId, normalizeCode, normalizeRelay, open, seal } from './otv.js?v=3';
 import {
     RX_STALE_MS, STATS_MS, connectionRows, connectionVerdict, hardwareProbe, parseReceiverStats, parseSenderStats, readReceiverMessage,
     receiverStatsMessage, selectedPair,
@@ -40,6 +40,25 @@ const FRESH_S = 300;
 function castError(code, message) {
     const e = new Error(message);
     e.code = code;
+    return e;
+}
+
+/**
+ * A relay failure in the sender's terms: the relay's own network error ('network' from TvLink or a publish)
+ * becomes 'offline', because for the sender 'network' means the TV refused this laptop's network. Other
+ * errors (timeout, rate_limit with its limit, relay, tv, ...) pass through unchanged.
+ */
+function relayProblem(e) {
+    if (!e || e.code !== 'network' || e.lan) return e;
+    const out = castError('offline', e.message || 'The relay could not be reached.');
+    out.cause = e;
+    return out;
+}
+
+/** The TV ended the session because this laptop is on another network (4-digit codes, receiver LAN check). */
+function networkError() {
+    const e = castError('network', NETWORK_TEXT);
+    e.lan = true;
     return e;
 }
 
@@ -358,34 +377,73 @@ export function validSession(s) {
     return typeof s === 'string' && /^[a-z0-9]{12,32}$/.test(s);
 }
 
-/** Receiver page URL. The pairing code is in the fragment, which never leaves the device. */
-export function receiverUrl({ session, code, relay }, base = RECEIVER_URL) {
+/** Receiver URL (the TV app opens it). The pairing code is in the fragment, which never leaves the device. */
+export function receiverUrl({ session, code, relay, ip }, base = RECEIVER_URL) {
     let f = 's=' + session + '&code=' + code;
+    const lan = validLanIp(ip);
+    if (lan) f += '&ip=' + lan;
     const r = normalizeRelay(relay || '');
     if (r && r !== DEFAULT_RELAY) f += '&relay=' + encodeURIComponent(r);
     return base + '#' + f;
 }
 
-/** Parses the receiver fragment. Returns {session, code, relay} or null. */
+/** Parses the receiver fragment. Returns {session, code, relay, ip} (ip: the TV's LAN IPv4 or '') or null. */
 export function parseReceiverFragment(hash) {
     const p = new URLSearchParams(String(hash || '').replace(/^#/, ''));
     const session = p.get('s');
     const code = normalizeCode(p.get('code') || '');
     if (!validSession(session) || !code) return null;
-    return { session, code, relay: normalizeRelay(p.get('relay') || '') || DEFAULT_RELAY };
+    return { session, code, relay: normalizeRelay(p.get('relay') || '') || DEFAULT_RELAY, ip: validLanIp(p.get('ip') || '') };
 }
 
 // ---------- relay channel ----------
 
 /**
+ * 4-digit codes: the receiver's 'ready' goes out every 2 s until an offer arrives (at most READY_MAX times), and
+ * the sender's offer again every 2 s until the answer (at most OFFER_MAX times).
+ */
+export const OFFER_EVERY_MS = 2000;
+export const READY_MAX = 15;
+export const OFFER_MAX = 15;
+
+function publishError(r) {
+    if (r && r.status === 429) return castError('rate_limit', 'relay limit reached');
+    if (!r || !r.status) return castError('network', 'network error');
+    return castError('relay', 'relay HTTP ' + r.status);
+}
+
+/**
  * One cast session's signaling over the relay. `out` is the direction this side sends ('c2r' or 'r2c');
  * it listens for the opposite one, the same session id, and fresh, never-seen message ids.
- * With `link` (a TvLink) it shares that link's event stream; otherwise it opens its own (the receiver,
- * with since= so an offer published before the page loaded is replayed).
- * onsignal(cast, data) fires for each complete signal.
+ * With `link` (a TvLink) it shares that link's Relay (tv/relay.js); otherwise it opens its own (the receiver,
+ * with since= so an offer published over ntfy before the page loaded is replayed). 4-digit codes use the MQTT
+ * brokers and ntfy; 10-symbol codes (older TVs) only ntfy, exactly as before.
+ *
+ *   onsignal(cast, data, meta) for each complete 'offer' | 'answer' | 'bye' signal; meta = {via: 'mqtt' | 'ntfy'}.
+ *   send(cast, data, {via}) publishes one signal (in parts if needed) and resolves with the number of messages;
+ *     rejects with err.code 'rate_limit' | 'network' | 'relay' | 'too_big'. A reply goes back over ntfy when the
+ *     other side's last signal came over ntfy (lastVia; that side may have no broker), else by the relay's policy.
+ *   waitOpen(ms) -> Promise<boolean>: true once the relay can carry a message.
+ *
+ * 4-digit codes only (MQTT keeps no history, and the TV page subscribes after the laptop sent its offer):
+ *   Receiver (out 'r2c', announce: true): publishes {cast:'ready'} as soon as the relay can carry it, then again
+ *     every 2 s over MQTT until an offer arrives, at most 15 times (over ntfy only once: it counts against the
+ *     daily quota). readySent counts them.
+ *   Sender (out 'c2r'):
+ *     offer(data) -> Promise<number>: publishes the offer at once (resolves or rejects like send()), then the SAME
+ *       envelopes again whenever the receiver says 'ready' and every 2 s, at most 15 times, until an answer
+ *       arrives, stopOffer() or close(). Repeats go over MQTT only (ntfy replays its own history), plus one copy
+ *       over ntfy if a 'ready' came over ntfy (that TV has no broker). For 10-symbol codes it is send('offer').
+ *       offersSent counts the publishes (the first one included).
+ *     onready(meta) fires for every 'ready' of the receiver ({via}); readyCount counts them. A 'ready' also tells
+ *       the link (TvLink.heard) that the TV has this session's 'cast start', so that command needs no ntfy copy.
+ *     stopOffer() ends the repeats.
  */
 export class CastChannel {
-    constructor({ code, relay = DEFAULT_RELAY, session, out, since = '', link = null, fetch: fetchFn, EventSource: ES } = {}) {
+    constructor({
+        code, relay = DEFAULT_RELAY, session, out, since = '', link = null, announce = false,
+        fetch: fetchFn, EventSource: ES, WebSocket: WS, brokers, repeatMs = OFFER_EVERY_MS,
+    } = {}) {
         this.link = link;
         this.code = normalizeCode(link ? link.code : code);
         if (!this.code) throw new Error('invalid pairing code');
@@ -395,112 +453,249 @@ export class CastChannel {
         this.out = out;
         this.in = out === 'c2r' ? 'r2c' : 'c2r';
         this.since = since;
+        this.short = isShortCode(this.code);
+        this.announce = !!announce && this.short && out === 'r2c';
         this.onsignal = null;
+        this.onready = null;
         this.connected = false;
         this.posted = 0;
+        this.readySent = 0;
+        this.readyCount = 0;
+        this.offersSent = 0;
+        this.lastVia = '';
+        this.transport = null; // own Relay (no link)
         this._fetch = fetchFn || (link && link._fetch) || ((...a) => globalThis.fetch(...a));
         this._ES = ES || globalThis.EventSource;
+        this._WS = WS;
+        this._brokers = brokers;
         this._asm = new SignalAssembler();
         this._seen = [];
-        this._waiters = [];
-        this._es = null;
         this._unlisten = null;
         this._closed = false;
+        this._initP = null;
+        this._gotOffer = false;
+        this._offer = null;       // {envs, ntfy, left, timer} while the offer is repeated
+        this._readyNtfy = false;  // sender: a 'ready' came over ntfy; receiver: its one ntfy 'ready' went out
+        this._readyTicks = 0;
+        this._readyTimer = null;
+        this._announcing = false;
+        this._repeatMs = repeatMs; // 'ready' and offer repeats (2 s; shorter in tests)
     }
 
-    async init() {
+    init() {
+        if (!this._initP) {
+            this._initP = this._init();
+            this._initP.catch(() => { this._initP = null; });
+        }
+        return this._initP;
+    }
+
+    async _init() {
         if (this.link) {
             await this.link.init();
             this.topic = this.link.topic;
             this.key = this.link.key;
-            if (!this._closed && !this._unlisten) this._unlisten = this.link.listen((m, ev) => this._onMessage(m, ev));
-            return;
+            if (!this._closed && !this._unlisten) this._unlisten = this.link.listen((m, meta) => this._onMessage(m, meta));
+        } else {
+            this.topic = await deriveTopic(this.code);
+            this.key = await deriveKey(this.code);
+            if (this._closed) return;
+            const t = new Relay({
+                topic: this.topic, code: this.code, ntfy: this.relay, since: this.since, brokers: this._brokers,
+                WebSocket: this._WS, EventSource: this._ES, fetch: this._fetch,
+            });
+            this.transport = t;
+            t.onmessage = (env, meta) => { this._onEnvelope(env, meta); };
+            t.onchange = () => { if (this.transport === t) this.connected = t.connected; };
+            t.start();
         }
-        this.topic = await deriveTopic(this.code);
-        this.key = await deriveKey(this.code);
-        if (this._closed) return;
-        const url = this.relay + '/' + this.topic + '/sse' + (this.since ? '?since=' + encodeURIComponent(this.since) : '');
-        const es = new this._ES(url);
-        this._es = es;
-        es.onopen = () => this._setConnected(true);
-        es.onmessage = ev => { this._onEvent(ev && ev.data); };
-        if (typeof es.addEventListener === 'function') es.addEventListener('open', () => this._setConnected(true));
-        es.onerror = () => { if (es.readyState === 2) this._setConnected(false); };
+        if (this.announce) this._announce();
     }
 
-    _setConnected(on) {
-        this.connected = on;
-        if (on) {
-            const w = this._waiters;
-            this._waiters = [];
-            for (const f of w) f(true);
-        }
-    }
-
-    /** Resolves true once the event stream is open, or false after ms. */
-    waitOpen(ms) {
+    /** Resolves true once the relay can carry a message, or false after ms. */
+    async waitOpen(ms) {
         if (this.link) return this.link.ready(ms);
-        if (this.connected) return Promise.resolve(true);
-        return new Promise(resolve => {
-            const done = v => { clearTimeout(t); resolve(v); };
-            const t = setTimeout(() => {
-                this._waiters = this._waiters.filter(f => f !== done);
-                resolve(false);
-            }, ms);
-            this._waiters.push(done);
-        });
+        try { await this.init(); } catch (e) { return false; }
+        return this.transport ? this.transport.ready(ms) : false;
     }
 
-    async _onEvent(raw) {
-        if (typeof raw !== 'string' || this._closed) return;
-        let ev;
-        try { ev = JSON.parse(raw); } catch (e) { return; }
-        if (!ev || ev.event !== 'message' || typeof ev.message !== 'string' || ev.message.indexOf('otv1.') !== 0) return;
-        this._onMessage(await open(this.key, this.topic, ev.message), ev);
+    _mqttCount() {
+        const t = this.link ? this.link.transport : this.transport;
+        return t ? t.mqttCount : 0;
     }
 
-    _onMessage(m, ev) {
+    /** ntfy clock minus ours, when ours is clearly wrong (a TV without the right time); else 0. */
+    _clockOffset() {
+        if (this.link) return this.link.clockOffsetMs || 0;
+        const off = this.transport && this.transport.serverOffsetMs;
+        return typeof off === 'number' && Math.abs(off) > 30000 ? off : 0;
+    }
+
+    async _onEnvelope(env, meta) {
+        if (this._closed || !this.key) return;
+        this._onMessage(await open(this.key, this.topic, env), meta);
+    }
+
+    _onMessage(m, meta) {
         if (this._closed || !m || m.v !== 1 || m.dir !== this.in || m.session !== this.session || typeof m.id !== 'string') return;
-        const now = ev && typeof ev.time === 'number' ? ev.time : Date.now() / 1000;
+        const info = meta && typeof meta === 'object' ? meta : {};
+        const now = typeof info.time === 'number' ? info.time : Date.now() / 1000;
         if (typeof m.ts !== 'number' || Math.abs(m.ts / 1000 - now) > FRESH_S) return;
         if (this._seen.indexOf(m.id) >= 0) return;
         this._seen.push(m.id);
-        if (this._seen.length > 64) this._seen.shift();
+        if (this._seen.length > 256) this._seen.shift();
         const data = this._asm.add(m);
-        if (data !== null && typeof this.onsignal === 'function') this.onsignal(m.cast, data);
+        if (data === null) return;
+        const via = info.via === 'mqtt' ? 'mqtt' : 'ntfy';
+        this.lastVia = via;
+        if (m.cast === 'ready') {
+            if (this.out === 'c2r') this._onReady(via);
+            return;
+        }
+        if (m.cast === 'offer' && this.out === 'r2c') this._stopAnnounce();
+        if (m.cast === 'answer' && this.out === 'c2r') this.stopOffer();
+        if (typeof this.onsignal === 'function') this.onsignal(m.cast, data, { via });
     }
 
-    /** Publishes one signal (split into parts if needed). Rejects with err.code 'rate_limit' | 'network' | 'relay'. */
-    async send(cast, data) {
-        const msgs = signalMessages({ dir: this.out, session: this.session, cast, data });
+    async _seal(cast, data) {
+        if (!this.key) await this.init();
+        const msgs = signalMessages({ dir: this.out, session: this.session, cast, data, ts: Date.now() + this._clockOffset() });
+        const out = [];
         for (const m of msgs) {
             const env = await seal(this.key, this.topic, m);
             if (env.length > MAX_ENVELOPE_BYTES) throw castError('too_big', 'envelope too large');
-            let res;
-            try {
-                res = await this._fetch(this.relay + '/' + this.topic + '?firebase=no', {
-                    method: 'POST', body: env, credentials: 'omit', referrerPolicy: 'no-referrer',
-                });
-            } catch (e) {
-                throw castError('network', 'network error');
-            }
-            if (res.status === 429) throw castError('rate_limit', 'relay limit reached');
-            if (!res.ok) throw castError('relay', 'relay HTTP ' + res.status);
+            out.push(env);
+        }
+        return out;
+    }
+
+    /** One envelope through the relay: the Relay's result {via, ok, status?}; never throws. */
+    async _publish(env, opts) {
+        try {
+            if (this.link) return await this.link.publishEnvelope(env, opts);
+            if (this.transport) return await this.transport.publish(env, opts);
+        } catch (e) { /* reported below */ }
+        return { via: 'ntfy', ok: false, status: 0 };
+    }
+
+    async _publishAll(envs, opts) {
+        let r = null;
+        for (const env of envs) {
+            r = await this._publish(env, opts);
+            if (!r.ok) throw publishError(r);
             this.posted++;
         }
-        return msgs.length;
+        return r;
+    }
+
+    /** Publishes one signal (split into parts if needed). Rejects with err.code 'rate_limit' | 'network' | 'relay'. */
+    async send(cast, data = '', { via } = {}) {
+        const envs = await this._seal(cast, data);
+        await this._publishAll(envs, { via: via || (this.short && this.lastVia === 'ntfy' ? 'ntfy' : undefined) });
+        return envs.length;
+    }
+
+    // --- sender: the offer, kept available for a receiver that subscribes later (4-digit codes) ---
+
+    async offer(data) {
+        if (!this.short) return this.send('offer', data);
+        this.stopOffer();
+        const envs = await this._seal('offer', data);
+        const o = { envs, ntfy: false, left: OFFER_MAX, timer: null };
+        this._offer = o;
+        const r = await this._publishAll(envs, {});
+        this.offersSent++;
+        if (r && r.via === 'ntfy') o.ntfy = true;
+        if (this._offer === o && !this._closed) {
+            if (this._readyNtfy) this._offerNtfy(o);
+            this._armOffer(o);
+        }
+        return envs.length;
+    }
+
+    stopOffer() {
+        const o = this._offer;
+        this._offer = null;
+        if (o) clearTimeout(o.timer);
+    }
+
+    _onReady(via) {
+        this.readyCount++;
+        if (via === 'ntfy') this._readyNtfy = true;
+        // The TV's receiver is running, so the TV got 'cast start': no ntfy copy of that command is needed.
+        if (this.link && typeof this.link.heard === 'function') this.link.heard(this.session);
+        if (typeof this.onready === 'function') {
+            try { this.onready({ via }); } catch (e) { /* a listener must not break signaling */ }
+        }
+        // Before the offer exists, offer() takes care of it; after the answer, nothing is repeated.
+        if (this._offer) this._repeatOffer(via);
+    }
+
+    _armOffer(o) {
+        clearTimeout(o.timer);
+        o.timer = null;
+        if (this._offer !== o || o.left <= 0) return;
+        o.timer = setTimeout(() => this._repeatOffer(''), this._repeatMs);
+    }
+
+    _repeatOffer(via) {
+        const o = this._offer;
+        if (!o || this._closed) return;
+        if (via === 'ntfy') this._offerNtfy(o);
+        if (o.left <= 0) return;
+        o.left--;
+        // MQTT only: ntfy keeps its own history, which the receiver replays when it subscribes.
+        if (this._mqttCount() > 0) {
+            this._publishAll(o.envs, { via: 'mqtt-only' }).then(() => { this.offersSent++; }, () => { /* the next one may go */ });
+        }
+        this._armOffer(o);
+    }
+
+    /** The one ntfy copy of the offer, for a receiver without a broker. */
+    _offerNtfy(o) {
+        if (o.ntfy) return;
+        o.ntfy = true;
+        this._publishAll(o.envs, { via: 'ntfy' }).then(() => { this.offersSent++; }, () => { /* the answer timeout reports it */ });
+    }
+
+    // --- receiver: 'ready' (4-digit codes) ---
+
+    async _announce() {
+        if (this._announcing || this._closed) return;
+        this._announcing = true;
+        // A broker, or ntfy when no broker comes up in a moment (tv/relay.js ready()).
+        await this.waitOpen(this._repeatMs * READY_MAX);
+        this._readyTick();
+    }
+
+    _readyTick() {
+        this._readyTimer = null;
+        if (this._closed || this._gotOffer || this._readyTicks >= READY_MAX) return;
+        this._readyTicks++;
+        const mqtt = this._mqttCount() > 0;
+        if (mqtt || !this._readyNtfy) {
+            if (!mqtt) this._readyNtfy = true;
+            this.send('ready', '', { via: mqtt ? 'mqtt-only' : 'ntfy' }).then(() => { this.readySent++; }, () => { /* next tick */ });
+        }
+        this._readyTimer = setTimeout(() => this._readyTick(), this._repeatMs);
+    }
+
+    _stopAnnounce() {
+        this._gotOffer = true;
+        clearTimeout(this._readyTimer);
+        this._readyTimer = null;
     }
 
     close() {
         this._closed = true;
+        this.stopOffer();
+        this._stopAnnounce();
         if (this._unlisten) this._unlisten();
         this._unlisten = null;
-        if (this._es) {
-            try { this._es.close(); } catch (e) { /* ignore */ }
-        }
-        this._es = null;
-        for (const f of this._waiters) f(false);
-        this._waiters = [];
+        const t = this.transport;
+        this.transport = null;
+        if (t) t.close();
+        this.connected = false;
     }
 }
 
@@ -705,6 +900,7 @@ export class CastSender {
         const ch = new CastChannel({ link: this.link, session: this.session, out: 'c2r' });
         this.channel = ch;
         ch.onsignal = (cast, data) => this._onSignal(cast, data);
+        ch.onready = meta => log('tv-ready', meta && meta.via); // the channel sends the offer again by itself
         // Everything at once: the TV opens its receiver (it gets 'cast start' first), this page connects to
         // the relay and the browser gathers its network addresses.
         const session = this.session;
@@ -720,10 +916,19 @@ export class CastSender {
         ack.catch(() => {}); // handled below; avoids an unhandled rejection if the relay fails first
         // Steady frame rate: the encoder gets at least 30 frames per second even while the screen is still.
         this.steady = video ? steadyTrack(video, { fps: STEADY_FPS, workerUrl: TICK_URL, window: this._w }) : null;
+        let media = stream;
+        if (this.steady) {
+            media = this._withVideo(stream, this.steady.track);
+            if (!media) {
+                this.steady.stop();
+                this.steady = null;
+                media = stream;
+            }
+        }
         log('steady', this.steady ? STEADY_FPS + 'fps' : 'off');
         const pc = new this._PC({ iceServers: ICE_SERVERS });
         this.pc = pc;
-        this.videoSender = addMedia(pc, this.steady ? this._withVideo(stream, this.steady.track) : stream, this._w);
+        this.videoSender = addMedia(pc, media, this._w);
         const dc = pc.createDataChannel('otv');
         this.dc = dc;
         // The TV closing the receiver (Back on the remote, or the app) closes the data channel at once.
@@ -731,7 +936,7 @@ export class CastSender {
         dc.addEventListener('message', e => {
             if (this.dc !== dc) return;
             if (e.data === 'bye') { this.stop('tv'); return; }
-            if (e.data === 'bye:network') { this._fail(castError('network', NETWORK_TEXT), false); return; }
+            if (e.data === 'bye:network') { this._fail(networkError(), false); return; }
             const st = readReceiverMessage(e.data);
             if (st) {
                 this.rxStats = st;
@@ -753,7 +958,7 @@ export class CastSender {
         if (!await ch.waitOpen(8000)) throw castError('offline', 'The relay could not be reached.');
         log('relay-open');
         if (!this.active) return;
-        this._set('waiting');
+        if (this.state === 'starting') this._set('waiting');
         let answer;
         if (this.short) {
             // Offer first; the ack is awaited alongside it.
@@ -764,7 +969,8 @@ export class CastSender {
             await offer;
             if (!this.active) return;
             answer = this._expect(this._answerTimeoutMs, 'no_answer', 'The TV did not connect.');
-            await this._sendOffer(ch, await encodeSignal(pc.localDescription, { compress: false }));
+            // CastChannel.offer(): now, then again on the receiver's 'ready' and every 2 s until the answer.
+            await ch.offer(await encodeSignal(pc.localDescription, { compress: false }));
         } else {
             const [a] = await Promise.all([ack, offer]);
             if (!this.active) return;
@@ -786,6 +992,33 @@ export class CastSender {
         this._connectTimer = setTimeout(() => {
             if (this.state === 'connecting') this._fail(castError('ice', 'Could not connect to the TV.'));
         }, this._connectTimeoutMs);
+    }
+
+    /**
+     * The TV's ack of 'cast start'. A refusal (setup needed, old web engine, ...) fails the share with the TV's
+     * own message. Otherwise its status object (the TV's name) is kept and the panel moves on to 'connecting';
+     * an ack that comes after the receiver already answered only updates the panel (same state again).
+     */
+    _onAck(a) {
+        if (!this.active) return;
+        if (!a || !a.ok) {
+            this._fail(castError('tv', (a && a.msg) || 'The TV could not open the screen receiver.'));
+            return;
+        }
+        this.tvData = a.data && typeof a.data === 'object' ? a.data : {};
+        if (this.state === 'starting' || this.state === 'waiting') this._set('connecting', { data: this.tvData });
+        else this._emit(this.state, { data: this.tvData });
+    }
+
+    /** The stream to send: the captured audio next to `video` (the steady track), or null if it cannot be built. */
+    _withVideo(stream, video) {
+        const MS = this._w.MediaStream || globalThis.MediaStream;
+        if (typeof MS !== 'function') return null;
+        try {
+            return new MS(stream.getAudioTracks().concat([video]));
+        } catch (e) {
+            return null;
+        }
     }
 
     /** Sends the picture at the TV's screen size (fitScale), again whenever the shared window or the TV changes. */
@@ -832,8 +1065,9 @@ export class CastSender {
             this._waiter = null;
             if (w) w.resolve(data);
         } else if (cast === 'bye') {
-            // The receiver gave up (e.g. it could not use the offer) or closed.
-            if (this.state === 'sharing' || this.state === 'reconnecting') this.stop('tv');
+            // The receiver gave up (e.g. it could not use the offer), closed, or refused this laptop's network.
+            if (data === 'network') this._fail(networkError(), false);
+            else if (this.state === 'sharing' || this.state === 'reconnecting') this.stop('tv');
             else this._fail(castError('tv_error', 'The TV could not show the screen.'), false);
         }
     }
@@ -938,6 +1172,7 @@ export class CastSender {
         this.dc = null;
         // Give the "bye" a moment to leave before closing the connection.
         if (pc) setTimeout(() => { try { pc.close(); } catch (e) { /* ignore */ } }, told ? 300 : 0);
+        if (this.steady) this.steady.stop(); // the worker, the processor and the last frame
         if (this.stream) for (const t of this.stream.getTracks()) { try { t.stop(); } catch (e) { /* ignore */ } }
         if (this.channel) this.channel.close();
     }
@@ -954,6 +1189,7 @@ export class CastSender {
         try {
             const tx = parseSenderStats(await pc.getStats(), this._txPrev);
             if (this.pc !== pc) return null;
+            tx.steady = !!this.steady; // false: this browser sends a still screen at its own (low) frame rate
             this._txPrev = tx;
             await this._encoderHw(tx);
             const rx = this.rxStats && Date.now() - this.rxStatsAt < RX_STALE_MS ? this.rxStats : null;
@@ -994,7 +1230,7 @@ export class CastSender {
  */
 export class CastReceiver {
     constructor({
-        code, relay, session, ip = '', RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES,
+        code, relay, session, ip = '', RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES, WebSocket: WS, brokers, repeatMs,
         offerTimeoutMs = 90000, graceMs = 25000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w,
     } = {}) {
         this._w = w || globalThis;
@@ -1027,6 +1263,9 @@ export class CastReceiver {
         this._PC = PC || globalThis.RTCPeerConnection;
         this._fetch = fetchFn;
         this._ES = ES;
+        this._WS = WS;
+        this._brokers = brokers;   // tests; the page uses tv/relay.js BROKERS
+        this._repeatMs = repeatMs; // tests; 'ready' every 2 s
         this._offerTimeoutMs = offerTimeoutMs;
         this._graceMs = graceMs;
         this.pc = null;
@@ -1048,15 +1287,24 @@ export class CastReceiver {
         this._log = timingLog('rx');
         this._set('waiting');
         // since=5m: the laptop may publish the offer before this page finished loading; ntfy replays it.
+        // 4-digit codes also use the MQTT brokers, which keep no history: the channel says 'ready' until the
+        // offer comes (announce), and the laptop then sends it again.
         const ch = new CastChannel({
-            code: this.code, relay: this.relay, session: this.session, out: 'r2c', since: '5m',
-            fetch: this._fetch, EventSource: this._ES,
+            code: this.code, relay: this.relay, session: this.session, out: 'r2c', since: '5m', announce: true,
+            fetch: this._fetch, EventSource: this._ES, WebSocket: this._WS, brokers: this._brokers, repeatMs: this._repeatMs,
         });
         this.channel = ch;
-        ch.onsignal = (cast, data) => {
+        const offers = new Set();
+        ch.onsignal = (cast, data, meta) => {
             if (cast === 'offer') {
+                // Only the first offer of the session is answered: the laptop repeats it (MQTT, ntfy replay) until
+                // the answer arrives, and every copy after the first is ignored. A different offer on the
+                // running connection is the laptop's ICE restart.
+                if (offers.has(data)) return;
+                offers.add(data);
                 if (!this.pc && !this._gotOffer) {
                     this._gotOffer = true;
+                    this.offerVia = (meta && meta.via) || '';
                     this._answer(data).catch(e => this._failed(e));
                 } else if (this.pc) {
                     this._restart(data).catch(() => { /* the grace timer ends the session */ });
@@ -1150,6 +1398,7 @@ export class CastReceiver {
         }
         if (this.channel) this.channel.send('bye', 'network').catch(() => {});
         this._media = null;
+        this._refused = true; // the laptop closing its end now does not make this a plain 'stopped'
         // A moment for the goodbye to leave before the connection closes.
         this._ending = setTimeout(() => this.end('network'), 600);
     }
@@ -1244,6 +1493,7 @@ export class CastReceiver {
 
     end(reason, err) {
         if (this.state === 'ended') return;
+        if (this._refused) reason = 'network';
         clearTimeout(this._ending);
         clearTimeout(this._offerTimer);
         clearTimeout(this._graceTimer);

@@ -22,9 +22,20 @@ final class Commands implements RelayClient.Handler {
     private static final long OPEN_WAIT_MS = 4000;
 
     private final Context ctx;
+    /** The TV code of the relay connection these commands arrive on (null: the current one). */
+    private final String code;
 
     Commands(Context ctx) {
+        this(ctx, null);
+    }
+
+    /**
+     * code: the code the laptop used. The receiver page gets this one even if the TV code changes while the
+     * command is running, so it listens where that laptop sends its offer.
+     */
+    Commands(Context ctx, String code) {
         this.ctx = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
+        this.code = code;
     }
 
     @Override
@@ -60,7 +71,8 @@ final class Commands implements RelayClient.Handler {
         }
         // An engine that is known to be too old still gets the cast screen, which explains it on the TV too.
         String engine = WebViewInfo.problem(ctx);
-        String url = CastActivity.receiverUrl(session, Prefs.pairCode(ctx), Prefs.relayUrl(ctx));
+        String url = CastActivity.receiverUrl(session, code != null ? code : Prefs.pairCode(ctx), Prefs.relayUrl(ctx),
+                Qr.lanAddress());
         Intent i = CastActivity.intent(ctx, url, session);
         CastActivity.expect(session);
         Actions.wake(ctx);

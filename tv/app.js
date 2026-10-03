@@ -186,7 +186,8 @@ function share(code, relay) {
         s.clickedAt = Date.now(); // the connecting clock starts once something was picked
         const sender = new CastSender({
             link, onstate: (st, d) => onCastState(s, st, d),
-            ackTimeoutMs: TEST.ackTimeoutMs, dropMs: TEST.dropMs, reconnectTimeoutMs: TEST.reconnectTimeoutMs,
+            ackTimeoutMs: TEST.ackTimeoutMs, answerTimeoutMs: TEST.answerTimeoutMs, connectTimeoutMs: TEST.connectTimeoutMs,
+            dropMs: TEST.dropMs, reconnectTimeoutMs: TEST.reconnectTimeoutMs,
         });
         s.sender = sender;
         window.__otvCastSender = sender; // for tests
@@ -215,10 +216,29 @@ function onCastState(s, st, d) {
     render();
 }
 
+/**
+ * Closes a finished session's relay link once nothing needs it: the sender may still be telling the TV to close
+ * its receiver ('cast stop' when the share was cancelled before the connection was up), so wait for that
+ * command's ack (TvLink.suspend() refuses while one is pending), at most about 10 s.
+ */
+function retire(link) {
+    let tries = 0;
+    const attempt = () => {
+        let idle = false;
+        try { idle = link.suspend(); } catch (e) { idle = true; }
+        if (idle || ++tries > 40) {
+            try { link.close(); } catch (e) { /* ignore */ }
+            return;
+        }
+        setTimeout(attempt, 250);
+    };
+    setTimeout(attempt, 0); // after the sender's last send() has registered
+}
+
 function endSession(s, problem, kind = 'bad') {
     state.session = null;
     stopStream(s.stream);
-    try { s.link.close(); } catch (e) { /* ignore */ }
+    retire(s.link);
     if (problem) state.notice = Object.assign({ kind }, problem);
     render();
     // A wrong code: back to the field, selected, ready for the right one. Otherwise one click on Share again.

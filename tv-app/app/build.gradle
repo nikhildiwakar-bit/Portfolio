@@ -10,8 +10,8 @@ android {
         applicationId 'com.nikhil.officetv'
         minSdk 21
         targetSdk 33
-        versionCode 16
-        versionName '3.5'
+        versionCode 17
+        versionName '3.6'
     }
 
     // One shared key so every new build installs as an update over the old one.
@@ -53,6 +53,14 @@ android {
         }
     }
 
+    // The website's receiver page and scripts, bundled (copyReceiverAssets below): CastActivity serves them for
+    // the website's own https URLs, so the cast screen opens at once and without the internet.
+    sourceSets {
+        main {
+            assets.srcDirs += [layout.buildDirectory.dir('generated/receiverAssets').get().asFile]
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
@@ -69,4 +77,24 @@ android {
 // WebRTC receiver in a WebView, phone mirroring with MediaCodec) uses only the Android framework.
 dependencies {
     implementation 'com.google.zxing:core:3.3.0'
+}
+
+// Copies ../../tv/*.js and receive.html (the website, next to tv-app/) to assets/receiver/ in every build (Sync:
+// files deleted from the website disappear from the app too).
+def siteDir = file("$rootDir/../tv")
+if (!new File(siteDir, 'receive.html').isFile()) {
+    throw new GradleException("Website files not found in $siteDir: the app bundles the receiver page from there.")
+}
+def copyReceiverAssets = tasks.register('copyReceiverAssets', Sync) {
+    from(siteDir) {
+        include '*.js', 'receive.html'
+    }
+    into layout.buildDirectory.dir('generated/receiverAssets/receiver')
+}
+preBuild.dependsOn copyReceiverAssets
+// Tasks that read the asset folders (merging, lint) run after the copy, so Gradle sees the order it needs.
+tasks.configureEach { t ->
+    if (t.name != 'copyReceiverAssets' && (t.name ==~ /merge\w*Assets/ || t.name.toLowerCase().contains('lint'))) {
+        t.dependsOn copyReceiverAssets
+    }
 }

@@ -1,6 +1,8 @@
 // Tiny ntfy.sh imitation for browser tests: POST publish (text or ?filename= attachment), GET /<topic>/sse,
-// GET /<topic>/json, GET /file/<id>, CORS (incl. preflight) and a switchable HTTP 429 mode.
+// GET /<topic>/json, GET /file/<id>, CORS (incl. preflight) and a switchable HTTP 429 mode. tvTransport() wires
+// a fake TV to this relay and, for 4-digit codes, to the local MQTT broker (servers.mjs startMqttBroker).
 import { randomBytes } from 'node:crypto';
+import { MQTT_PREFIX } from '../../../tv/relay.js';
 
 const TOPIC_RE = /^[-_A-Za-z0-9]{1,64}$/;
 const MESSAGE_LIMIT = 4096;
@@ -189,4 +191,29 @@ export function createRelay() {
 
     relay.close = () => relay.dropStreams();
     return relay;
+}
+
+/**
+ * How a fake TV (tests/node/fake-tv.mjs) talks, like the Office TV app: over this relay, and with a broker
+ * (Office TV 3.6+, 4-digit codes) over MQTT too, acking on the transport each command came over.
+ *   const t = tvTransport(relay, broker);
+ *   const tv = await createFakeTv({ code, publish: t.publish });
+ *   t.listen(tv);
+ * The acks go to the relay with cache=no (never replayed), as the app sends them. broker may be null.
+ */
+export function tvTransport(relay, broker = null) {
+    return {
+        publish(topic, env, via) {
+            if (via === 'mqtt' && broker) broker.publish(MQTT_PREFIX + topic, env);
+            else relay.publish(topic, env, undefined, { cache: false });
+        },
+        listen(tv, { ntfy = true, mqtt = true } = {}) {
+            const off = [];
+            if (ntfy) off.push(relay.subscribe(tv.topic, ev => tv.handle(ev, 'ntfy')));
+            if (mqtt && broker) {
+                off.push(broker.subscribe(MQTT_PREFIX + tv.topic, text => tv.handle({ event: 'message', message: text, time: Date.now() / 1000 }, 'mqtt', 'broker')));
+            }
+            return () => { for (const f of off) f(); };
+        },
+    };
 }
