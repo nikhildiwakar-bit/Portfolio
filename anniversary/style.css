@@ -39,10 +39,9 @@
   .scene{
     position:relative;
     width:100%;
-    width:min(94vw, 500px, calc((100vh - 120px) * .8));
-    width:min(94vw, 500px, calc((100dvh - 120px) * .8));
-    height:min(max(440px, calc(100vh - 120px)), 620px);
-    height:min(max(440px, calc(100dvh - 120px)), 620px);
+    width:min(94vw, 520px);
+    height:clamp(400px, calc(100vh - 150px), 460px);
+    height:clamp(400px, calc(100dvh - 150px), 460px);
     container-type:size;
     overflow:hidden;
     border-radius:20px;
