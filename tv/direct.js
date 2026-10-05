@@ -17,10 +17,11 @@
 export const HEADER_BYTES = 16;
 /** Below every browser's data channel message limit (64 KiB when the other side does not say). */
 export const CHUNK_BYTES = 60000;
-/** Encoded data waiting in the channel beyond this means the link is behind: skip frames (before encoding). */
-export const MAX_BUFFERED = 1500000;
+/** Encoded data waiting in the channel beyond this means the link is behind: skip frames (before encoding).
+ * Small on purpose: everything queued here is delay on the TV (1.5 MB was ~1.3 s on school Wi-Fi). */
+export const MAX_BUFFERED = 200000;
 /** A key frame at least this often while frames flow, so a lost frame never freezes the TV for long. */
-export const KEY_EVERY_MS = 4000;
+export const KEY_EVERY_MS = 10000; // the channel is reliable: key frames are big, so only as a safety net
 /** Repeats of the newest frame after each change: they push it out of the TV decoder at once. */
 export const PUSH_OUT = 3;
 
@@ -133,7 +134,7 @@ export async function chooseConfig(VE, tvCodecs, width, height, fps) {
     for (const t of tries) {
         const config = {
             codec: t.s, width: t.width, height: t.height, framerate: t.fps,
-            bitrate: t.hw ? Math.round(8e6 * Math.min(1, (t.width * t.height) / (1920 * 1080)) + 1e6) : 3500000,
+            bitrate: t.hw ? Math.round(5e6 * Math.min(1, (t.width * t.height) / (1920 * 1080)) + 1e6) : 3500000,
             latencyMode: 'realtime',
             hardwareAcceleration: t.hw ? 'prefer-hardware' : 'no-preference',
         };
@@ -261,11 +262,15 @@ export class DirectSender {
         if (this.last) this.last.close();
         this.last = frame;
         this.repeatsLeft = PUSH_OUT;
+        this._skipCounted = false;
+        this.fresh = true; // not on the TV yet: a slide change skipped now is retried on the next tick
         this._encode(false);
     }
 
     _tick() {
-        if (this.stopped || !this.last || this.repeatsLeft <= 0) return;
+        if (this.stopped || !this.last) return;
+        if (this.fresh) { this._encode(false); return; } // the newest picture was skipped: send it as soon as the link allows
+        if (this.repeatsLeft <= 0) return;
         if (performance.now() - this.lastSentAt < 1000 / this.fps - 2) return;
         this.repeatsLeft--;
         this._encode(true);
@@ -276,7 +281,7 @@ export class DirectSender {
         const enc = this.encoder;
         if (!enc || enc.state !== 'configured' || !this.last) return;
         if (enc.encodeQueueSize > 1 || (this.dc && this.dc.bufferedAmount > MAX_BUFFERED)) {
-            if (!repeat) { this.counts.skipped++; this.window.skipped++; }
+            if (!repeat && !this._skipCounted) { this.counts.skipped++; this.window.skipped++; this._skipCounted = true; }
             return; // skipped before encoding: nothing is corrupted, the next frame carries on
         }
         const now = performance.now();
@@ -289,6 +294,8 @@ export class DirectSender {
             enc.encode(f, { keyFrame: key });
             if (key) { this.needKey = false; this.lastKeyAt = now; }
             this.lastSentAt = now;
+            this.fresh = false;
+            this._skipCounted = false;
         } catch (e) {
             this._fail('encode ' + (e && e.message ? e.message : e));
         } finally {

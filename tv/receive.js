@@ -3,7 +3,7 @@
 // itself, so it opens without the internet). The fragment never leaves the device; it is removed from the
 // address bar right away. `ip` lets the laptop reach the TV's real address at once and, for 4-digit codes,
 // limits sharing to laptops on the same network. See PROTOCOL.md section 8.
-import { CastReceiver, parseReceiverFragment } from './cast.js?v=8';
+import { CastReceiver, parseReceiverFragment } from './cast.js?v=9';
 
 const $ = id => document.getElementById(id);
 const video = $('video');

@@ -217,3 +217,23 @@ test('DirectSender: no encoder for this TV -> start() is false; an encoder error
     assert.match(fails[0], /GPU lost/);
     assert.equal(e.stopped, true);
 });
+
+test('DirectSender: a slide change skipped while the channel is busy is sent once the channel drains', async () => {
+    const { w, encoders, worker, capture } = fakeWindow();
+    const dc = fakeChannel();
+    const d = new DirectSender({ track: { getSettings: () => ({ width: 1920, height: 1080 }) }, dc, caps: { codecs: ['avc'] }, tickUrl: 'tick.js', window: w });
+    assert.equal(await d.start(), true);
+    capture(1920, 1080);
+    await sleep(5);
+    for (let i = 0; i < 5; i++) { d.lastSentAt -= 100; worker.onmessage(); } // push-out done, screen still
+    const before = encoders[0].encoded.length;
+    dc.bufferedAmount = 5e6;
+    capture(1920, 1080); // the next slide, while the channel is full
+    await sleep(5);
+    worker.onmessage();
+    assert.equal(encoders[0].encoded.length, before, 'skipped while full');
+    dc.bufferedAmount = 0;
+    worker.onmessage(); // no new capture: the screen is still
+    assert.equal(encoders[0].encoded.length, before + 1, 'the new slide goes out on the next tick');
+    d.stop();
+});
