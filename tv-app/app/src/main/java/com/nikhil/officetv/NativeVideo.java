@@ -37,7 +37,7 @@ final class NativeVideo implements SurfaceHolder.Callback {
     }
 
     /** More frames than this waiting: the decoder is behind, drop to the next key frame. */
-    private static final int MAX_QUEUE = 4;
+    private static final int MAX_QUEUE = 8;
     private static final int MAX_FAILURES = 3;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -343,7 +343,14 @@ final class NativeVideo implements SurfaceHolder.Callback {
                                 askKey();
                             }
                         } else {
-                            askKey(); // the decoder is full: this frame is lost
+                            // The decoder is busy for a moment (weak Wi-Fi bursts): keep the frame and try again
+                            // after showing what is ready, instead of dropping everything until a key frame.
+                            synchronized (this) {
+                                if (generation == gen && !waitKey) {
+                                    queue.addFirst(data);
+                                    queuedAt.addFirst(at);
+                                }
+                            }
                         }
                     }
                     // Show everything that is ready at once: no pacing, lowest latency.

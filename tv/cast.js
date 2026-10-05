@@ -8,7 +8,7 @@ import {
     receiverStatsMessage, selectedPair,
 } from './stats.js?v=2';
 import { STEADY_FPS, steadyTrack } from './steady.js';
-import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direct.js?v=3';
+import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direct.js?v=4';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];

@@ -23,7 +23,7 @@ export const MAX_BUFFERED = 200000;
 /** A key frame at least this often while frames flow, so a lost frame never freezes the TV for long. */
 export const KEY_EVERY_MS = 10000; // the channel is reliable: key frames are big, so only as a safety net
 /** Repeats of the newest frame after each change: they push it out of the TV decoder at once. */
-export const PUSH_OUT = 3;
+export const PUSH_OUT = 6; // TV decoders (Amlogic) hold a few frames back: enough repeats to show the newest at once
 
 /** Splits one encoded frame into channel messages. */
 export function packFrame(frameId, key, data, timeMs, chunkBytes = CHUNK_BYTES) {
@@ -227,7 +227,7 @@ export class DirectSender {
         return true;
     }
 
-    _configure(config) {
+    _configure(config, bitrateOnly) {
         const w = this._w;
         try {
             if (!this.encoder) {
@@ -243,6 +243,7 @@ export class DirectSender {
         }
         this.config = config;
         this.needKey = true;
+        if (bitrateOnly) return true;
         if (typeof this.onstart === 'function') {
             try { this.onstart(this.codec, config.width, config.height); } catch (e) { /* ignore */ }
         }
@@ -289,6 +290,7 @@ export class DirectSender {
     _encode(repeat) {
         const enc = this.encoder;
         if (!enc || enc.state !== 'configured' || !this.last) return;
+        this._adaptBitrate();
         if (enc.encodeQueueSize > 1 || (this.dc && this.dc.bufferedAmount > MAX_BUFFERED)) {
             if (!repeat && !this._skipCounted) { this.counts.skipped++; this.window.skipped++; this._skipCounted = true; }
             return; // skipped before encoding: nothing is corrupted, the next frame carries on
@@ -309,6 +311,31 @@ export class DirectSender {
             this._fail('encode ' + (e && e.message ? e.message : e));
         } finally {
             f.close();
+        }
+    }
+
+    /**
+     * Weak Wi-Fi: every 2 s, frames skipped because the link was behind -> 30% less bitrate (down to 500 kbps);
+     * a clean stretch -> 15% more, back up to the starting bitrate. A smaller stream keeps the picture moving.
+     */
+    _adaptBitrate() {
+        const now = performance.now();
+        if (!this.config) return;
+        if (!this._br) { this._br = { max: this.config.bitrate, at: now, offered: 0, skipped: 0 }; return; }
+        const b = this._br;
+        b.offered = this.counts.offered;
+        if (now - b.at < 2000) return;
+        const offered = this.counts.offered - (b.lastOffered || 0);
+        const skipped = this.counts.skipped - (b.lastSkipped || 0);
+        b.lastOffered = this.counts.offered;
+        b.lastSkipped = this.counts.skipped;
+        b.at = now;
+        let next = this.config.bitrate;
+        if (offered >= 4 && skipped / offered >= 0.1) next = Math.max(500000, Math.round(next * 0.7));
+        else if (skipped === 0 && next < b.max) next = Math.min(b.max, Math.round(next * 1.15));
+        if (next !== this.config.bitrate) {
+            this._log('direct', 'bitrate ' + Math.round(next / 1000) + ' kbps');
+            this._configure(Object.assign({}, this.config, { bitrate: next }), true);
         }
     }
 

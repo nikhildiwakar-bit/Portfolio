@@ -246,3 +246,26 @@ test('chooseConfig: a Chromebook encoder that refuses level 4.2 / 60 fps still g
     const b = await chooseConfig(at720, ['avc'], 1920, 1080, 60);
     assert.deepEqual([b.hardware, b.config.width, b.config.height, b.config.framerate], [true, 1280, 720, 30]);
 });
+
+test('DirectSender: weak Wi-Fi lowers the bitrate (no new TV stream), a clean stretch raises it back', async () => {
+    const { w, encoders, capture } = fakeWindow();
+    const dc = fakeChannel();
+    const starts = [];
+    const d = new DirectSender({ track: { getSettings: () => ({ width: 1920, height: 1080 }) }, dc, caps: { codecs: ['avc'] }, tickUrl: 'tick.js', window: w, onstart: () => starts.push(1) });
+    assert.equal(await d.start(), true);
+    const max = encoders[0].configs[0].bitrate;
+    capture(1920, 1080);
+    await sleep(5);
+    dc.bufferedAmount = 5e6;
+    for (let i = 0; i < 10; i++) { capture(1920, 1080); await sleep(1); }
+    d._br.at -= 3000;
+    dc.bufferedAmount = 0;
+    capture(1920, 1080);
+    await sleep(5);
+    const low = encoders[0].configs[encoders[0].configs.length - 1].bitrate;
+    assert.ok(low < max, low + ' < ' + max);
+    assert.equal(starts.length, 1, 'the TV keeps its decoder');
+    for (let i = 0; i < 10; i++) { d._br.at -= 3000; capture(1920, 1080); await sleep(2); }
+    assert.equal(encoders[0].configs[encoders[0].configs.length - 1].bitrate, max);
+    d.stop();
+});
