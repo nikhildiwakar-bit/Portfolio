@@ -8,7 +8,7 @@ import {
     receiverStatsMessage, selectedPair,
 } from './stats.js?v=2';
 import { STEADY_FPS, steadyTrack } from './steady.js';
-import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direct.js?v=2';
+import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direct.js?v=3';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -1386,6 +1386,11 @@ export class CastSender {
  * (receiverStatsMessage: decoded fps, dropped frames, decoder, jitter buffer, estimated delay) over that
  * channel; extraStats() may add {tvMs, screen} measured by the page.
  */
+/** The TV app draws direct video under the page: the page must be see-through there (class on <html>). */
+function seeThrough(on) {
+    try { if (typeof document !== 'undefined') document.documentElement.classList.toggle('otv-native', !!on); } catch (e) { /* ignore */ }
+}
+
 export class CastReceiver {
     constructor({
         code, relay, session, ip = '', RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES, WebSocket: WS, brokers, repeatMs,
@@ -1618,6 +1623,7 @@ export class CastReceiver {
             let ok = false;
             try { ok = !!v.start(String(m.codec || ''), m.width | 0, m.height | 0); } catch (e) { ok = false; }
             this.nativeActive = ok;
+            seeThrough(ok);
             if (this._log) this._log('native', (ok ? 'on ' : 'refused ') + m.codec + ' ' + m.width + 'x' + m.height);
             if (!ok) this._sendControl({ type: 'native', v: 1, off: true });
         } else if (m.state === 'stop') {
@@ -1637,6 +1643,7 @@ export class CastReceiver {
     _stopNative() {
         if (this.video && this.nativeActive) { try { this.video.stop(); } catch (e) { /* ignore */ } }
         this.nativeActive = false;
+        seeThrough(false);
     }
 
     _watchVideo(dc) {

@@ -66,8 +66,8 @@ final class NativeVideo implements SurfaceHolder.Callback {
         this.parent = parent;
         this.events = events;
         view = new SurfaceView(c);
-        // Above the WebView (which still plays the sound and shows messages when the picture is not native).
-        view.setZOrderMediaOverlay(true);
+        // Behind the window, like a normal video player: the WebView and the page turn see-through while it
+        // plays. Amlogic decoders draw on the TV's video plane under the UI, so anything opaque on top hides it.
         view.getHolder().addCallback(this);
         view.setVisibility(View.GONE);
         parent.addView(view, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,

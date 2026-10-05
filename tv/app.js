@@ -7,7 +7,7 @@
 // each time. Nothing talks to the relay until Share screen is pressed, and the relay connection is closed
 // again when sharing ends.
 import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=4';
-import { CastSender, captureScreen, senderSupport } from './cast.js?v=9';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=10';
 
 const $ = id => document.getElementById(id);
 const INFO_KEY = 'officetv.info';

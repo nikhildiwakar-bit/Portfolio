@@ -130,6 +130,11 @@ export async function chooseConfig(VE, tvCodecs, width, height, fps) {
     const tries = [];
     for (const c of codecs) for (const s of CODEC_STRINGS[c]) tries.push({ c, s, hw: true, width, height, fps });
     const small = encodeSize(width, height, 1280, 720);
+    // Chromebook and other laptop encoders often refuse level 4.2 / 60 fps but take 30 fps or 720p in hardware.
+    const AVC_40 = ['avc1.42E028', 'avc1.4D4028', 'avc1.640028'];
+    const AVC_31 = ['avc1.42E01F', 'avc1.4D401F', 'avc1.64001F'];
+    for (const c of codecs) for (const s of c === 'avc' ? AVC_40 : CODEC_STRINGS[c]) tries.push({ c, s, hw: true, width, height, fps: Math.min(30, fps) });
+    for (const c of codecs) for (const s of c === 'avc' ? AVC_31 : CODEC_STRINGS[c]) tries.push({ c, s, hw: true, width: small.width, height: small.height, fps: Math.min(30, fps) });
     for (const c of codecs) for (const s of CODEC_STRINGS[c]) tries.push({ c, s, hw: false, width: small.width, height: small.height, fps: Math.min(30, fps) });
     for (const t of tries) {
         const config = {
@@ -182,6 +187,7 @@ export class DirectSender {
 
     get fps() {
         const tv = Math.max(1, Math.min(60, this.caps.maxFps || 60));
+        if (this.fpsCap) return Math.min(this.fpsCap, tv);
         return this.hardware === false ? Math.min(30, tv) : tv;
     }
 
@@ -193,7 +199,10 @@ export class DirectSender {
         if (!pick || this.stopped) return false;
         this.codec = pick.codec;
         this.hardware = pick.hardware;
-        if (!pick.hardware && typeof this.track.applyConstraints === 'function') {
+        this.fpsCap = pick.config.framerate;
+        // A smaller hardware or software configuration keeps its size when the shared window changes.
+        this.small = pick.config.width < size.width;
+        if ((!pick.hardware || this.small) && typeof this.track.applyConstraints === 'function') {
             // Software encoding (Linux Chrome): a smaller picture at 30 fps, scaled at capture where it is cheap.
             try { await this.track.applyConstraints({ width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 30 } }); } catch (e) { /* keep */ }
         }
@@ -254,7 +263,7 @@ export class DirectSender {
         this.counts.offered++;
         this.window.offered++;
         // The shared window changed size: a new encoder size (and a key frame) instead of a stretched picture.
-        const size = this.hardware === false ? encodeSize(frame.displayWidth, frame.displayHeight, 1280, 720)
+        const size = this.hardware === false || this.small ? encodeSize(frame.displayWidth, frame.displayHeight, 1280, 720)
             : encodeSize(frame.displayWidth, frame.displayHeight, this.caps.maxWidth || 1920, this.caps.maxHeight || 1080);
         if (this.config && (size.width !== this.config.width || size.height !== this.config.height)) {
             this._configure(Object.assign({}, this.config, size));

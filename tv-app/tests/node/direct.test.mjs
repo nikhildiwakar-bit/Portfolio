@@ -237,3 +237,12 @@ test('DirectSender: a slide change skipped while the channel is busy is sent onc
     assert.equal(encoders[0].encoded.length, before + 1, 'the new slide goes out on the next tick');
     d.stop();
 });
+
+test('chooseConfig: a Chromebook encoder that refuses level 4.2 / 60 fps still gets hardware at 30 fps or 720p', async () => {
+    const at30 = { isConfigSupported: async c => ({ supported: c.hardwareAcceleration === 'prefer-hardware' && c.codec === 'avc1.42E028' && c.framerate === 30 }) };
+    const a = await chooseConfig(at30, ['avc'], 1920, 1080, 60);
+    assert.deepEqual([a.hardware, a.config.width, a.config.height, a.config.framerate], [true, 1920, 1080, 30]);
+    const at720 = { isConfigSupported: async c => ({ supported: c.hardwareAcceleration === 'prefer-hardware' && c.codec === 'avc1.42E01F' }) };
+    const b = await chooseConfig(at720, ['avc'], 1920, 1080, 60);
+    assert.deepEqual([b.hardware, b.config.width, b.config.height, b.config.framerate], [true, 1280, 720, 30]);
+});

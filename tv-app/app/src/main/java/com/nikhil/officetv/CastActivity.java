@@ -452,7 +452,9 @@ public class CastActivity extends Activity {
 
         @JavascriptInterface
         public boolean start(String codec, int width, int height) {
-            return ours() && nativeVideo.start(codec, width, height);
+            boolean ok = ours() && nativeVideo.start(codec, width, height);
+            if (ok) ui.post(() -> seeThrough(true));
+            return ok;
         }
 
         /** One encoded frame, base64 (standard alphabet). */
@@ -471,6 +473,7 @@ public class CastActivity extends Activity {
         @JavascriptInterface
         public void stop() {
             if (nativeVideo != null) nativeVideo.stop();
+            ui.post(() -> seeThrough(false));
         }
 
         @JavascriptInterface
@@ -602,6 +605,13 @@ public class CastActivity extends Activity {
             if (BuildConfig.DEBUG && m != null) Log.d(TAG, "cast page: " + m.message() + " (" + m.lineNumber() + ")");
             return true;
         }
+    }
+
+    /** Direct video plays on a SurfaceView behind the WebView: no opaque layer above it while it plays. */
+    private void seeThrough(boolean on) {
+        int c = on ? Color.TRANSPARENT : Color.BLACK;
+        if (root != null) root.setBackgroundColor(c);
+        if (web != null && pageLoaded) web.setBackgroundColor(c);
     }
 
     /** The receiver page is up (first of: first frame, progress 100, load finished). */

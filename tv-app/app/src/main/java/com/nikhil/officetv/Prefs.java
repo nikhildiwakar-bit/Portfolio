@@ -71,13 +71,9 @@ final class Prefs {
         return v != null ? v : defaultTvName();
     }
 
+    /** Until someone renames it (Rename TV), e.g. to the room: "Board Room", "Class 5A". */
     static String defaultTvName() {
-        String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.trim();
-        String model = Build.MODEL == null ? "" : Build.MODEL.trim();
-        // Avoid "Xiaomi Xiaomi TV" when the model already starts with the maker.
-        String n = model.toLowerCase(Locale.US).startsWith(maker.toLowerCase(Locale.US)) ? model : maker + " " + model;
-        n = cleanName(n);
-        return n != null ? n : "Office TV";
+        return "Office TV";
     }
 
     /** Relay base URL (PROTOCOL.md section 6): ntfy.sh unless prefs key relay_url overrides it. */

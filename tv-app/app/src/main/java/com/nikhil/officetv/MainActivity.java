@@ -466,7 +466,7 @@ public class MainActivity extends Activity {
     }
 
     private void refresh() {
-        put(tvName, Prefs.tvName(this));
+        put(tvName, "TV name: " + Prefs.tvName(this) + "  (shown on the laptop)");
         put(code, Pairing.display(Prefs.pairCode(this)));
 
         Date now = new Date();
