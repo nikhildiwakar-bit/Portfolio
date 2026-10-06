@@ -676,9 +676,6 @@ function renderPeople(list){
       headlineEl.textContent = 'Happy Birthday, ' + list[cur].name.replace(/^(mr|mrs|ms|dr)\.?\s+/i,'').split(/\s+/)[0];
     }, 6000);
   }
-  if(!list.length){
-    peopleEl.innerHTML = '<div class="bday-card"><div class="bday-photo" style="font-size:46px">🎂</div><div class="bday-name">No birthday today</div><div class="bday-role">Add staff with the + Staff button</div></div>';
-  }
   if(list.length){
     headlineEl.textContent = 'Happy Birthday' + ', '+list[0].name.replace(/^(mr|mrs|ms|dr)\.?\s+/i,'').split(/\s+/)[0];
   }
