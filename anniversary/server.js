@@ -3,10 +3,10 @@ const http = require('http'), fs = require('fs'), path = require('path');
 const PORT = process.env.PORT || 3000;
 const types = {'.html':'text/html','.css':'text/css','.js':'text/javascript','.svg':'image/svg+xml'};
 
-// Mock Nucleus data (empId -> photo + years)
+// Mock Nucleus data (empId -> name + photo + years)
 const employees = {
-  '101': { photoUrl: '/mock-photo.svg?n=A', years: 5 },
-  '102': { photoUrl: '/mock-photo.svg?n=B', years: 10 }
+  '101': { name: 'Aarav Sharma', photoUrl: '/mock-photo.svg?n=A', years: 5 },
+  '102': { name: 'Bhavna Verma', photoUrl: '/mock-photo.svg?n=B', years: 10 }
 };
 
 http.createServer((req, res) => {

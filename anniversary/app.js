@@ -317,6 +317,7 @@ const NUCLEUS_CONFIG = {
 
 const photoImg = document.getElementById('photoImg');
 const photoPlaceholder = document.getElementById('photoPlaceholder');
+const empName = document.getElementById('empName');
 const yearsBadge = document.getElementById('yearsBadge');
 const yearsNum = document.getElementById('yearsNum');
 
@@ -327,6 +328,10 @@ function applyEmployee(data){
       photoPlaceholder.style.display = 'none';
     };
     photoImg.src = data.photoUrl;
+  }
+  if(data.name){
+    empName.textContent = data.name;
+    empName.style.display = '';
   }
   if(data.years != null && data.years !== ''){
     yearsNum.textContent = data.years;
@@ -344,7 +349,7 @@ async function fetchFromNucleus(){
     if(!res.ok) throw new Error('HTTP ' + res.status);
     const json = await res.json();
     /* response ke field names Nucleus ke hisaab se yahan map honge */
-    applyEmployee({ photoUrl: json.photoUrl, years: json.years });
+    applyEmployee({ name: json.name, photoUrl: json.photoUrl, years: json.years });
   }catch(err){
     console.error('Nucleus fetch failed', err);
   }

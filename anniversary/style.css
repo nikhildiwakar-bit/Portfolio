@@ -149,8 +149,13 @@
     display:flex;align-items:center;justify-content:center;
     font-size:34px;color:#b9cbe0;
   }
+  .emp-name{
+    margin-top:14px;font-family:'Inter',sans-serif;font-weight:700;
+    font-size:clamp(18px,2.2vw,22px);color:var(--ink);text-align:center;
+    padding:0 16px;line-height:1.3;
+  }
   .years-badge{
-    margin-top:-18px;
+    margin-top:8px;
     background:var(--brand-blue);color:#fff;
     font-family:'Inter',sans-serif;font-weight:700;font-size:13px;
     letter-spacing:.04em;
