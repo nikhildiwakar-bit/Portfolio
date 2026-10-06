@@ -457,17 +457,21 @@ test('sender: every drop in a long meeting reconnects (ICE restart over the rela
 });
 
 test('sender: a TV that does not answer the reconnect gets the offer again and again, then "lost" after lostMs', async () => {
-    const { tv, link, sender, states, offers, stream } = await castRig({ lostMs: 1500, answerRestarts: false });
+    const { relay, tv, link, sender, states, offers, stream } = await castRig({ lostMs: 2500, answerRestarts: false });
     sender.start(stream);
     await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
     const pc = FakePC.last;
     pc.dc._open();
     pc._conn('connected');
+    const before = relay.posts.length;
     pc._conn('failed');
-    await untilTrue(() => sender.state === 'error', 4000);
+    await untilTrue(() => sender.state === 'error', 5000);
     assert.deepEqual(states, ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting', 'error:lost']);
     const restarts = offers.filter(o => /restart/.test(o));
-    assert.ok(restarts.length >= 3, 'the offer is repeated: ' + restarts.length);
+    assert.ok(restarts.length >= 2, 'new attempts until lostMs: ' + restarts.length);
+    // This rig has no MQTT broker: one ntfy copy per attempt, never one every repeatMs (250 a day per address).
+    const posted = relay.posts.length - before;
+    assert.ok(posted <= restarts.length + 2, 'ntfy messages: ' + posted + ' for ' + restarts.length + ' attempts');
     link.close();
     tv.rx.close();
 });
@@ -825,4 +829,15 @@ test('iceGathered finishes early on host + srflx, or after ICE_WAIT_MS (1.5 s)',
     const e = new Event('icecandidate'); e.candidate = { type: 'host' }; pc2.dispatchEvent(e);
     assert.equal(await p2, false);
     assert.ok(Date.now() - t1 >= 100);
+});
+
+test('sender: a copy of an answer already used (the TV answering a repeated older offer) never completes a newer reconnect', async () => {
+    const sender = new CastSender({ link: { send: async () => {} }, RTCPeerConnection: FakePC, window: {} });
+    const first = sender._expect(500, 'lost', 'lost');
+    sender._onSignal('answer', 'A1');
+    assert.equal(await first, 'A1');
+    const second = sender._expect(200, 'lost', 'lost');
+    sender._onSignal('answer', 'A1'); // late copy of the old answer
+    sender._onSignal('answer', 'A2');
+    assert.equal(await second, 'A2');
 });

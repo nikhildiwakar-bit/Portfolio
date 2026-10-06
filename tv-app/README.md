@@ -151,6 +151,16 @@ sound travels as uncompressed 16-bit PCM, 48 kHz stereo, in 10 ms chunks on the 
 (about 1.5 Mbit/s, PROTOCOL.md section 10); the TV keeps at most about 150 ms of it waiting, so it stays in step
 with the picture. A TV with an older Office TV shows the picture without sound.
 
+## Office TV 4.2 changes (long meetings)
+
+- Wi-Fi hiccups no longer end a share: the laptop reconnects as often as needed (for up to 90 s each time),
+  the TV waits 2 minutes, and dead relay connections are found in 3 s instead of 35 s.
+- The laptop keeps its screen on while sharing (screen wake lock, while the Office TV tab is visible).
+- The TV home screen shows why the last share ended, and warns when Android is set to turn the screen off
+  without the remote (Settings > Energy saver / Power: set to Never; on Dahua panels also turn off eco /
+  no-operation standby).
+- Direct video recovers from a lost key frame on a still screen, and Wi-Fi trouble no longer shrinks the picture.
+
 ## Office TV 3.7 changes
 
 - Direct video: on Chrome/Edge (Windows, ChromeOS, Ubuntu, Mac) the laptop encodes the screen itself

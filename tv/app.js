@@ -206,17 +206,23 @@ function share(code, relay) {
 // sleep drops the Wi-Fi). A screen wake lock prevents that while this page is visible; the browser releases it
 // whenever the page is hidden, so it is taken again each time the page comes back.
 let wakeLock = null;
+let wakePending = false;
 
 async function keepAwake() {
     const s = state.session;
     const want = !!s && s.phase !== 'picking';
-    if (!want || wakeLock || document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+    if (!want || wakeLock || wakePending || document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+    wakePending = true;
     try {
         const l = await navigator.wakeLock.request('screen');
-        if (state.session !== s) { l.release().catch(() => {}); return; }
+        if (state.session !== s || wakeLock) { l.release().catch(() => {}); return; }
         wakeLock = l;
         l.addEventListener('release', () => { if (wakeLock === l) wakeLock = null; });
-    } catch (e) { /* not allowed here (policy, battery saver): the OS idle settings apply */ }
+    } catch (e) {
+        /* not allowed here (policy, battery saver): the OS idle settings apply */
+    } finally {
+        wakePending = false;
+    }
 }
 
 function letSleep() {

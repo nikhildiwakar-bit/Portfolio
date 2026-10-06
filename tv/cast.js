@@ -1250,6 +1250,10 @@ export class CastSender {
 
     _onSignal(cast, data) {
         if (cast === 'answer') {
+            // The TV answers a repeated offer again: a copy of an answer already used belongs to an older offer.
+            this._seenAnswers = this._seenAnswers || new Set();
+            if (this._seenAnswers.has(data)) return;
+            this._seenAnswers.add(data);
             const w = this._waiter;
             this._waiter = null;
             if (w) w.resolve(data);
@@ -1374,8 +1378,14 @@ export class CastSender {
         const tick = () => {
             if (this._repeat !== r || !this.channel) return;
             r.n++;
-            this.channel.send(cast, data).catch(() => { /* the next copy may get through */ });
-            if (r.n === 2) this.channel.send(cast, data, { via: 'ntfy' }).catch(() => {});
+            // ntfy allows 250 messages a day per school address: the first copy may go there (no broker up),
+            // plus at most one more; every other repeat goes over the MQTT brokers only.
+            if (r.n === 1) {
+                r.firstMqtt = this.channel._mqttCount() > 0; // else this copy goes over ntfy
+                this.channel.send(cast, data).catch(() => {});
+            }
+            else this.channel.send(cast, data, { via: 'mqtt-only' }).catch(() => { /* the next copy may get through */ });
+            if (r.n === 2 && r.firstMqtt) this.channel.send(cast, data, { via: 'ntfy' }).catch(() => {}); // for a TV without a broker
             r.timer = setTimeout(tick, this._repeatMs);
         };
         tick();
@@ -1764,7 +1774,8 @@ export class CastReceiver {
         try { dc.binaryType = 'arraybuffer'; } catch (e) { /* ignore */ }
         const asm = new FrameAssembler();
         // The laptop goes back to the WebRTC picture when this channel closes; so does the TV.
-        dc.addEventListener('close', () => { if (this.nativeActive) this._stopNative(); });
+        this._videoDc = dc;
+        dc.addEventListener('close', () => { if (this._videoDc === dc && this.nativeActive) this._stopNative(); });
         dc.addEventListener('message', m => {
             if (!this.nativeActive || !this.video) return;
             const f = asm.push(m.data);
@@ -1837,12 +1848,17 @@ export class CastReceiver {
         await this.channel.send('answer', answer);
     }
 
+    /** At most 5 times per offer, 1.5 s apart; only the first may use ntfy (250 messages a day). */
     _answerAgain(offer) {
         const a = this._answers && this._answers.get(offer);
         const now = Date.now();
         if (!a || this.state === 'ended' || !this.channel || now - (this._answeredAt || 0) < 1500) return;
+        this._againCount = this._againCount || new Map();
+        const n = this._againCount.get(offer) || 0;
+        if (n >= 5) return;
+        this._againCount.set(offer, n + 1);
         this._answeredAt = now;
-        this.channel.send('answer', a).catch(() => { /* the next repeat asks again */ });
+        this.channel.send('answer', a, n === 0 ? {} : { via: 'mqtt-only' }).catch(() => { /* the next repeat asks again */ });
     }
 
     _failed(e) {
