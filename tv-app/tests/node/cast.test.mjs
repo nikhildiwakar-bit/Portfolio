@@ -343,7 +343,10 @@ class FakePC extends EventTarget {
     }
     createDataChannel() { this.dc = new FakeDC(); return this.dc; }
     async createOffer(o) { this.offers++; return { type: 'offer', sdp: 'v=0\r\no=fake ' + this.offers + (o && o.iceRestart ? ' restart' : '') + '\r\n' }; }
-    async setLocalDescription(d) { this.localDescription = d; this.signalingState = 'have-local-offer'; this.iceGatheringState = 'complete'; }
+    async setLocalDescription(d) {
+        if (d && d.type === 'rollback') { this.signalingState = 'stable'; this.rollbacks = (this.rollbacks || 0) + 1; return; }
+        this.localDescription = d; this.signalingState = 'have-local-offer'; this.iceGatheringState = 'complete';
+    }
     async setRemoteDescription(d) { this.remoteDescription = d; this.signalingState = 'stable'; }
     close() { this.closed = true; this.connectionState = 'closed'; }
     async getStats() { return new Map((this.stats || []).map(s => [s.id, s])); }
@@ -351,7 +354,7 @@ class FakePC extends EventTarget {
 }
 
 /** A TvLink, the fake TV and a scripted receiver that answers every offer over the relay. */
-async function castRig({ tvReplies = true } = {}) {
+async function castRig({ tvReplies = true, lostMs, answerRestarts = true } = {}) {
     FakePC.last = null;
     const { relay, FakeES, fetch } = makeRelay();
     const topic = await otv.deriveTopic(CODE);
@@ -366,6 +369,7 @@ async function castRig({ tvReplies = true } = {}) {
             if (cast !== 'offer') return;
             const d = await decodeSignal(data);
             offers.push(d.sdp);
+            if (!answerRestarts && /restart/.test(d.sdp)) return;
             await rx.send('answer', await encodeSignal({ type: 'answer', sdp: 'v=0\r\no=answer ' + offers.length + '\r\n' }));
         };
         rx.init();
@@ -374,7 +378,7 @@ async function castRig({ tvReplies = true } = {}) {
     const link = new otv.TvLink({ code: CODE, relay: RELAY, fetch, EventSource: FakeES });
     const states = [];
     const sender = new CastSender({
-        link, RTCPeerConnection: FakePC, window: {}, dropMs: 200, reconnectTimeoutMs: 600, ackTimeoutMs: 600,
+        link, RTCPeerConnection: FakePC, window: {}, dropMs: 200, reconnectTimeoutMs: 600, ackTimeoutMs: 600, lostMs: lostMs || 5000, repeatMs: 150,
         onstate: (s, d) => states.push(d && (d.reason || d.code) ? s + ':' + (d.reason || d.code) : s),
     });
     return { relay, tv, link, sender, states, offers, stream: new FakeStream() };
@@ -420,28 +424,50 @@ test('sender: cast start, offer, answer, sharing; stop says bye on the data chan
     tv.rx.close();
 });
 
-test('sender: a drop reconnects once (ICE restart over the relay); a second drop ends with "lost"', async () => {
-    const { relay, tv, link, sender, states, offers, stream } = await castRig();
+test('sender: every drop in a long meeting reconnects (ICE restart over the relay), not only the first', async () => {
+    const { tv, link, sender, states, offers, stream } = await castRig();
     sender.start(stream);
     await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
     const pc = FakePC.last;
     pc.dc._open();
     pc._conn('connected');
-    const before = relay.posts.length;
     pc._conn('disconnected');
     await sleep(20);
     assert.equal(sender.state, 'sharing', 'a short hiccup is ignored');
     await untilTrue(() => sender.state === 'reconnecting');
-    await untilTrue(() => offers.length === 2);
-    assert.match(offers[1], /restart/);
-    await untilTrue(() => pc.remoteDescription.sdp.includes('answer 2'));
+    await untilTrue(() => offers.some(o => /restart/.test(o)), 3000);
+    await untilTrue(() => /answer/.test(pc.remoteDescription.sdp) && pc.remoteDescription.sdp !== 'v=0\r\no=answer 1\r\n', 3000);
     pc._conn('connected');
-    assert.equal(sender.state, 'sharing');
-    assert.equal(relay.posts.length - before, 2, 'reconnect = offer + answer');
+    await untilTrue(() => sender.state === 'sharing');
+    // Later in the meeting: a second and a third drop heal the same way.
+    for (let i = 0; i < 2; i++) {
+        const n = offers.length;
+        pc._conn('failed');
+        await untilTrue(() => sender.state === 'reconnecting');
+        await untilTrue(() => offers.length > n, 3000);
+        await untilTrue(() => pc.signalingState === 'stable', 3000);
+        pc._conn('connected');
+        await untilTrue(() => sender.state === 'sharing');
+    }
+    assert.equal(sender.reconnects, 3);
+    assert.deepEqual(states, ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting', 'sharing', 'reconnecting', 'sharing', 'reconnecting', 'sharing']);
+    sender.stop();
+    link.close();
+    tv.rx.close();
+});
+
+test('sender: a TV that does not answer the reconnect gets the offer again and again, then "lost" after lostMs', async () => {
+    const { tv, link, sender, states, offers, stream } = await castRig({ lostMs: 1500, answerRestarts: false });
+    sender.start(stream);
+    await untilTrue(() => FakePC.last && FakePC.last.remoteDescription);
+    const pc = FakePC.last;
+    pc.dc._open();
+    pc._conn('connected');
     pc._conn('failed');
-    await untilTrue(() => sender.state === 'error');
-    assert.deepEqual(states, ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting', 'sharing', 'error:lost']);
-    assert.equal(sender.reconnects, 1);
+    await untilTrue(() => sender.state === 'error', 4000);
+    assert.deepEqual(states, ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting', 'error:lost']);
+    const restarts = offers.filter(o => /restart/.test(o));
+    assert.ok(restarts.length >= 3, 'the offer is repeated: ' + restarts.length);
     link.close();
     tv.rx.close();
 });
@@ -688,6 +714,48 @@ test('receiver: sends a stats message over the data channel every statsMs while 
     const sent = dc.sent.length;
     await sleep(80);
     assert.equal(dc.sent.length, sent, 'no stats after the end');
+});
+
+test('receiver: a data channel that closes while the network is down does not end the share; the TV closing says bye', async () => {
+    const rx = new CastReceiver({ code: CODE, relay: RELAY, session: SESSION, statsMs: 0, window: {} });
+    rx.state = 'playing';
+    const sentRelay = [];
+    rx.channel = { send: async (c, d) => { sentRelay.push(c + ':' + d); }, close() {}, probe() { this.probed = true; } };
+    rx.pc = { connectionState: 'disconnected', iceConnectionState: 'disconnected', close() {} };
+    const dc = new FakeDC();
+    rx._watchChannel(dc);
+    dc._open();
+    rx._onConn();
+    assert.equal(rx.state, 'reconnecting');
+    assert.ok(rx.channel.probed, 'the relay sockets are checked for the laptop\'s reconnect offer');
+    dc.dispatchEvent(new Event('close'));
+    assert.equal(rx.state, 'reconnecting', 'not "the laptop stopped": the network is down');
+    // The TV ends it (Back, the app closing): the laptop is told on the relay too, not left reconnecting.
+    rx.end('stopped');
+    assert.equal(rx.state, 'ended');
+    await sleep(10);
+    assert.deepEqual(sentRelay, ['bye:stopped']);
+    clearTimeout(rx._graceTimer);
+});
+
+test('receiver: the laptop saying bye ends the share without a relay message back', async () => {
+    const rx = new CastReceiver({ code: CODE, relay: RELAY, session: SESSION, statsMs: 0, window: {} });
+    rx.state = 'playing';
+    const sentRelay = [];
+    rx.channel = { send: async (c, d) => { sentRelay.push(c + ':' + d); }, close() {} };
+    rx.pc = { connectionState: 'connected', iceConnectionState: 'connected', close() {} };
+    const dc = new FakeDC();
+    rx._watchChannel(dc);
+    dc._open();
+    dc.dispatchEvent(dcMessage('bye'));
+    assert.equal(rx.state, 'ended');
+    await sleep(10);
+    assert.deepEqual(sentRelay, [], 'no relay message (ntfy has a daily limit)');
+});
+
+test('receiver: waits two minutes for the laptop to reconnect (graceMs default)', () => {
+    const rx = new CastReceiver({ code: CODE, relay: RELAY, session: SESSION, window: {} });
+    assert.equal(rx._graceMs, 120000);
 });
 
 // ---------- latency tuning ----------

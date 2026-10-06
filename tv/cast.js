@@ -8,7 +8,7 @@ import {
     receiverStatsMessage, selectedPair,
 } from './stats.js?v=2';
 import { STEADY_FPS, steadyTrack } from './steady.js';
-import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direct.js?v=5';
+import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direct.js?v=6';
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
@@ -538,6 +538,12 @@ export class CastChannel {
         return this.transport ? this.transport.ready(ms) : false;
     }
 
+    /** After a network hiccup: dead relay sockets are found in seconds and reconnect (Relay.probe). */
+    probe(ms) {
+        const t = this.link ? this.link.transport : this.transport;
+        if (t && typeof t.probe === 'function') { try { t.probe(ms); } catch (e) { /* ignore */ } }
+    }
+
     _mqttCount() {
         const t = this.link ? this.link.transport : this.transport;
         return t ? t.mqttCount : 0;
@@ -725,6 +731,21 @@ export class CastChannel {
  * (the ones that matter on one network; the description then carries every candidate gathered so far), or
  * after ms. true = complete or early, false = timed out.
  */
+/**
+ * After an ICE restart: setLocalDescription starts a new gathering a moment later, so iceGatheringState can
+ * still read 'complete' from the old one. Wait for the new gathering to begin (briefly) before collecting.
+ */
+export async function iceRestartGathered(pc, ms = ICE_WAIT_MS) {
+    if (pc.iceGatheringState === 'complete' && typeof pc.addEventListener === 'function') {
+        await new Promise(resolve => {
+            const done = () => { clearTimeout(t); pc.removeEventListener('icegatheringstatechange', done); resolve(); };
+            const t = setTimeout(done, 400);
+            pc.addEventListener('icegatheringstatechange', done);
+        });
+    }
+    return iceGathered(pc, ms);
+}
+
 export function iceGathered(pc, ms = ICE_WAIT_MS) {
     if (pc.iceGatheringState === 'complete') return Promise.resolve(true);
     return new Promise(resolve => {
@@ -844,6 +865,7 @@ export class CastSender {
     constructor({
         link, RTCPeerConnection: PC, onstate, window: w,
         ackTimeoutMs = 20000, answerTimeoutMs = 30000, connectTimeoutMs = 20000, dropMs = 3000, reconnectTimeoutMs = 12000,
+        lostMs = 90000, repeatMs = 2000,
     } = {}) {
         this.link = link;
         this.state = 'idle';
@@ -854,7 +876,9 @@ export class CastSender {
         this._answerTimeoutMs = answerTimeoutMs;
         this._connectTimeoutMs = connectTimeoutMs;
         this._dropMs = dropMs;
-        this._reconnectTimeoutMs = reconnectTimeoutMs;
+        this._reconnectTimeoutMs = reconnectTimeoutMs; // one reconnect attempt (offer -> answer -> connected)
+        this._lostMs = lostMs;                         // keep trying this long before "connection lost"
+        this._repeatMs = repeatMs;                     // the reconnect offer is sent again this often
         this.pc = null;
         this.dc = null;
         this.channel = null;
@@ -863,6 +887,7 @@ export class CastSender {
         this.videoSender = null;
         this.tvData = {};
         this.reconnects = 0;
+        this._reconnectGen = 0;
         this.rxStats = null;     // the TV's latest numbers (readReceiverMessage), from the data channel
         this.rxStatsAt = 0;
         this.rxStatsCount = 0;
@@ -956,7 +981,16 @@ export class CastSender {
         const dc = pc.createDataChannel('otv');
         this.dc = dc;
         // The TV closing the receiver (Back on the remote, or the app) closes the data channel at once.
-        dc.addEventListener('close', () => { if (this.dc === dc) this.stop('tv'); });
+        // A close while the network is down is the connection timing out, not the TV: reconnecting decides then.
+        dc.addEventListener('close', () => {
+            if (this.dc !== dc) return;
+            const s = this.pc && connState(this.pc);
+            if (this.state === 'reconnecting' || (s && s !== 'connected' && s !== 'completed')) {
+                if (this._log) this._log('control channel closed while reconnecting');
+                return;
+            }
+            this.stop('tv');
+        });
         dc.addEventListener('message', e => {
             if (this.dc !== dc) return;
             if (e.data === 'bye') { this.stop('tv'); return; }
@@ -1089,6 +1123,8 @@ export class CastSender {
         });
         this.direct = d;
         this.videoDc = vdc;
+        // The channel timed out (a long network outage): back to the WebRTC picture, which an ICE restart revives.
+        vdc.addEventListener('close', () => { if (this.videoDc === vdc) this._stopDirect('channel closed'); });
         // The steady wrapper reads the same captured track: not needed any more.
         if (this.steady) { this.steady.stop(); this.steady = null; }
         if (!await d.start()) {
@@ -1110,7 +1146,11 @@ export class CastSender {
         if (this.videoDc) { try { this.videoDc.close(); } catch (e) { /* ignore */ } }
         this.videoDc = null;
         const video = this.stream && this.stream.getVideoTracks ? this.stream.getVideoTracks()[0] : null;
-        if (this.active && video && this.videoSender) this.videoSender.replaceTrack(video).catch(() => {});
+        if (this.active && video && this.videoSender) {
+            // The steady frame rate again (it was stopped for direct video), so a still screen keeps reaching the TV.
+            if (!this.steady) this.steady = steadyTrack(video, { fps: this.fpsLevel || STEADY_FPS, workerUrl: TICK_URL, window: this._w });
+            this.videoSender.replaceTrack(this.steady ? this.steady.track : video).catch(() => {});
+        }
         if (this._log) this._log('direct', 'off (' + reason + ')');
     }
 
@@ -1132,7 +1172,8 @@ export class CastSender {
         const i = Math.max(0, QUALITY_STEPS.findIndex(q => q.fps === this.fpsLevel && q.height === (this.heightLevel || 1080)));
         let slow;
         if (this.direct) {
-            // Direct video: busy when many frames had to be skipped (the encoder or the Wi-Fi cannot keep up).
+            // Direct video: busy when the encoder itself falls behind. Frames skipped for the Wi-Fi do not count:
+            // a smaller picture does not help a slow network, and every size change restarts the TV's decoder.
             slow = this.direct.busy();
         } else {
             const tx = parseSenderStats(await pc.getStats(), this._adaptPrev);
@@ -1154,6 +1195,8 @@ export class CastSender {
 
     /** Smaller picture first (scaled at capture, cheap), frame rate last and never below 30. */
     async _applyQuality(q, slow) {
+        const d = this.direct;
+        if (d && (d.small || d.hardware === false)) q = { height: Math.min(q.height, 720), fps: Math.min(q.fps, 30) }; // its own limit
         this.fpsLevel = q.fps;
         this.heightLevel = q.height;
         const track = this.stream && this.stream.getVideoTracks ? this.stream.getVideoTracks()[0] : null;
@@ -1226,6 +1269,7 @@ export class CastSender {
             clearTimeout(this._dropTimer);
             if (this.state === 'connecting' || this.state === 'reconnecting') {
                 clearTimeout(this._restartTimer);
+                if (this.state === 'reconnecting') { this._reconnectGen++; this._stopRepeat(); } // the loop stops
                 if (this._log) this._log(this.state === 'connecting' ? 'connected' : 'reconnected');
                 this._set('sharing');
                 tuneSender(this.videoSender, this.fpsLevel);
@@ -1244,40 +1288,103 @@ export class CastSender {
     }
 
     _dropped() {
-        if (this.state === 'reconnecting') return; // the restart's own timer decides
-        if (this.state === 'sharing' && this.reconnects < 1) this.reconnect();
-        else if (this.state === 'sharing') this._fail(castError('lost', 'The connection to the TV was lost.'));
+        if (this.state === 'reconnecting') return; // the reconnect loop decides
+        if (this.state === 'sharing') this.reconnect();
         else this._fail(castError('ice', 'Could not connect to the TV.'));
     }
 
     /**
-     * Reconnects once after the connection dropped: an ICE restart (new offer and answer, two relay messages)
-     * on the same session, so the TV keeps its receiver open. Resolves true if the TV answered.
+     * Reconnects after the connection dropped, as often as needed in a long meeting: ICE restarts (a new offer and
+     * answer) on the same session, so the TV keeps its receiver open. Each offer is sent again every 2 s (and once
+     * over ntfy) until the TV answers; attempts repeat until it works or lostMs (90 s) has passed. The TV waits
+     * longer than that (graceMs). Resolves true once connected again.
      */
     async reconnect() {
-        if (this.state !== 'sharing' || !this.pc || this.reconnects >= 1) return false;
+        if (this.state !== 'sharing' || !this.pc) return false;
         this.reconnects++;
+        const gen = ++this._reconnectGen;
         clearTimeout(this._dropTimer);
         this._set('reconnecting');
         const pc = this.pc;
         const lost = () => castError('lost', 'The connection to the TV was lost.');
-        this._restartTimer = setTimeout(() => { if (this.state === 'reconnecting') this._fail(lost()); }, this._reconnectTimeoutMs);
-        try {
-            await pc.setLocalDescription(await pc.createOffer({ iceRestart: true }));
-            await iceGathered(pc);
-            if (!this.active || this.pc !== pc) return false;
-            const answer = this._expect(this._reconnectTimeoutMs, 'lost', 'The connection to the TV was lost.');
-            await this.channel.send('offer', await encodeSignal(pc.localDescription, { compress: false }));
-            const desc = await decodeSignal(await answer);
-            if (!this.active || this.pc !== pc) return false;
-            if (!desc || desc.type !== 'answer') throw lost();
-            await pc.setRemoteDescription(desc);
-            this._onConn(); // an ICE restart on a working path never leaves 'connected', so no event fires
-            return true;
-        } catch (e) {
-            if (this.state === 'reconnecting') this._fail(lost());
-            return false;
+        const until = Date.now() + this._lostMs;
+        clearTimeout(this._restartTimer);
+        this._restartTimer = setTimeout(() => { if (this.state === 'reconnecting') this._fail(lost()); }, this._lostMs);
+        const going = () => this.active && this.pc === pc && this.state === 'reconnecting' && gen === this._reconnectGen;
+        if (this.channel) this.channel.probe(); // dead relay sockets reconnect before the offer goes out
+        for (let attempt = 0; going(); attempt++) {
+            if (attempt > 0) {
+                await new Promise(r => setTimeout(r, Math.min(1000 * attempt, 5000)));
+                if (!going()) break;
+                if (this.channel) this.channel.probe();
+            }
+            const left = until - Date.now();
+            if (left <= 0) break;
+            try {
+                if (pc.signalingState === 'have-local-offer') {
+                    try { await pc.setLocalDescription({ type: 'rollback' }); } catch (e) { /* a fresh offer replaces it */ }
+                }
+                await pc.setLocalDescription(await pc.createOffer({ iceRestart: true }));
+                await iceRestartGathered(pc);
+                if (!going()) break;
+                const answer = this._expect(Math.min(this._reconnectTimeoutMs, left), 'lost', 'The connection to the TV was lost.');
+                this._repeatSignal('offer', await encodeSignal(pc.localDescription, { compress: false }));
+                let data;
+                try { data = await answer; } finally { this._stopRepeat(); }
+                if (!this.active || this.pc !== pc) return false;
+                const desc = await decodeSignal(data);
+                if (!desc || desc.type !== 'answer' || pc.signalingState !== 'have-local-offer') continue;
+                await pc.setRemoteDescription(desc);
+                this._onConn(); // an ICE restart on a working path never leaves 'connected', so no event fires
+                if (await this._connectedWithin(pc, Math.min(10000, Math.max(0, until - Date.now())))) {
+                    this._onConn();
+                    return true;
+                }
+            } catch (e) {
+                this._stopRepeat();
+                if (e && e.code === 'closed') return false;
+                if (this._log) this._log('reconnect attempt ' + (attempt + 1) + ' failed (' + ((e && (e.code || e.message)) || e) + ')');
+            }
         }
+        if (gen === this._reconnectGen && this.active && this.pc === pc && this.state === 'reconnecting') this._fail(lost());
+        return this.state === 'sharing';
+    }
+
+    /** True once the connection is up again, false after ms. */
+    _connectedWithin(pc, ms) {
+        const up = () => { const s = connState(pc); return s === 'connected' || s === 'completed'; };
+        if (up()) return Promise.resolve(true);
+        return new Promise(resolve => {
+            const t0 = Date.now();
+            const check = () => {
+                if (this.pc !== pc || !this.active) { resolve(false); return; }
+                if (up()) { resolve(true); return; }
+                if (Date.now() - t0 >= ms) { resolve(false); return; }
+                setTimeout(check, 250);
+            };
+            check();
+        });
+    }
+
+    /** Publishes a signal now and again every repeatMs (one ntfy copy too) until _stopRepeat(). */
+    _repeatSignal(cast, data) {
+        this._stopRepeat();
+        const r = { timer: null, n: 0 };
+        this._repeat = r;
+        const tick = () => {
+            if (this._repeat !== r || !this.channel) return;
+            r.n++;
+            this.channel.send(cast, data).catch(() => { /* the next copy may get through */ });
+            if (r.n === 2) this.channel.send(cast, data, { via: 'ntfy' }).catch(() => {});
+            r.timer = setTimeout(tick, this._repeatMs);
+        };
+        tick();
+    }
+
+    _stopRepeat() {
+        const r = this._repeat;
+        this._repeat = null;
+        if (r) clearTimeout(r.timer);
     }
 
     _fail(e, tellTv = true) {
@@ -1299,6 +1406,7 @@ export class CastSender {
     }
 
     _teardown(tellTv) {
+        this._stopRepeat();
         clearTimeout(this._dropTimer);
         clearTimeout(this._restartTimer);
         clearTimeout(this._connectTimer);
@@ -1394,7 +1502,7 @@ function seeThrough(on) {
 export class CastReceiver {
     constructor({
         code, relay, session, ip = '', RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES, WebSocket: WS, brokers, repeatMs,
-        offerTimeoutMs = 90000, graceMs = 25000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w, video = null,
+        offerTimeoutMs = 90000, graceMs = 120000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w, video = null,
     } = {}) {
         this._w = w || globalThis;
         // The TV's LAN address (receiver URL ip=): added to the answer next to the hidden .local candidates, and
@@ -1465,7 +1573,7 @@ export class CastReceiver {
                 // Only the first offer of the session is answered: the laptop repeats it (MQTT, ntfy replay) until
                 // the answer arrives, and every copy after the first is ignored. A different offer on the
                 // running connection is the laptop's ICE restart.
-                if (offers.has(data)) return;
+                if (offers.has(data)) { this._answerAgain(data); return; }
                 offers.add(data);
                 if (!this.pc && !this._gotOffer) {
                     this._gotOffer = true;
@@ -1474,7 +1582,7 @@ export class CastReceiver {
                 } else if (this.pc) {
                     this._restart(data).catch(() => { /* the grace timer ends the session */ });
                 }
-            } else if (cast === 'bye') this.end('stopped');
+            } else if (cast === 'bye') { this._byLaptop = true; this.end('stopped'); }
         };
         this._offerTimer = setTimeout(() => { if (!this._gotOffer) this.end('timeout'); }, this._offerTimeoutMs);
         await ch.init();
@@ -1515,7 +1623,7 @@ export class CastReceiver {
         await iceGathered(pc);
         this._log('ice-gathered');
         if (this.state === 'ended') return;
-        await this.channel.send('answer', await encodeSignal(this._answerDesc(pc)));
+        await this._sendAnswer(data, await encodeSignal(this._answerDesc(pc)));
         this._log('answer-sent', 'lowLatency=' + (this.lowLatency || 'none') + ' h264First=' + this.codecPrefs + ' ip=' + (this.ip || 'none'));
     }
 
@@ -1580,7 +1688,7 @@ export class CastReceiver {
         if (dc.label === 'otv-video') { this._watchVideo(dc); return; }
         this.dc = dc;
         dc.addEventListener('message', m => {
-            if (m.data === 'bye') { this.end('stopped'); return; }
+            if (m.data === 'bye') { this._byLaptop = true; this.end('stopped'); return; }
             const ctl = readControl(m.data);
             if (ctl && ctl.type === 'video') this._onVideoControl(ctl);
         });
@@ -1588,8 +1696,14 @@ export class CastReceiver {
         const hello = () => this._helloNative();
         if (dc.readyState === 'open') hello();
         else dc.addEventListener('open', hello);
-        // The laptop closed the connection (tab closed, sharing stopped).
-        dc.addEventListener('close', () => this.end('stopped'));
+        // The laptop closed the connection (tab closed, sharing stopped). A close while the network is down is the
+        // connection timing out instead: the grace timer and the laptop's reconnect decide then.
+        dc.addEventListener('close', () => {
+            const s = this.pc && connState(this.pc);
+            if (this.state === 'reconnecting' || (s && s !== 'connected' && s !== 'completed')) return;
+            this._byLaptop = true;
+            this.end('stopped');
+        });
         if (dc.readyState === 'open') this._startStats();
         else dc.addEventListener('open', () => this._startStats());
     }
@@ -1649,6 +1763,8 @@ export class CastReceiver {
     _watchVideo(dc) {
         try { dc.binaryType = 'arraybuffer'; } catch (e) { /* ignore */ }
         const asm = new FrameAssembler();
+        // The laptop goes back to the WebRTC picture when this channel closes; so does the TV.
+        dc.addEventListener('close', () => { if (this.nativeActive) this._stopNative(); });
         dc.addEventListener('message', m => {
             if (!this.nativeActive || !this.video) return;
             const f = asm.push(m.data);
@@ -1699,7 +1815,7 @@ export class CastReceiver {
         }
     }
 
-    /** The laptop's one reconnect: a new offer with ICE restart on the same connection. */
+    /** A reconnect from the laptop: a new offer with ICE restart on the same connection. */
     async _restart(data) {
         if (this.state === 'ended' || data === this._lastOffer) return;
         const desc = await decodeSignal(data);
@@ -1708,9 +1824,25 @@ export class CastReceiver {
         const pc = this.pc;
         await pc.setRemoteDescription(desc);
         await pc.setLocalDescription(await pc.createAnswer());
-        await iceGathered(pc);
+        await iceRestartGathered(pc);
         if (this.state === 'ended' || this.pc !== pc) return;
-        await this.channel.send('answer', await encodeSignal(this._answerDesc(pc)));
+        await this._sendAnswer(data, await encodeSignal(this._answerDesc(pc)));
+    }
+
+    /** The answer to an offer, kept so a repeated offer (the laptop did not get it) is answered again. */
+    async _sendAnswer(offer, answer) {
+        this._answers = this._answers || new Map();
+        this._answers.set(offer, answer);
+        if (this._answers.size > 8) this._answers.delete(this._answers.keys().next().value);
+        await this.channel.send('answer', answer);
+    }
+
+    _answerAgain(offer) {
+        const a = this._answers && this._answers.get(offer);
+        const now = Date.now();
+        if (!a || this.state === 'ended' || !this.channel || now - (this._answeredAt || 0) < 1500) return;
+        this._answeredAt = now;
+        this.channel.send('answer', a).catch(() => { /* the next repeat asks again */ });
     }
 
     _failed(e) {
@@ -1732,7 +1864,10 @@ export class CastReceiver {
         } else if (s === 'closed') {
             this.end('disconnected');
         } else if (s === 'failed' || s === 'disconnected') {
-            if (this.state === 'playing') this._set('reconnecting');
+            if (this.state === 'playing') {
+                this._set('reconnecting');
+                if (this.channel) this.channel.probe(); // the laptop's reconnect offer must find a live relay socket
+            }
             // Wait for the laptop's reconnect before giving up.
             if (!this._graceTimer) {
                 this._graceTimer = setTimeout(() => {
@@ -1753,11 +1888,21 @@ export class CastReceiver {
         clearInterval(this._statsTimer);
         this._statsTimer = null;
         this._stopNative();
+        // Tell the laptop at once (it otherwise keeps trying to reconnect), over the data channel and the relay.
+        let bye = null;
+        // Not when the laptop ended it, or when it is told separately (network refusal, setup error).
+        if (!this._byLaptop && reason !== 'network' && reason !== 'error') {
+            const dc = this.dc;
+            if (dc && dc.readyState === 'open') { try { dc.send('bye'); } catch (e) { /* the relay copy goes */ } }
+            if (this.channel && this.pc) bye = this.channel.send('bye', reason).catch(() => {});
+        }
         this._set('ended', { reason, error: err });
         this.state = 'ended';
         if (this.pc) { try { this.pc.close(); } catch (e) { /* ignore */ } }
         this.pc = null;
-        if (this.channel) this.channel.close();
+        const ch = this.channel;
+        if (ch && bye) Promise.race([bye, new Promise(r => setTimeout(r, 1500))]).then(() => ch.close());
+        else if (ch) ch.close();
         if (typeof this.onend === 'function') {
             try { this.onend(reason, err); } catch (e) { /* ignore */ }
         }

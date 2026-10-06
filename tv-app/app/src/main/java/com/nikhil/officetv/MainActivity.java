@@ -516,6 +516,13 @@ public class MainActivity extends Activity {
                 .append(BuildConfig.FLAVOR).append(")  ·  WebView ").append(wv == null ? "unknown" : wv);
         String crash = CrashLog.lastLine(this);
         if (crash != null) d.append("\nLast crash: ").append(crash);
+        String lastEnd = Prefs.lastCastEndText(this);
+        if (lastEnd != null) d.append("\nLast share ended: ").append(lastEnd);
+        int sleepMin = Prefs.sleepAfterMinutes(this);
+        if (sleepMin > 0) {
+            d.append("\nThis TV turns its screen off after ").append(sleepMin).append(sleepMin == 1 ? " minute" : " minutes")
+                    .append(" without the remote, even during a meeting. Set Settings > Energy saver (or Power) to Never.");
+        }
         put(diag, d);
 
         View f = getCurrentFocus();

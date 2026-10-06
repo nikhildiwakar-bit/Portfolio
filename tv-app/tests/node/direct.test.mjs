@@ -189,7 +189,7 @@ test('DirectSender: key frame first, push-out repeats on a still screen, chunks 
     assert.equal(FakeFrame.open, 0, 'no frame left open');
 });
 
-test('DirectSender: frames are skipped (before encoding) when the channel is behind, and busy() reports it', async () => {
+test('DirectSender: frames are skipped (before encoding) when the channel is behind; busy() only for a slow encoder', async () => {
     const { w, encoders, capture } = fakeWindow();
     const dc = fakeChannel();
     const d = new DirectSender({ track: { getSettings: () => ({ width: 1920, height: 1080 }) }, dc, caps: { codecs: ['avc'] }, tickUrl: 'tick.js', window: w });
@@ -199,6 +199,11 @@ test('DirectSender: frames are skipped (before encoding) when the channel is beh
     dc.bufferedAmount = 5e6;
     for (let i = 0; i < 12; i++) { capture(1920, 1080); await sleep(1); }
     assert.equal(encoders[0].encoded.length, 1, 'nothing encoded while the channel is full');
+    assert.equal(d.busy(), false, 'the Wi-Fi being behind is not "this computer is busy" (no smaller picture)');
+    // The encoder itself behind: that is busy.
+    dc.bufferedAmount = 0;
+    encoders[0].encodeQueueSize = 5;
+    for (let i = 0; i < 12; i++) { capture(1920, 1080); await sleep(1); }
     assert.equal(d.busy(), true);
     assert.equal(d.busy(), false, 'the window starts again');
     d.stop();
@@ -245,4 +250,41 @@ test('chooseConfig: a Chromebook encoder that refuses level 4.2 / 60 fps still g
     const at720 = { isConfigSupported: async c => ({ supported: c.hardwareAcceleration === 'prefer-hardware' && c.codec === 'avc1.42E01F' }) };
     const b = await chooseConfig(at720, ['avc'], 1920, 1080, 60);
     assert.deepEqual([b.hardware, b.config.width, b.config.height, b.config.framerate], [true, 1280, 720, 30]);
+});
+
+test('DirectSender: a key frame the TV asks for on a still screen is sent once the busy channel drains', async () => {
+    const { w, encoders, worker, capture } = fakeWindow();
+    const dc = fakeChannel();
+    const d = new DirectSender({ track: { getSettings: () => ({ width: 1920, height: 1080 }) }, dc, caps: { codecs: ['avc'] }, tickUrl: 'tick.js', window: w });
+    assert.equal(await d.start(), true);
+    capture(1920, 1080);
+    await sleep(5);
+    for (let i = 0; i < 10; i++) { d.lastSentAt -= 100; worker.onmessage(); } // push-out done, the screen is still
+    const enc = encoders[0];
+    const n = enc.encoded.length;
+    dc.bufferedAmount = 5e6;
+    d.requestKey();
+    for (let i = 0; i < 5; i++) { d.lastSentAt -= 100; worker.onmessage(); }
+    assert.equal(enc.encoded.length, n, 'nothing while the channel is full');
+    dc.bufferedAmount = 0;
+    worker.onmessage();
+    assert.equal(enc.encoded.length, n + 1, 'the key frame goes on the next tick');
+    assert.equal(enc.encoded[n].key, true);
+    d.stop();
+});
+
+test('DirectSender: push-out repeats are not used up while the channel is full', async () => {
+    const { w, encoders, worker, capture } = fakeWindow();
+    const dc = fakeChannel();
+    const d = new DirectSender({ track: { getSettings: () => ({ width: 1920, height: 1080 }) }, dc, caps: { codecs: ['avc'] }, tickUrl: 'tick.js', window: w });
+    assert.equal(await d.start(), true);
+    capture(1920, 1080);
+    await sleep(5);
+    const n = encoders[0].encoded.length;
+    dc.bufferedAmount = 5e6;
+    for (let i = 0; i < 10; i++) { d.lastSentAt -= 100; worker.onmessage(); }
+    dc.bufferedAmount = 0;
+    for (let i = 0; i < 10; i++) { d.lastSentAt -= 100; worker.onmessage(); }
+    assert.equal(encoders[0].encoded.length, n + PUSH_OUT, 'all the repeats still go out');
+    d.stop();
 });

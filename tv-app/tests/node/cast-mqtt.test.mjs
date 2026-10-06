@@ -239,7 +239,7 @@ class RxPC extends EventTarget {
 }
 RxPC.all = [];
 
-test('receiver: answers only the first offer of the session although it arrives many times; the answer carries the TV address', async () => {
+test('receiver: applies only the first offer of the session although it arrives many times (repeats get the same answer); the answer carries the TV address', async () => {
     const { bs, link, close, urls } = await rig();
     RxPC.all = [];
     let rx = null;
@@ -265,7 +265,9 @@ test('receiver: answers only the first offer of the session although it arrives 
         await sleep(300);
         assert.equal(RxPC.all.length, 1, 'one peer connection');
         assert.equal(RxPC.all[0].remote.length, 1, 'the offer was applied once');
-        assert.equal(answers.length, 1, 'one answer');
+        // A repeated offer means the laptop may not have the answer: the same answer goes again (at most every 1.5 s).
+        assert.ok(answers.length >= 1 && answers.length <= 3, answers.length + ' answers');
+        assert.ok(answers.every(a => a === answers[0]), 'always the same answer');
         assert.equal(rx.offerVia, 'mqtt');
         const desc = await decodeSignal(answers[0]);
         assert.match(desc.sdp, /\.local 50000 typ host/);

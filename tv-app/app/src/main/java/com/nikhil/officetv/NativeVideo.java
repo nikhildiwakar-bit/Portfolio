@@ -39,6 +39,8 @@ final class NativeVideo implements SurfaceHolder.Callback {
     /** More frames than this waiting: the decoder is behind, drop to the next key frame. */
     private static final int MAX_QUEUE = 4;
     private static final int MAX_FAILURES = 3;
+    /** While waiting for a key frame, ask the laptop again this often (a request can be lost or skipped). */
+    private static final long ASK_KEY_MS = 500;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Context app;
@@ -60,6 +62,7 @@ final class NativeVideo implements SurfaceHolder.Callback {
     private long statSince = SystemClock.elapsedRealtime();
     private String decoderName = "";
     private boolean lowLatency;
+    private long lastAskAt;
 
     NativeVideo(Context c, FrameLayout parent, Events events) {
         this.app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
@@ -125,6 +128,8 @@ final class NativeVideo implements SurfaceHolder.Callback {
             running = true;
             notifyAll();
         }
+        // The laptop sends a key frame with every new stream, but it can arrive before this message: ask anyway.
+        askKeySoon();
         ui.post(() -> {
             view.getHolder().setFixedSize(w, h);
             layout();
@@ -143,8 +148,15 @@ final class NativeVideo implements SurfaceHolder.Callback {
             if (!running) return;
             if (waitKey && !key) {
                 dropped++;
-                return;
+                ask = askDue();
             }
+        }
+        if (ask) {
+            events.onEvent("keyframe");
+            return;
+        }
+        synchronized (this) {
+            if (!running || (waitKey && !key)) return;
             if (key) {
                 queue.clear();
                 queuedAt.clear();
@@ -155,13 +167,29 @@ final class NativeVideo implements SurfaceHolder.Callback {
                 queue.clear();
                 queuedAt.clear();
                 waitKey = true;
-                ask = true;
+                ask = askDue();
             }
             if (!waitKey) {
                 queue.add(data);
                 queuedAt.add(SystemClock.elapsedRealtime());
             }
             notifyAll();
+        }
+        if (ask) events.onEvent("keyframe");
+    }
+
+    /** True (and remembers it) when a key-frame request may go now. Caller holds the lock. */
+    private boolean askDue() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastAskAt < ASK_KEY_MS) return false;
+        lastAskAt = now;
+        return true;
+    }
+
+    private void askKeySoon() {
+        boolean ask;
+        synchronized (this) {
+            ask = askDue();
         }
         if (ask) events.onEvent("keyframe");
     }
@@ -203,8 +231,13 @@ final class NativeVideo implements SurfaceHolder.Callback {
     public void surfaceCreated(SurfaceHolder holder) {
         synchronized (this) {
             surface = holder.getSurface();
+            // A new surface (the cast screen came back): a new decoder, which must start at a key frame.
+            waitKey = true;
+            queue.clear();
+            queuedAt.clear();
             notifyAll();
         }
+        if (running) askKeySoon();
         startThread();
     }
 
@@ -354,6 +387,7 @@ final class NativeVideo implements SurfaceHolder.Callback {
                             Long q = inFlight.poll();
                             synchronized (this) {
                                 decoded++;
+                                if (decoded % 300 == 0) failures = 0; // a rate, not a lifetime budget
                                 statFrames++;
                                 if (q != null) statDecodeMs += SystemClock.elapsedRealtime() - q;
                             }

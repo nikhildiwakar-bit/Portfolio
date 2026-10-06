@@ -21,7 +21,7 @@ export const CHUNK_BYTES = 60000;
  * Small on purpose: everything queued here is delay on the TV (1.5 MB was ~1.3 s on school Wi-Fi). */
 export const MAX_BUFFERED = 200000;
 /** A key frame at least this often while frames flow, so a lost frame never freezes the TV for long. */
-export const KEY_EVERY_MS = 10000; // the channel is reliable: key frames are big, so only as a safety net
+export const KEY_EVERY_MS = 30000; // the channel is reliable: key frames are big, so only as a safety net
 /** Repeats of the newest frame after each change: they push it out of the TV decoder at once. */
 export const PUSH_OUT = 3;
 
@@ -181,7 +181,7 @@ export class DirectSender {
         this.lastSentAt = 0;
         this.ts = 0;
         this.counts = { offered: 0, encoded: 0, skipped: 0, bytes: 0, encodeMsSum: 0, encodeN: 0, at: Date.now() };
-        this.window = { offered: 0, skipped: 0 };
+        this.window = { offered: 0, skipped: 0, cpu: 0 };
         this._pending = new Map(); // timestamp -> encode() call time, for encode latency
     }
 
@@ -278,26 +278,36 @@ export class DirectSender {
 
     _tick() {
         if (this.stopped || !this.last) return;
-        if (this.fresh) { this._encode(false); return; } // the newest picture was skipped: send it as soon as the link allows
+        // The newest picture, or a key frame the TV asked for, was skipped: send it as soon as the link allows.
+        // (On a still screen no new frame comes to carry it, and the TV waits for that key frame.)
+        if (this.fresh || this.needKey) { this._encode(false); return; }
         if (this.repeatsLeft <= 0) return;
         if (performance.now() - this.lastSentAt < 1000 / this.fps - 2) return;
-        this.repeatsLeft--;
-        this._encode(true);
+        if (this._encode(true)) this.repeatsLeft--; // a skipped repeat is not used up
     }
 
-    /** Encodes the newest frame (again, for a repeat). Skips it when the encoder or the network is behind. */
+    /**
+     * Encodes the newest frame (again, for a repeat). Skips it when the encoder or the network is behind.
+     * true = handed to the encoder.
+     */
     _encode(repeat) {
         const enc = this.encoder;
-        if (!enc || enc.state !== 'configured' || !this.last) return;
-        if (enc.encodeQueueSize > 1 || (this.dc && this.dc.bufferedAmount > MAX_BUFFERED)) {
-            if (!repeat && !this._skipCounted) { this.counts.skipped++; this.window.skipped++; this._skipCounted = true; }
-            return; // skipped before encoding: nothing is corrupted, the next frame carries on
+        if (!enc || enc.state !== 'configured' || !this.last) return false;
+        const cpu = enc.encodeQueueSize > 1;
+        if (cpu || (this.dc && this.dc.bufferedAmount > MAX_BUFFERED)) {
+            if (!repeat && !this._skipCounted) {
+                this.counts.skipped++;
+                this.window.skipped++;
+                if (cpu) this.window.cpu++;
+                this._skipCounted = true;
+            }
+            return false; // skipped before encoding: nothing is corrupted, the next frame carries on
         }
         const now = performance.now();
         const key = this.needKey || now - this.lastKeyAt > KEY_EVERY_MS;
         this.ts = Math.max(this.ts + 1, Math.round(now * 1000));
         let f;
-        try { f = new this._w.VideoFrame(this.last, { timestamp: this.ts }); } catch (e) { return; }
+        try { f = new this._w.VideoFrame(this.last, { timestamp: this.ts }); } catch (e) { return false; }
         try {
             this._pending.set(this.ts, now);
             enc.encode(f, { keyFrame: key });
@@ -305,8 +315,10 @@ export class DirectSender {
             this.lastSentAt = now;
             this.fresh = false;
             this._skipCounted = false;
+            return true;
         } catch (e) {
             this._fail('encode ' + (e && e.message ? e.message : e));
+            return false;
         } finally {
             f.close();
         }
@@ -339,11 +351,14 @@ export class DirectSender {
         if (this.last && this.repeatsLeft <= 0) this.repeatsLeft = 1; // a still screen: send the key frame now
     }
 
-    /** True when a quarter or more of the frames had to be skipped since the last call. */
+    /**
+     * True when the encoder itself (this computer) made a quarter or more of the frames be skipped since the last
+     * call. Frames skipped because the Wi-Fi was behind do not count: a smaller picture would not help.
+     */
     busy() {
         const w = this.window;
-        const b = w.offered >= 10 && w.skipped / w.offered >= 0.25;
-        this.window = { offered: 0, skipped: 0 };
+        const b = w.offered >= 10 && w.cpu / w.offered >= 0.25;
+        this.window = { offered: 0, skipped: 0, cpu: 0 };
         return b;
     }
 

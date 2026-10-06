@@ -132,6 +132,13 @@ export class Relay {
         if (this.ntfy && (!this._es || this._es.readyState === 2)) this._connectNtfy();
     }
 
+    /** After a network hiccup: checks every broker that looks connected (dead ones reconnect) and ntfy. */
+    probe(ms) {
+        if (this._closed || !this._started) return;
+        for (const c of this._clients) { if (typeof c.probe === 'function') c.probe(ms); }
+        this.kick();
+    }
+
     _usable() {
         if (this.mqttCount > 0) return true;
         if (!this._esOpen) return false;

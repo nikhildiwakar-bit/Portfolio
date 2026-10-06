@@ -26,6 +26,50 @@ final class Prefs {
         return c.getSharedPreferences("cfg", Context.MODE_PRIVATE);
     }
 
+    /** Why the last screen share on this TV ended, and when (shown on the home screen). */
+    static void lastCastEnd(Context c, String reason) {
+        p(c).edit().putString("last_cast_end", reason == null ? "" : reason)
+                .putLong("last_cast_end_at", System.currentTimeMillis()).apply();
+    }
+
+    /** "<plain reason> at 14:32", or null if no share has ended yet. */
+    static String lastCastEndText(Context c) {
+        String r = p(c).getString("last_cast_end", null);
+        long at = p(c).getLong("last_cast_end_at", 0);
+        if (r == null || at == 0) return null;
+        String why;
+        switch (r) {
+            case "page-stopped": why = "the laptop stopped sharing"; break;
+            case "page-disconnected": why = "the connection to the laptop was lost"; break;
+            case "page-timeout": why = "the laptop did not connect in time"; break;
+            case "page-error": why = "sharing could not start"; break;
+            case "page-network": why = "the laptop was on another network"; break;
+            case "hidden": why = "the cast screen was hidden or the TV screen turned off"; break;
+            case "back": why = "Back was pressed on the remote"; break;
+            case "stopped": why = "the laptop stopped sharing"; break;
+            case "message": why = "a problem was shown on the TV"; break;
+            case "replaced": why = "another laptop started sharing"; break;
+            default: why = r.startsWith("message: ") ? "the TV showed \"" + r.substring(9) + "\"" : r;
+        }
+        String time = new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(new java.util.Date(at));
+        return why + " at " + time;
+    }
+
+    /**
+     * Minutes after which Android 10+ turns the screen off without remote or touch input, even while a picture is
+     * shown (Settings > Energy saver, "attentive timeout"); 0 if never, or if the TV is set to stay awake.
+     */
+    static int sleepAfterMinutes(Context c) {
+        try {
+            android.content.ContentResolver cr = c.getContentResolver();
+            if (android.provider.Settings.Global.getInt(cr, "stay_on_while_plugged_in", 0) != 0) return 0;
+            int ms = android.provider.Settings.Secure.getInt(cr, "attentive_timeout", -1);
+            return ms > 0 ? Math.max(1, ms / 60000) : 0;
+        } catch (RuntimeException e) {
+            return 0;
+        }
+    }
+
     static boolean keepAwake(Context c) {
         return p(c).getBoolean("keep_awake", true);
     }

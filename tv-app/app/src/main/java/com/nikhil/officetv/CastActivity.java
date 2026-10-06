@@ -67,8 +67,12 @@ public class CastActivity extends Activity {
     private static final long LOAD_TIMEOUT_MS = 45000;
     /** How long a problem message stays up before the TV goes back to the home screen. */
     private static final long MESSAGE_MS = 9000;
-    /** Cast screen hidden (Home pressed, another app on top) this long: end the cast, free the resources. */
-    private static final long HIDDEN_END_MS = 3000;
+    /**
+     * Cast screen hidden this long: end the cast, free the resources. Another app on top (Home pressed): 30 s.
+     * The panel's screen off (a power or eco timer): 10 min, so the meeting carries on when it is woken up.
+     */
+    private static final long HIDDEN_END_MS = 30000;
+    private static final long SCREEN_OFF_END_MS = 600000;
 
     // ---------- one receiver at a time: state shared with the relay command thread ----------
 
@@ -239,6 +243,7 @@ public class CastActivity extends Activity {
     private android.net.wifi.WifiManager.WifiLock lowLatencyWifi;
     private String session = "";
     private boolean pageLoaded, pageFailed, visible, ending;
+    private String failTitle;
 
     private final Runnable loadTimeout = () -> {
         if (!pageLoaded) {
@@ -358,6 +363,15 @@ public class CastActivity extends Activity {
         }
     }
 
+    private static String hostOf(String url) {
+        try {
+            String h = android.net.Uri.parse(url).getHost();
+            return h != null ? h : "?";
+        } catch (RuntimeException e) {
+            return "?";
+        }
+    }
+
     private static String userAgent(WebView w) {
         try {
             return w.getSettings().getUserAgentString();
@@ -415,8 +429,15 @@ public class CastActivity extends Activity {
 
         @JavascriptInterface
         public void close() {
+            closeWith("");
+        }
+
+        /** Office TV 4.2+ pages: why sharing ended, for "Last share ended" on the home screen. */
+        @JavascriptInterface
+        public void closeWith(String reason) {
+            String r = reason == null ? "" : reason.replaceAll("[^a-z]", "");
             ui.post(() -> {
-                if (forSession.equals(session)) end("receiver", true);
+                if (forSession.equals(session)) end(r.isEmpty() ? "receiver" : "page-" + r, true);
             });
         }
     }
@@ -554,6 +575,13 @@ public class CastActivity extends Activity {
         @Override
         public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
             handler.cancel();
+            // Only the page itself matters. A relay socket with a bad certificate (school TLS inspection, a captive
+            // portal) is one of several transports, and the picture goes over the LAN anyway.
+            String url = error != null ? error.getUrl() : null;
+            if (url != null && !url.startsWith(SITE_BASE)) {
+                CrashLog.note(CastActivity.this, "Cast: certificate error on " + hostOf(url) + " (ignored).");
+                return;
+            }
             if (view == web) {
                 pageFailed = true;
                 fail("Secure connection failed", "The TV could not open a secure connection. Check that the TV's date "
@@ -671,6 +699,8 @@ public class CastActivity extends Activity {
             ui.removeCallbacks(loadTimeout);
             releaseWeb();
             showOverlay(title, text, "Press Back to close.");
+            failTitle = title;
+            CrashLog.note(CastActivity.this, "Cast: " + title + ".");
             DebugHooks.event("cast=message session=" + session + " text=" + text);
             ui.removeCallbacks(endAfterMessage);
             ui.postDelayed(endAfterMessage, MESSAGE_MS);
@@ -682,6 +712,7 @@ public class CastActivity extends Activity {
         if (ending || isFinishing()) return;
         ending = true;
         DebugHooks.event("cast=closed reason=" + reason + " session=" + session);
+        Prefs.lastCastEnd(this, "message".equals(reason) && failTitle != null ? "message: " + failTitle : reason);
         ui.removeCallbacks(loadTimeout);
         ui.removeCallbacks(endAfterMessage);
         ui.removeCallbacks(endHidden);
@@ -763,7 +794,16 @@ public class CastActivity extends Activity {
             } catch (RuntimeException ignored) {
             }
         }
-        if (!isChangingConfigurations() && !isFinishing()) ui.postDelayed(endHidden, HIDDEN_END_MS);
+        if (!isChangingConfigurations() && !isFinishing()) {
+            boolean screenOn = true;
+            try {
+                android.os.PowerManager pm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm != null) screenOn = pm.isInteractive();
+            } catch (RuntimeException ignored) {
+            }
+            CrashLog.note(this, "Cast screen hidden (" + (screenOn ? "another app on top" : "TV screen turned off") + ").");
+            ui.postDelayed(endHidden, screenOn ? HIDDEN_END_MS : SCREEN_OFF_END_MS);
+        }
         super.onStop();
     }
 

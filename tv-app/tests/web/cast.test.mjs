@@ -492,8 +492,8 @@ test('the TV closes the receiver: "The TV stopped showing your screen." and Shar
     await sender.done();
 });
 
-test('the TV vanishes without a goodbye (power cut): one reconnect attempt, then a clear message', { skip, timeout: 90000 }, async () => {
-    const sender = await open({ init: [RECORD_DISPLAY, timeouts({ dropMs: 500, reconnectTimeoutMs: 2500 })] });
+test('the TV vanishes without a goodbye (power cut): reconnect attempts (the offer repeated) until lostMs, then a clear message', { skip, timeout: 90000 }, async () => {
+    const sender = await open({ init: [RECORD_DISPLAY, timeouts({ dropMs: 500, reconnectTimeoutMs: 2500, lostMs: 7000 })] });
     const rx = receiverFor(E.tvC);
     await shareTo(sender, CODE_C);
     await sharing(sender);
@@ -507,11 +507,11 @@ test('the TV vanishes without a goodbye (power cut): one reconnect attempt, then
     assert.equal(await text(sender, '#noticeTitle'), 'The connection to the TV was lost.');
     assert.equal(await text(sender, '#noticeText'), 'Check the Wi-Fi, then share again.');
     assert.equal(await text(sender, '#shareLabel'), 'Share again');
-    { const n = sentTo(E.tvC) - before; assert.ok(n >= 1 && n <= 2, 'one restart offer (1-2 parts), never answered: ' + n); }
+    { const n = sentTo(E.tvC) - before; assert.ok(n >= 3, 'the restart offer is sent again and again, never answered: ' + n); }
     await sender.done();
 });
 
-test('reconnects once after a drop: ICE restart on the same session, two relay messages, the TV keeps playing', { skip, timeout: 90000 }, async () => {
+test('reconnects after a drop, again and again: ICE restart on the same session, the TV keeps playing', { skip, timeout: 90000 }, async () => {
     const sender = await open({ init: [RECORD_DISPLAY] });
     const rx = receiverFor(E.tvC);
     await shareTo(sender, CODE_C);
@@ -535,7 +535,12 @@ test('reconnects once after a drop: ICE restart on the same session, two relay m
     const t = await receiver.evaluate(() => document.getElementById('video').currentTime);
     await sleep(600);
     assert.ok(await receiver.evaluate(() => document.getElementById('video').currentTime) > t, 'still playing');
-    assert.equal(await sender.evaluate(() => window.__otvCastSender.reconnect()), false, 'only once per session');
+    // A second drop later in the meeting heals the same way (no lifetime limit).
+    assert.equal(await sender.evaluate(() => window.__otvCastSender.reconnect()), true, 'again');
+    assert.equal(await sender.evaluate(() => window.__otvCastSender.reconnects), 2);
+    { const t2 = await receiver.evaluate(() => document.getElementById('video').currentTime);
+      await sleep(600);
+      assert.ok(await receiver.evaluate(() => document.getElementById('video').currentTime) > t2, 'still playing after the second'); }
     await sender.click('#stopBtn');
     await receiverClosed(receiver);
     await receiver.done();

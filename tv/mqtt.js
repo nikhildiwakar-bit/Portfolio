@@ -207,6 +207,18 @@ export class MqttClient {
         this._open();
     }
 
+    /**
+     * Checks a connection that looks up at once: a ping that must be answered within ms. After a Wi-Fi hiccup a
+     * dead socket otherwise stays "connected" until the next keep-alive ping fails (up to 35 s), and everything
+     * published into it is lost. A broken one reconnects right away.
+     */
+    probe(ms = 3000) {
+        const ws = this._ws;
+        if (this._closed || !ws || !this._up || this._timers.pong) return;
+        if (!this._send(PINGREQ_BYTES)) return;
+        this._timers.pong = setTimeout(() => { this._broken(ws, 'no PINGRESP'); this.kick(); }, ms);
+    }
+
     publish(text) {
         if (!this._up || typeof text !== 'string') return false;
         return this._send(publishPacket(this.topic, text));

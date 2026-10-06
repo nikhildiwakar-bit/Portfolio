@@ -7,7 +7,7 @@
 // each time. Nothing talks to the relay until Share screen is pressed, and the relay connection is closed
 // again when sharing ends.
 import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=4';
-import { CastSender, captureScreen, senderSupport } from './cast.js?v=12';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=13';
 
 const $ = id => document.getElementById(id);
 const INFO_KEY = 'officetv.info';
@@ -187,7 +187,7 @@ function share(code, relay) {
         const sender = new CastSender({
             link, onstate: (st, d) => onCastState(s, st, d),
             ackTimeoutMs: TEST.ackTimeoutMs, answerTimeoutMs: TEST.answerTimeoutMs, connectTimeoutMs: TEST.connectTimeoutMs,
-            dropMs: TEST.dropMs, reconnectTimeoutMs: TEST.reconnectTimeoutMs,
+            dropMs: TEST.dropMs, reconnectTimeoutMs: TEST.reconnectTimeoutMs, lostMs: TEST.lostMs,
         });
         s.sender = sender;
         window.__otvCastSender = sender; // for tests
@@ -200,8 +200,36 @@ function share(code, relay) {
     });
 }
 
+// ---------- keep the laptop's screen on while sharing ----------
+
+// A Chromebook or laptop on battery dims, locks or sleeps after a few idle minutes, which stops the picture (and
+// sleep drops the Wi-Fi). A screen wake lock prevents that while this page is visible; the browser releases it
+// whenever the page is hidden, so it is taken again each time the page comes back.
+let wakeLock = null;
+
+async function keepAwake() {
+    const s = state.session;
+    const want = !!s && s.phase !== 'picking';
+    if (!want || wakeLock || document.visibilityState !== 'visible' || !navigator.wakeLock) return;
+    try {
+        const l = await navigator.wakeLock.request('screen');
+        if (state.session !== s) { l.release().catch(() => {}); return; }
+        wakeLock = l;
+        l.addEventListener('release', () => { if (wakeLock === l) wakeLock = null; });
+    } catch (e) { /* not allowed here (policy, battery saver): the OS idle settings apply */ }
+}
+
+function letSleep() {
+    const l = wakeLock;
+    wakeLock = null;
+    if (l) l.release().catch(() => {});
+}
+
+document.addEventListener('visibilitychange', () => { keepAwake(); });
+
 function onCastState(s, st, d) {
     if (state.session !== s) return;
+    keepAwake();
     if (st === 'stopped') {
         if (d.reason === 'tv') endSession(s, { title: 'The TV stopped showing your screen.', text: '' }, 'bad');
         else endSession(s, { title: 'Sharing stopped.', text: '' }, 'info');
@@ -237,6 +265,7 @@ function retire(link) {
 
 function endSession(s, problem, kind = 'bad') {
     state.session = null;
+    letSleep();
     stopStream(s.stream);
     retire(s.link);
     if (problem) state.notice = Object.assign({ kind }, problem);

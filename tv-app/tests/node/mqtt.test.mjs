@@ -195,6 +195,25 @@ test('client: keep-alive PINGREQ every 25 s; no PINGRESP within 10 s breaks the 
     c.close();
 });
 
+test('client: probe() after a network hiccup: a dead socket is found in 3 s and reconnects at once; a live one stays', t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+    const { c, ws, states, errors } = connected();
+    c.probe(3000);
+    assert.deepEqual(ws.sent[ws.sent.length - 1], [0xc0, 0], 'PINGREQ now');
+    ws.recv([0xd0, 0]);
+    t.mock.timers.tick(3000);
+    assert.equal(c.connected, true, 'answered: still connected');
+    c.probe(3000);
+    t.mock.timers.tick(2999);
+    assert.equal(c.connected, true);
+    t.mock.timers.tick(1);
+    assert.equal(c.connected, false, 'no answer within 3 s');
+    assert.deepEqual(errors, ['no PINGRESP']);
+    assert.equal(FakeWS.all.length, 2, 'reconnecting at once, not after the back-off');
+    assert.deepEqual(states, [true, false]);
+    c.close();
+});
+
 test('client: back-off 1, 2, 4, 8, 15, 30, 30 s between failures, reset after a CONNACK', t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
     assert.deepEqual(BACKOFF_S, [1, 2, 4, 8, 15, 30]);
