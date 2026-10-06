@@ -52,6 +52,7 @@
     box-shadow:0 22px 60px rgba(12,84,160,.16), 0 4px 14px rgba(12,84,160,.06);
     touch-action:none;
     user-select:none;
+    isolation:isolate;
   }
 
   .stars{position:absolute;inset:0;pointer-events:none;overflow:hidden;}
@@ -113,13 +114,12 @@
 
   .heart{
     position:absolute;
-    left:50%;
-    top:46%;
-    transform:translate(-50%,-50%);
+    left:0;
+    top:0;
     font-size:34px;
     line-height:1;
     cursor:grab;
-    filter:drop-shadow(0 4px 10px rgba(182,44,44,.4));
+    will-change:transform;
     touch-action:none;
     z-index:5;
   }
@@ -359,13 +359,9 @@
 const starsEl = document.getElementById('stars');
 const schoolIcons = ['🎓','📚','✏️','🏫','🔔','🖊️','📐'];
 const iconSpots = [
-  {x:4,  y:6},  {x:13, y:12}, {x:87, y:12}, {x:96, y:6},
-  {x:6,  y:20}, {x:15, y:26}, {x:85, y:26}, {x:94, y:20},
-  {x:4,  y:34}, {x:13, y:40}, {x:87, y:40}, {x:96, y:34},
-  {x:6,  y:48}, {x:15, y:54}, {x:85, y:54}, {x:94, y:48},
-  {x:4,  y:62}, {x:13, y:68}, {x:87, y:68}, {x:96, y:62},
-  {x:6,  y:76}, {x:15, y:82}, {x:85, y:82}, {x:94, y:76},
-  {x:4,  y:90}, {x:13, y:95}, {x:87, y:95}, {x:96, y:90}
+  {x:5,  y:8},  {x:94, y:8},  {x:6,  y:24}, {x:93, y:24},
+  {x:5,  y:40}, {x:94, y:40}, {x:6,  y:56}, {x:93, y:56},
+  {x:5,  y:72}, {x:94, y:72}, {x:6,  y:88}, {x:93, y:88}
 ];
 iconSpots.forEach((pos,i)=>{
   const s=document.createElement('span');
@@ -390,45 +386,33 @@ const pullLabel = document.getElementById('pullLabel');
 const reveal = document.getElementById('reveal');
 const blooms = document.querySelectorAll('.bloom');
 
-let restX, restY, anchorL, anchorR, dragging=false, hasFired=false;
+let restX, restY, dragging=false, hasFired=false;
+let wrapLeft=0, wrapTop=0, halfW=17, halfH=17, slingRect=null, targetX=0, targetY=0;
+let curX=0, curY=0, rafPending=false, pendingPt=null;
+const SVG_W = 300, SVG_H = 110;
 
-function svgToScreen(svg, x, y){
-  const rect = svg.getBoundingClientRect();
-  const vb = svg.viewBox.baseVal;
-  return {
-    x: rect.left + (x/vb.width)*rect.width,
-    y: rect.top + (y/vb.height)*rect.height
-  };
-}
-
+// read all geometry once (not on every mouse move)
 function layout(){
-  const p = svgToScreen(slingSvg,150,55);
-  restX = p.x; restY = p.y;
-  anchorL = svgToScreen(slingSvg,120,0);
-  anchorR = svgToScreen(slingSvg,180,0);
+  slingRect = slingSvg.getBoundingClientRect();
+  const wr = slingWrap.getBoundingClientRect();
+  wrapLeft = wr.left; wrapTop = wr.top;
+  halfW = heart.offsetWidth/2; halfH = heart.offsetHeight/2;
+  restX = slingRect.left + (150/SVG_W)*slingRect.width;
+  restY = slingRect.top + (55/SVG_H)*slingRect.height;
+  const tr = document.getElementById('treeSvg').getBoundingClientRect();
+  targetX = tr.left + tr.width*0.5;
+  targetY = tr.top + tr.height*0.4;
   placeHeart(restX,restY);
 }
 
-function placeHeart(x,y){
-  heart.style.transform = 'none';
-  const r = heart.getBoundingClientRect();
-  const wrapRect = slingWrap.getBoundingClientRect();
-  heart.style.left = (x - wrapRect.left - r.width/2) + 'px';
-  heart.style.top = (y - wrapRect.top - r.height/2) + 'px';
-  updateBands(x,y);
-}
-
-function updateBands(x,y){
-  const sceneRect = scene.getBoundingClientRect();
-  const vb = slingSvg.viewBox.baseVal;
-  const slingRect = slingSvg.getBoundingClientRect();
-  const toSvg = (px,py)=>({
-    x: ((px-slingRect.left)/slingRect.width)*vb.width,
-    y: ((py-slingRect.top)/slingRect.height)*vb.height
-  });
-  const pt = toSvg(x,y);
-  bandL.setAttribute('x2', pt.x); bandL.setAttribute('y2', pt.y);
-  bandR.setAttribute('x2', pt.x); bandR.setAttribute('y2', pt.y);
+// move with transform (GPU) instead of left/top (layout)
+function placeHeart(x,y,extra){
+  curX = x; curY = y;
+  heart.style.transform = 'translate3d(' + (x-wrapLeft-halfW) + 'px,' + (y-wrapTop-halfH) + 'px,0)' + (extra||'');
+  const px = ((x-slingRect.left)/slingRect.width)*SVG_W;
+  const py = ((y-slingRect.top)/slingRect.height)*SVG_H;
+  bandL.setAttribute('x2', px); bandL.setAttribute('y2', py);
+  bandR.setAttribute('x2', px); bandR.setAttribute('y2', py);
 }
 
 function pointerPos(e){
@@ -438,6 +422,7 @@ function pointerPos(e){
 
 function startDrag(e){
   if(hasFired) return;
+  layout();
   dragging = true;
   hint.classList.add('hidden');
   pullLabel.classList.add('hidden');
@@ -445,28 +430,29 @@ function startDrag(e){
   e.preventDefault();
 }
 
-function moveDrag(e){
-  if(!dragging) return;
-  const p = pointerPos(e);
-  const dx = p.x-restX, dy = p.y-restY;
+function applyDrag(){
+  rafPending = false;
+  if(!dragging || !pendingPt) return;
+  const dx = pendingPt.x-restX, dy = pendingPt.y-restY;
   const maxR = 70;
   const dist = Math.min(Math.hypot(dx,dy), maxR);
   const ang = Math.atan2(dy,dx);
-  const nx = restX + Math.cos(ang)*dist;
-  const ny = restY + Math.max(Math.sin(ang)*dist, -4); // don't let it go above rest much
-  placeHeart(nx,ny);
+  placeHeart(restX + Math.cos(ang)*dist, restY + Math.max(Math.sin(ang)*dist, -4));
+}
+
+function moveDrag(e){
+  if(!dragging) return;
+  pendingPt = pointerPos(e);
+  if(!rafPending){ rafPending = true; requestAnimationFrame(applyDrag); }
   e.preventDefault();
 }
 
 function endDrag(e){
   if(!dragging) return;
   dragging = false;
-  const r = heart.getBoundingClientRect();
-  const curX = r.left + r.width/2, curY = r.top + r.height/2;
+  if(pendingPt){ applyDrag(); }
   const pullDist = Math.hypot(curX-restX, curY-restY);
-
   if(pullDist < 18){
-    // not pulled enough, snap back
     snapBack();
     return;
   }
@@ -474,36 +460,27 @@ function endDrag(e){
 }
 
 function snapBack(){
-  heart.style.transition='left .4s cubic-bezier(.34,1.56,.64,1), top .4s cubic-bezier(.34,1.56,.64,1)';
+  heart.style.transition='transform .4s cubic-bezier(.34,1.56,.64,1)';
   placeHeart(restX,restY);
   hint.classList.remove('hidden');
   pullLabel.classList.remove('hidden');
 }
 
-function fire(curX,curY){
+function fire(fromX,fromY){
   hasFired = true;
-  const treeRect = document.getElementById('treeSvg').getBoundingClientRect();
-  const targetX = treeRect.left + treeRect.width*0.5;
-  const targetY = treeRect.top + treeRect.height*0.4;
-
-  const startX = curX, startY = curY;
-  const ctrlX = restX + (restX-curX)*1.4;
-  const ctrlY = Math.min(curY, restY) - 120;
-
+  heart.style.transition='none';
+  const startX = fromX, startY = fromY;
+  const ctrlX = restX + (restX-fromX)*1.4;
+  const ctrlY = Math.min(fromY, restY) - 120;
   const duration = 650;
   const t0 = performance.now();
-  heart.classList.add('flying');
 
   function step(now){
-    let t = Math.min((now-t0)/duration, 1);
+    const t = Math.min((now-t0)/duration, 1);
     const it = 1-t;
     const x = it*it*startX + 2*it*t*ctrlX + t*t*targetX;
     const y = it*it*startY + 2*it*t*ctrlY + t*t*targetY;
-    const wrapRect = slingWrap.getBoundingClientRect();
-    const hr = heart.getBoundingClientRect();
-    heart.style.left = (x - wrapRect.left - hr.width/2) + 'px';
-    heart.style.top = (y - wrapRect.top - hr.height/2) + 'px';
-    heart.style.transform = 'scale(' + (1 - 0.3*t) + ') rotate(' + (t*260) + 'deg)';
+    placeHeart(x, y, ' scale(' + (1-0.3*t) + ') rotate(' + (t*260) + 'deg)');
     if(t<1){
       requestAnimationFrame(step);
     } else {
