@@ -143,7 +143,7 @@ function snapBack(){
 function fire(){
   hasFired = true;
   heart.style.transition = 'none';
-  setBands(restX,restY);
+  /* guler ke dhaage neeche khinche hi rehte hain (wapas upar nahi jaate) */
   const treeRect = document.getElementById('treeSvg').getBoundingClientRect();
   const wr = slingWrap.getBoundingClientRect();
   const targetX = treeRect.left + treeRect.width*0.5 - wr.left;
