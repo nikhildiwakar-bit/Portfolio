@@ -41,13 +41,12 @@
     width:100%;
     width:min(94vw, 520px);
     height:clamp(440px, calc(100vh - 120px), 620px);
-    height:clamp(440px, calc(100dvh - 120px), 620px);
+    height:clamp(440px, calc(100svh - 120px), 620px);
     container-type:size;
     overflow:hidden;
     border-radius:20px;
     box-shadow:0 12px 40px rgba(12,84,160,.15);
     background:linear-gradient(180deg,var(--bg-top) 0%, #cfe6ff 45%, var(--bg-bottom) 100%);
-    touch-action:none;
     user-select:none;
   }
 
@@ -56,6 +55,7 @@
     position:absolute;font-size:15px;opacity:.16;color:var(--brand-blue);
     animation:iconFloat ease-in-out infinite;
   }
+  .stars.paused span{animation-play-state:paused;}
   @keyframes iconFloat{
     0%,100%{transform:translateY(0) rotate(0deg);}
     50%{transform:translateY(-14px) rotate(6deg);}
@@ -82,7 +82,7 @@
   .branch{
     fill:none;stroke:var(--ink);stroke-width:6;stroke-linecap:round;
   }
-  .bloom{opacity:0;transform-origin:center;transform:scale(0);}
+  .bloom{opacity:0;transform-box:fill-box;transform-origin:center;transform:scale(0);}
   .bloom.show{
     animation:pop .55s cubic-bezier(.34,1.56,.64,1) forwards;
   }
@@ -109,7 +109,7 @@
 
   .heart{
     position:absolute;
-    left:50%;top:46%;transform:translate(-50%,-50%);
+    left:0;top:0;transform:translate3d(-999px,0,0);will-change:transform;
     font-size:clamp(30px,7cqw,40px);
     line-height:1;
     cursor:grab;
@@ -118,7 +118,6 @@
     z-index:5;
   }
   .heart:active{cursor:grabbing;}
-  .heart.flying{transition:none;}
   .heart.hidden{opacity:0;pointer-events:none;transition:opacity .4s ease;}
 
   .pull-label{
@@ -209,12 +208,11 @@
   /* ---------- CELEBRATION ---------- */
   .video-block{
     width:100%;max-width:560px;
-    display:grid;grid-template-rows:0fr;
-    opacity:0;
-    transition:grid-template-rows .7s ease, opacity .7s ease;
+    display:none;
   }
-  .video-block.open{grid-template-rows:1fr;opacity:1;}
-  .video-block-inner{min-height:0;overflow:hidden;padding:10px 24px 60px;}
+  .video-block.open{display:block;animation:blockIn .6s ease both;}
+  @keyframes blockIn{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+  .video-block-inner{padding:10px 24px 60px;}
 
   .celebrate-frame{
     position:relative;border-radius:18px;overflow:hidden;
@@ -249,7 +247,7 @@
     animation:confettiFall linear forwards;
   }
   @keyframes confettiFall{
-    to{transform:translateY(140%) rotate(540deg);opacity:0;}
+    to{transform:translateY(420px) rotate(540deg);opacity:0;}
   }
   .balloon{
     position:absolute;bottom:-15%;font-size:28px;pointer-events:none;
@@ -258,7 +256,7 @@
   @keyframes balloonRise{
     0%{transform:translateY(0) translateX(0);opacity:0;}
     10%{opacity:1;}
-    100%{transform:translateY(-260%) translateX(var(--drift,10px));opacity:0;}
+    100%{transform:translateY(-400px) translateX(var(--drift,10px));opacity:0;}
   }
 
   .video-caption{

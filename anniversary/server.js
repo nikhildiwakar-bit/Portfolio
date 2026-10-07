@@ -23,6 +23,6 @@ http.createServer((req, res) => {
   }
   const file = path.join(__dirname, url.pathname === '/' ? 'index.html' : path.normalize(url.pathname));
   if (!file.startsWith(__dirname) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404); return res.end('Not found'); }
-  res.writeHead(200, {'Content-Type': types[path.extname(file)] || 'application/octet-stream'});
+  res.writeHead(200, {'Content-Type': types[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache'});
   fs.createReadStream(file).pipe(res);
 }).listen(PORT, () => console.log(`http://localhost:${PORT}/?empId=101`));

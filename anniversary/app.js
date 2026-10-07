@@ -34,13 +34,15 @@ iconSpots.forEach((pos,i)=>{
   s.textContent = schoolIcons[i % schoolIcons.length];
   s.style.left = pos.x+'%';
   s.style.top = pos.y+'%';
-  s.style.fontSize = (13+Math.random()*5)+'px';
+  s.style.fontSize = [13,15,17][i%3]+'px';
   s.style.animationDuration=(4+Math.random()*3)+'s';
   s.style.animationDelay=(Math.random()*3)+'s';
   starsEl.appendChild(s);
 });
 
 /* ---------- slingshot logic ---------- */
+/* Heart sirf transform se move hota hai (left/top nahi) — isse har move par layout/repaint nahi hota.
+   Pointer Events + pointer capture: mouse, touch aur pen teeno ek hi code se. */
 const scene = document.getElementById('scene');
 const heart = document.getElementById('heart');
 const bandL = document.getElementById('bandL');
@@ -52,146 +54,112 @@ const pullLabel = document.getElementById('pullLabel');
 const reveal = document.getElementById('reveal');
 const blooms = document.querySelectorAll('.bloom');
 
-let restX, restY, anchorL, anchorR, dragging=false, hasFired=false;
+/* positions sling-wrap ke andar (local px), viewport se independent — scroll ka asar nahi */
+let restX=0, restY=0, heartW=0, heartH=0, slingW=1, slingH=1;
+let dragging=false, hasFired=false, pointerId=null, grabDX=0, grabDY=0, wrapLeft=0, wrapTop=0;
+let curX=0, curY=0, pendingX=0, pendingY=0, rafId=0;
+const VB_W=300, VB_H=110;
 
-function svgToScreen(svg, x, y){
-  const rect = svg.getBoundingClientRect();
-  const vb = svg.viewBox.baseVal;
-  return {
-    x: rect.left + (x/vb.width)*rect.width,
-    y: rect.top + (y/vb.height)*rect.height
-  };
+function setHeart(x,y,extra){
+  heart.style.transform = 'translate3d(' + (x-heartW/2) + 'px,' + (y-heartH/2) + 'px,0)' + (extra||'');
 }
-
-function layout(){
-  const p = svgToScreen(slingSvg,150,55);
-  restX = p.x; restY = p.y;
-  anchorL = svgToScreen(slingSvg,120,0);
-  anchorR = svgToScreen(slingSvg,180,0);
-  placeHeart(restX,restY);
-}
-
-let cachedWrapRect=null, cachedSlingRect=null, cachedHeartW=0, cachedHeartH=0, cachedVb=null;
-
-function placeHeart(x,y){
-  heart.style.transform = 'none';
-  const r = heart.getBoundingClientRect();
-  const wrapRect = slingWrap.getBoundingClientRect();
-  heart.style.left = (x - wrapRect.left - r.width/2) + 'px';
-  heart.style.top = (y - wrapRect.top - r.height/2) + 'px';
-  updateBands(x,y);
-}
-
-function updateBands(x,y){
-  const vb = slingSvg.viewBox.baseVal;
-  const slingRect = slingSvg.getBoundingClientRect();
-  const toSvg = (px,py)=>({
-    x: ((px-slingRect.left)/slingRect.width)*vb.width,
-    y: ((py-slingRect.top)/slingRect.height)*vb.height
-  });
-  const pt = toSvg(x,y);
-  bandL.setAttribute('x2', pt.x); bandL.setAttribute('y2', pt.y);
-  bandR.setAttribute('x2', pt.x); bandR.setAttribute('y2', pt.y);
-}
-
-/* Fast path used while actively dragging: reuses rects captured once at
-   drag-start instead of forcing a layout reflow on every pointer move. */
-function placeHeartFast(x,y){
-  const left = x - cachedWrapRect.left - cachedHeartW/2;
-  const top = y - cachedWrapRect.top - cachedHeartH/2;
-  heart.style.left = left + 'px';
-  heart.style.top = top + 'px';
-  const sx = ((x - cachedSlingRect.left)/cachedSlingRect.width)*cachedVb.width;
-  const sy = ((y - cachedSlingRect.top)/cachedSlingRect.height)*cachedVb.height;
+function setBands(x,y){
+  const sx = x/slingW*VB_W, sy = y/slingH*VB_H;
   bandL.setAttribute('x2', sx); bandL.setAttribute('y2', sy);
   bandR.setAttribute('x2', sx); bandR.setAttribute('y2', sy);
 }
 
-function pointerPos(e){
-  if(e.touches && e.touches[0]) return {x:e.touches[0].clientX,y:e.touches[0].clientY};
-  return {x:e.clientX,y:e.clientY};
+function measure(){
+  slingW = slingWrap.clientWidth || 1;
+  slingH = slingWrap.clientHeight || 1;
+  heartW = heart.offsetWidth; heartH = heart.offsetHeight;
+  restX = slingW*150/VB_W; restY = slingH*55/VB_H;
+}
+function layout(){
+  if(dragging || hasFired) return;
+  measure();
+  curX = restX; curY = restY;
+  setHeart(restX,restY);
+  setBands(restX,restY);
 }
 
-/* rest position viewport-relative hota hai, isliye scroll ke baad purana ho jaata hai — drag shuru hone par fresh lete hain */
-function refreshRest(){
-  const p = svgToScreen(slingSvg,150,55);
-  restX = p.x; restY = p.y;
+function flush(){
+  rafId = 0;
+  curX = pendingX; curY = pendingY;
+  setHeart(curX,curY);
+  setBands(curX,curY);
 }
 
 function startDrag(e){
-  if(hasFired) return;
-  refreshRest();
+  if(hasFired || dragging) return;
+  if(e.pointerType === 'mouse' && e.button !== 0) return;
   dragging = true;
+  pointerId = e.pointerId;
+  try{ heart.setPointerCapture(pointerId); }catch(_){}
   hint.classList.add('hidden');
   pullLabel.classList.add('hidden');
-  heart.style.transition='none';
-  heart.style.transform = 'none';
-  cachedWrapRect = slingWrap.getBoundingClientRect();
-  cachedSlingRect = slingSvg.getBoundingClientRect();
-  cachedVb = slingSvg.viewBox.baseVal;
-  const hr = heart.getBoundingClientRect();
-  cachedHeartW = hr.width; cachedHeartH = hr.height;
+  heart.style.transition = 'none';
+  const r = slingWrap.getBoundingClientRect();
+  wrapLeft = r.left; wrapTop = r.top;
+  grabDX = (e.clientX - wrapLeft) - curX;
+  grabDY = (e.clientY - wrapTop) - curY;
   e.preventDefault();
 }
 
 function moveDrag(e){
-  if(!dragging) return;
-  const p = pointerPos(e);
-  const dx = p.x-restX, dy = p.y-restY;
+  if(!dragging || e.pointerId !== pointerId) return;
+  const px = e.clientX - wrapLeft - grabDX, py = e.clientY - wrapTop - grabDY;
+  const dx = px-restX, dy = py-restY;
   const maxR = 70;
   const dist = Math.min(Math.hypot(dx,dy), maxR);
   const ang = Math.atan2(dy,dx);
-  const nx = restX + Math.cos(ang)*dist;
-  const ny = restY + Math.max(Math.sin(ang)*dist, -4);
-  placeHeartFast(nx,ny);
-  e.preventDefault();
+  pendingX = restX + Math.cos(ang)*dist;
+  pendingY = restY + Math.max(Math.sin(ang)*dist, -4);
+  if(!rafId) rafId = requestAnimationFrame(flush);
 }
 
 function endDrag(e){
-  if(!dragging) return;
+  if(!dragging || e.pointerId !== pointerId) return;
   dragging = false;
-  const r = heart.getBoundingClientRect();
-  const curX = r.left + r.width/2, curY = r.top + r.height/2;
-  const pullDist = Math.hypot(curX-restX, curY-restY);
-
-  if(pullDist < 18){
+  try{ heart.releasePointerCapture(pointerId); }catch(_){}
+  pointerId = null;
+  if(rafId){ cancelAnimationFrame(rafId); flush(); }
+  if(e.type === 'pointercancel' || Math.hypot(curX-restX, curY-restY) < 18){
     snapBack();
     return;
   }
-  fire(curX,curY);
+  fire();
 }
 
 function snapBack(){
-  heart.style.transition='left .4s cubic-bezier(.34,1.56,.64,1), top .4s cubic-bezier(.34,1.56,.64,1)';
-  placeHeart(restX,restY);
+  heart.style.transition = 'transform .4s cubic-bezier(.34,1.56,.64,1)';
+  curX = restX; curY = restY;
+  setHeart(restX,restY);
+  setBands(restX,restY);
   hint.classList.remove('hidden');
   pullLabel.classList.remove('hidden');
 }
 
-function fire(curX,curY){
+function fire(){
   hasFired = true;
+  heart.style.transition = 'none';
+  setBands(restX,restY);
   const treeRect = document.getElementById('treeSvg').getBoundingClientRect();
-  const targetX = treeRect.left + treeRect.width*0.5;
-  const targetY = treeRect.top + treeRect.height*0.4;
-
+  const wr = slingWrap.getBoundingClientRect();
+  const targetX = treeRect.left + treeRect.width*0.5 - wr.left;
+  const targetY = treeRect.top + treeRect.height*0.4 - wr.top;
   const startX = curX, startY = curY;
   const ctrlX = restX + (restX-curX)*1.4;
   const ctrlY = Math.min(curY, restY) - 120;
-
   const duration = 650;
   const t0 = performance.now();
-  heart.classList.add('flying');
-  const flyWrapRect = slingWrap.getBoundingClientRect();
-  const flyHeartRect = heart.getBoundingClientRect();
 
   function step(now){
-    let t = Math.min((now-t0)/duration, 1);
+    const t = Math.min((now-t0)/duration, 1);
     const it = 1-t;
     const x = it*it*startX + 2*it*t*ctrlX + t*t*targetX;
     const y = it*it*startY + 2*it*t*ctrlY + t*t*targetY;
-    heart.style.left = (x - flyWrapRect.left - flyHeartRect.width/2) + 'px';
-    heart.style.top = (y - flyWrapRect.top - flyHeartRect.height/2) + 'px';
-    heart.style.transform = 'scale(' + (1 - 0.3*t) + ') rotate(' + (t*260) + 'deg)';
+    setHeart(x,y,' scale(' + (1 - 0.3*t) + ') rotate(' + (t*260) + 'deg)');
     if(t<1){
       requestAnimationFrame(step);
     } else {
@@ -204,41 +172,52 @@ function fire(curX,curY){
 
 function bloomTree(){
   blooms.forEach((b,i)=>{
-    setTimeout(()=>{
-      b.classList.add('show');
-    }, i*90);
+    setTimeout(()=>{ b.classList.add('show'); }, i*90);
   });
   spawnPetals();
-  setTimeout(()=>{
-    reveal.classList.add('show');
-  }, blooms.length*90 + 400);
+  setTimeout(()=>{ reveal.classList.add('show'); }, blooms.length*90 + 400);
 }
 
 function spawnPetals(){
   const emojis = ['💙','🎉','✨'];
+  const frag = document.createDocumentFragment();
+  const made = [];
   for(let i=0;i<22;i++){
     const p = document.createElement('div');
     p.className='petal';
-    p.textContent = emojis[Math.floor(Math.random()*emojis.length)];
+    p.textContent = emojis[i % emojis.length];
     p.style.left = Math.random()*100+'%';
     p.style.animationDuration = (3+Math.random()*2.5)+'s';
     p.style.animationDelay = (Math.random()*1.2)+'s';
-    p.style.fontSize = (10+Math.random()*10)+'px';
-    scene.appendChild(p);
-    setTimeout(()=>p.remove(), 7000);
+    p.style.fontSize = [12,15,18][i%3]+'px';   /* gine-chune size — har petal par naya font raster nahi */
+    p.addEventListener('animationend', ()=>p.remove(), {once:true});
+    frag.appendChild(p); made.push(p);
   }
+  scene.appendChild(frag);
+  setTimeout(()=>made.forEach(p=>p.remove()), 7000);
 }
 
-heart.addEventListener('mousedown', startDrag);
-heart.addEventListener('touchstart', startDrag, {passive:false});
-window.addEventListener('mousemove', moveDrag);
-window.addEventListener('touchmove', moveDrag, {passive:false});
-window.addEventListener('mouseup', endDrag);
-window.addEventListener('touchend', endDrag);
-window.addEventListener('resize', ()=>{ if(!hasFired) layout(); });
+heart.addEventListener('pointerdown', startDrag);
+heart.addEventListener('pointermove', moveDrag);
+heart.addEventListener('pointerup', endDrag);
+heart.addEventListener('pointercancel', endDrag);
+heart.addEventListener('lostpointercapture', e=>{ if(dragging) endDrag(Object.assign({}, {pointerId:e.pointerId, type:'pointercancel'})); });
 
+let resizeRaf = 0;
+window.addEventListener('resize', ()=>{
+  if(resizeRaf) return;
+  resizeRaf = requestAnimationFrame(()=>{ resizeRaf = 0; layout(); });
+});
+layout();
 window.addEventListener('load', layout);
-setTimeout(layout, 60);
+if(document.fonts && document.fonts.ready) document.fonts.ready.then(layout);
+
+/* card screen se bahar ho to background icons ki animation rok do */
+if('IntersectionObserver' in window){
+  new IntersectionObserver(([en])=>{
+    starsEl.classList.toggle('paused', !en.isIntersecting);
+  }).observe(scene);
+}
 
 /* ---------- celebration ---------- */
 const playBtn = document.getElementById('playBtn');
@@ -249,7 +228,8 @@ let balloonTimer = null;
 
 function spawnConfettiBurst(){
   const colors = ['#0C54A0','#1185FF','#B62C2C','#FF3C3C','#ffffff'];
-  for(let i=0;i<50;i++){
+  const frag = document.createDocumentFragment();
+  for(let i=0;i<40;i++){
     const c = document.createElement('div');
     c.className = 'confetti';
     c.style.left = Math.random()*100+'%';
@@ -259,12 +239,14 @@ function spawnConfettiBurst(){
     c.style.borderRadius = Math.random()>0.5 ? '50%' : '2px';
     c.style.animationDuration = (2+Math.random()*2)+'s';
     c.style.animationDelay = (Math.random()*0.8)+'s';
-    celebrateFrame.appendChild(c);
+    frag.appendChild(c);
     setTimeout(()=>c.remove(), 5000);
   }
+  celebrateFrame.appendChild(frag);
 }
 
 function spawnBalloonWave(){
+  if(document.hidden) return;
   const balloonEmojis = ['🎈','🎈','🎈'];
   const count = 6;
   for(let i=0;i<count;i++){
@@ -294,12 +276,12 @@ function stopCelebration(){
 playBtn.addEventListener('click', ()=>{
   videoBlock.classList.toggle('open');
   if(videoBlock.classList.contains('open')){
-    videoBlock.scrollIntoView({behavior:'smooth', block:'start'});
+    requestAnimationFrame(()=>videoBlock.scrollIntoView({behavior:'smooth', block:'start'}));
     playBtn.textContent = 'Hide ↑';
     if(!celebrated){
       celebrated = true;
       setTimeout(startCelebration, 80);
-    } else {
+    } else if(!balloonTimer){
       balloonTimer = setInterval(spawnBalloonWave, 2200);
     }
   } else {

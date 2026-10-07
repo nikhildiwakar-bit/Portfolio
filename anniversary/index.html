@@ -5,7 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
 <title>Work Anniversary</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Parisienne&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- fonts page ko block nahi karte: pehle system font, font aate hi swap -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Parisienne&family=Inter:wght@400;600;700&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Parisienne&family=Inter:wght@400;600;700&display=swap"></noscript>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -98,7 +101,7 @@
 
 <footer>crafted by Nikhil Diwakar</footer>
 
-<script src="app.js"></script>
+<script src="app.js" defer></script>
 
 </body>
 </html>
