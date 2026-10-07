@@ -14,6 +14,9 @@ on:
       - 'tv/receive.js'
       - 'tv/phone.html'
       - 'tv/phone.js'
+      - 'tv/*.js'
+      - 'tv-app/tests/node/**'
+      - 'tv-app/turn-worker/**'
       - '.github/workflows/tv-app-test.yml'
   workflow_dispatch:
 
@@ -22,6 +25,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Website and receiver logic, relay, direct video, guest sharing, TURN worker (node --test)
+        run: node --test --test-timeout=60000 tv-app/tests/node/
+
   jvm:
     runs-on: ubuntu-latest
     timeout-minutes: 15

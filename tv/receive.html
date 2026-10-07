@@ -22,6 +22,20 @@ video { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100%; heig
   padding: .4em 1em; border-radius: .6em; font-size: .7em; white-space: nowrap; }
 .pill[hidden] { display: none; }
 #note { top: 5vh; bottom: auto; }
+/* Guest sharing: the question for the person at the TV (OK on the remote, or a tap on the panel). */
+#guest { position: fixed; top: 0; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.86); }
+#guest[hidden] { display: none; }
+#guest .box { max-width: 70vw; padding: 1.6em 2.2em; border-radius: .8em; background: #10262b; border: 2px solid #2fd6c7;
+  text-align: center; }
+#guest .box > * + * { margin-top: .6em; }
+#guestTitle { font-size: 1.25em; font-weight: 700; }
+#guest .sub { color: #b9c9cc; font-size: .8em; font-weight: 400; }
+#guestPin { font-size: 3em; font-weight: 800; letter-spacing: .25em; color: #2fd6c7; line-height: 1.1; }
+#guest .btns { display: flex; justify-content: center; margin-top: .4em; }
+#guest .btns button + button { margin-left: 1em; } /* no flex gap in the TV's WebView 83 */
+#guest button { font: inherit; padding: .5em 1.6em; border-radius: .5em; border: 2px solid #3b5b61; background: #18363c; color: #e8eef0; cursor: pointer; }
+#guest button:focus { outline: 4px solid #ffd54a; outline-offset: 3px; }
+#guest #guestAllow { background: #1f8f84; border-color: #2fd6c7; }
 html.otv-native, html.otv-native body, html.otv-native #video { background: transparent !important; }
 html.otv-native #video { visibility: hidden; }
 </style>
@@ -30,7 +44,16 @@ html.otv-native #video { visibility: hidden; }
 <video id="video" autoplay playsinline disablepictureinpicture disableremoteplayback></video>
 <div id="status" role="status"><span id="statusText">Getting ready…</span><small id="statusSub"></small></div>
 <div id="note" class="pill" role="status" hidden></div>
+<div id="guest" role="alertdialog" aria-modal="true" aria-labelledby="guestTitle" aria-describedby="guestText" hidden>
+  <div class="box">
+    <div id="guestTitle">A guest laptop wants to share its screen</div>
+    <div class="sub" id="guestText">It is on another network. Allow it only if the guest's laptop shows this number:</div>
+    <div id="guestPin">000</div>
+    <div class="btns"><button id="guestAllow" type="button">Allow</button><button id="guestDeny" type="button">Don't allow</button></div>
+    <div class="sub">Press OK on the remote to allow, or Back to refuse.</div>
+  </div>
+</div>
 <div id="sound" class="pill" hidden>Sound is off. Press OK on the remote to turn it on.</div>
-<script type="module" src="receive.js?v=11"></script>
+<script type="module" src="receive.js?v=12"></script>
 </body>
 </html>

@@ -398,42 +398,77 @@ test('mDNS: the TV\'s answer lists its real address next to every hidden .local 
     await sender.done();
 });
 
-test('same network only (4-digit codes): a laptop from another network is refused, with the reason on both screens', { skip, timeout: 90000 }, async () => {
-    // The TV page sees the laptop at a public address that is not on its network.
-    const elsewhere = () => {
-        const get = RTCPeerConnection.prototype.getStats;
-        RTCPeerConnection.prototype.getStats = async function (...a) {
-            const r = await get.apply(this, a);
-            const out = new Map();
-            r.forEach((v, k) => {
-                const c = Object.assign({}, v);
-                if (c.type === 'remote-candidate') { c.address = '203.0.113.5'; c.ip = '203.0.113.5'; }
-                out.set(k, c);
-            });
-            return out;
-        };
+// The TV page sees the laptop at a public address that is not on its network (a guest).
+const elsewhere = () => {
+    const get = RTCPeerConnection.prototype.getStats;
+    RTCPeerConnection.prototype.getStats = async function (...a) {
+        const r = await get.apply(this, a);
+        const out = new Map();
+        r.forEach((v, k) => {
+            const c = Object.assign({}, v);
+            if (c.type === 'remote-candidate') { c.address = '203.0.113.5'; c.ip = '203.0.113.5'; }
+            out.set(k, c);
+        });
+        return out;
     };
-    const shown = () => {
-        const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject');
-        Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', { configurable: true, get() { return d.get.call(this); },
-            set(v) { if (v) window.__shown = (window.__shown || 0) + 1; d.set.call(this, v); } });
-    };
+};
+const shownCount = () => {
+    const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject');
+    Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', { configurable: true, get() { return d.get.call(this); },
+        set(v) { if (v) window.__shown = (window.__shown || 0) + 1; d.set.call(this, v); } });
+};
+
+/** Both screens while the TV asks: the same 3-digit number, nothing shown on the TV yet. */
+async function guestAsked(sender, receiver) {
+    await receiver.waitForSelector('#guest', { state: 'visible', timeout: 30000 });
+    const pin = await text(receiver, '#guestPin');
+    assert.match(pin, /^\d{3}$/);
+    assert.equal(await receiver.evaluate(() => document.activeElement.id), 'guestAllow', 'OK on the remote allows');
+    assert.equal(await receiver.evaluate(() => window.__shown || 0), 0, 'nothing of the laptop is shown before the OK');
+    await sender.waitForFunction(() => document.getElementById('liveChip').textContent === 'Waiting', null, { timeout: 10000 });
+    assert.match(await text(sender, '#liveLabel'), /^Waiting for Board Room to allow this laptop/);
+    assert.ok((await text(sender, '#liveText')).includes(pin), 'the laptop shows the same number');
+    return pin;
+}
+
+test('guest (4-digit code, laptop on another network): the TV asks; "Don\'t allow" refuses with the reason on both screens', { skip, timeout: 90000 }, async () => {
     const sender = await open({ viewport: { width: 1366, height: 768 }, init: [RECORD_DISPLAY] });
-    const rx = receiverFor(E.tvC, { init: [elsewhere, shown], ip: '192.168.50.20' });
+    const rx = receiverFor(E.tvC, { init: [elsewhere, shownCount], ip: '192.168.50.20' });
     await shareTo(sender, CODE_C);
     const receiver = await rx.wait(1);
-    await sender.waitForSelector('#homeCard', { state: 'visible', timeout: 30000 });
-    assert.equal(await text(sender, '#noticeTitle'), 'Screen sharing works only from a laptop on the same network as this TV.');
-    assert.equal(await text(sender, '#noticeText'), 'Connect the laptop to the same Wi-Fi as the TV, then try again.');
+    await guestAsked(sender, receiver);
+    await assertLayout(sender, '1366 guest waiting');
+    await sender.screenshot({ path: join(SHOTS, 'guest-waiting-1366.png') });
+    await receiver.screenshot({ path: join(SHOTS, 'receiver-guest-question.png') });
+    await receiver.click('#guestDeny');
+    await sender.waitForSelector('#homeCard', { state: 'visible', timeout: 15000 });
+    assert.equal(await text(sender, '#noticeTitle'), 'The TV did not allow this laptop.');
     assert.equal(await sender.getAttribute('#notice', 'class'), 'notice bad');
     await until(() => receiver.evaluate(() => window.__otvCast.state === 'ended'), 10000, 'receiver ended');
-    assert.equal(await text(receiver, '#statusText'), 'Screen sharing works only from a laptop on the same network as this TV.');
+    assert.equal(await text(receiver, '#statusText'), 'The guest laptop was not allowed to share.');
+    assert.ok(await receiver.isHidden('#guest'));
     assert.equal(await receiver.evaluate(() => window.__shown || 0), 0, 'the laptop\'s picture was never shown');
     assert.equal(await receiver.evaluate(() => window.__otvCast.remoteAddress), '203.0.113.5');
-    await assertLayout(sender, '1366 refused network');
-    await sender.screenshot({ path: join(SHOTS, 'refused-network-1366.png') });
-    await receiver.screenshot({ path: join(SHOTS, 'receiver-refused-network.png') });
+    await assertLayout(sender, '1366 guest refused');
     await until(() => receiver.evaluate(() => window.__closed >= 1), 10000, 'the TV closes the receiver');
+    await receiver.done();
+    await sender.done();
+});
+
+test('guest: OK on the TV allows it; the picture plays and the laptop goes live', { skip, timeout: 90000 }, async () => {
+    const sender = await open({ viewport: { width: 1366, height: 768 }, init: [RECORD_DISPLAY] });
+    const rx = receiverFor(E.tvC, { init: [elsewhere, shownCount], ip: '192.168.50.20' });
+    await shareTo(sender, CODE_C);
+    const receiver = await rx.wait(1);
+    await guestAsked(sender, receiver);
+    await receiver.keyboard.press('Enter'); // OK on the remote: the focused "Allow"
+    await sharing(sender);
+    assert.equal(await text(sender, '#liveChip'), 'Live');
+    await receiverPlaying(receiver);
+    assert.ok(await receiver.isHidden('#guest'));
+    assert.equal(await receiver.evaluate(() => window.__otvCast.guest), true);
+    await sender.click('#stopBtn');
+    await receiverClosed(receiver);
     await receiver.done();
     await sender.done();
 });
