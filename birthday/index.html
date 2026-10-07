@@ -409,6 +409,7 @@ function layout(){
 function placeHeart(x,y,extra){
   curX = x; curY = y;
   heart.style.transform = 'translate3d(' + (x-wrapLeft-halfW) + 'px,' + (y-wrapTop-halfH) + 'px,0)' + (extra||'');
+  if(hasFired) return; // after release the sling band stays where it was let go
   const px = ((x-slingRect.left)/slingRect.width)*SVG_W;
   const py = ((y-slingRect.top)/slingRect.height)*SVG_H;
   bandL.setAttribute('x2', px); bandL.setAttribute('y2', py);
@@ -469,13 +470,18 @@ function snapBack(){
 function fire(fromX,fromY){
   hasFired = true;
   heart.style.transition='none';
-  // heart springs straight back to the sling (no flying up), then the tree blooms
-  const duration = 260;
+  const startX = fromX, startY = fromY;
+  const ctrlX = restX + (restX-fromX)*1.4;
+  const ctrlY = Math.min(fromY, restY) - 120;
+  const duration = 650;
   const t0 = performance.now();
+
   function step(now){
     const t = Math.min((now-t0)/duration, 1);
-    const e = 1 - Math.pow(1-t, 3);
-    placeHeart(fromX + (restX-fromX)*e, fromY + (restY-fromY)*e);
+    const it = 1-t;
+    const x = it*it*startX + 2*it*t*ctrlX + t*t*targetX;
+    const y = it*it*startY + 2*it*t*ctrlY + t*t*targetY;
+    placeHeart(x, y, ' scale(' + (1-0.3*t) + ') rotate(' + (t*260) + 'deg)');
     if(t<1){
       requestAnimationFrame(step);
     } else {
