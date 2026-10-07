@@ -3,7 +3,7 @@
 // itself, so it opens without the internet). The fragment never leaves the device; it is removed from the
 // address bar right away. `ip` lets the laptop reach the TV's real address at once and, for 4-digit codes,
 // limits sharing to laptops on the same network. See PROTOCOL.md section 8.
-import { CastReceiver, parseReceiverFragment } from './cast.js?v=13';
+import { CastReceiver, parseReceiverFragment } from './cast.js?v=14';
 
 const $ = id => document.getElementById(id);
 const video = $('video');
@@ -26,10 +26,12 @@ const END_TEXT = {
     timeout: 'The laptop did not connect in time.',
     error: 'Screen sharing could not start.',
     network: 'Screen sharing works only from a laptop on the same network as this TV.',
+    denied: 'The guest laptop was not allowed to share.',
 };
 const END_SUB = { network: 'Connect the laptop to the same Wi-Fi as this TV, then share again.' };
 
 function finish(reason) {
+    closeGuest(false);
     video.srcObject = null;
     note('');
     $('sound').hidden = true;
@@ -39,6 +41,37 @@ function finish(reason) {
         else if (bridge && typeof bridge.close === 'function') bridge.close();
     }, reason === 'stopped' ? 800 : reason === 'network' ? 6000 : 3000);
 }
+
+// ---------- guest sharing: a laptop on another network asks first ----------
+
+let guestDone = null;
+
+/** Shows the question with the check number; resolves true (Allow) or false (Don't allow). */
+function askGuest(pin) {
+    closeGuest(false);
+    $('guestPin').textContent = String(pin || '');
+    $('guest').hidden = false;
+    $('guestAllow').focus();
+    return new Promise(resolve => { guestDone = resolve; });
+}
+
+function closeGuest(answer) {
+    const done = guestDone;
+    guestDone = null;
+    $('guest').hidden = true;
+    if (done) done(answer);
+}
+
+$('guestAllow').addEventListener('click', () => closeGuest(true));
+$('guestDeny').addEventListener('click', () => closeGuest(false));
+// The remote's arrows move between the two buttons (no spatial navigation in the TV's WebView).
+document.addEventListener('keydown', e => {
+    if ($('guest').hidden) return;
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        e.preventDefault();
+        (document.activeElement === $('guestAllow') ? $('guestDeny') : $('guestAllow')).focus();
+    }
+});
 
 const T0 = (performance && performance.now) ? performance.now() : 0;
 const since = () => Math.round(performance.now() - T0) + 'ms';
@@ -96,7 +129,7 @@ async function play(stream) {
 }
 
 function unmute() {
-    if (!video.srcObject) return;
+    if (!video.srcObject || !$('guest').hidden) return;
     video.muted = false;
     video.play().then(() => { $('sound').hidden = true; }).catch(() => { video.muted = true; });
 }
@@ -124,6 +157,7 @@ function main() {
         onend: reason => finish(reason),
         extraStats: frameStats,
         video: window.OfficeTvVideo || null, // Office TV 3.7+: the laptop's stream decoded by the TV's hardware
+        approve: askGuest,                    // Office TV 4.3+: a laptop on another network may share once allowed
     }));
     window.__otvCast = rx; // for tests
     document.addEventListener('keydown', unmute);

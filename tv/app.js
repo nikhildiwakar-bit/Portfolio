@@ -7,7 +7,7 @@
 // each time. Nothing talks to the relay until Share screen is pressed, and the relay connection is closed
 // again when sharing ends.
 import { ALPHABET, CONTROLLER_URL, DEFAULT_RELAY, TvLink, cleanName, displayCode, normalizeCode, normalizeRelay, parsePairFragment } from './otv.js?v=4';
-import { CastSender, captureScreen, senderSupport } from './cast.js?v=13';
+import { CastSender, captureScreen, senderSupport } from './cast.js?v=14';
 
 const $ = id => document.getElementById(id);
 const INFO_KEY = 'officetv.info';
@@ -133,7 +133,9 @@ function castProblem(code, err, s) {
         case 'offline':
             return { title: 'This laptop seems to be offline.', text: 'Check the internet connection, then try again.' };
         case 'network':
-            return { title: 'Screen sharing works only from a laptop on the same network as this TV.', text: 'Connect the laptop to the same Wi-Fi as the TV, then try again.' };
+            return { title: 'Screen sharing works only from a laptop on the same network as this TV.', text: 'Connect the laptop to the same Wi-Fi as the TV, or update the Office TV app on the TV (4.3 or newer allows guests on other networks).' };
+        case 'denied':
+            return { title: 'The TV did not allow this laptop.', text: 'This laptop is on another network. Ask someone at the TV to press OK when the request appears, then share again.' };
         case 'relay':
             return { title: 'The connection service did not respond.', text: 'Please try again in a moment.' };
         case 'tv':
@@ -246,6 +248,7 @@ function onCastState(s, st, d) {
         return;
     }
     s.phase = st;
+    if (st === 'approval') s.startedAt = 0; // the clock starts when the TV allows it
     if (st === 'sharing' && !s.startedAt) s.startedAt = Date.now();
     render();
 }
@@ -360,7 +363,15 @@ const LIVE_TEXT = {
     connecting: ['Connecting', 'Connecting to {tv}…', 'The TV is getting ready. This takes a moment.'],
     sharing: ['Live', 'Sharing to {tv}', 'Everything in the screen, window or tab you picked is visible on the TV.'],
     reconnecting: ['Reconnecting', 'Reconnecting to {tv}…', 'The connection dropped for a moment. Trying again.'],
+    approval: ['Waiting', 'Waiting for {tv} to allow this laptop…', 'This laptop is on another network, so someone at the TV must press OK. Check that the TV shows the number {pin}.'],
 };
+
+/** The live panel's line for a phase, with the TV's name and the guest check number filled in. */
+function liveLine(s, i) {
+    const t = (LIVE_TEXT[s.phase] || LIVE_TEXT.starting)[i];
+    const pin = (s.sender && s.sender.guestPin) || '';
+    return t.replace('{tv}', tvName(s)).replace('{pin}', pin);
+}
 const SLOW_TEXT = 'No answer from the TV yet. Check that the code matches the one on the TV.';
 
 /** Clock and slow-connection hint, every second while the live panel shows. */
@@ -372,7 +383,7 @@ function tick() {
     $('liveClock').textContent = on ? hms(Date.now() - s.startedAt) : '';
     if (s && LIVE_TEXT[s.phase] && s.phase !== 'sharing' && s.phase !== 'reconnecting') {
         const slow = (s.phase === 'starting' || s.phase === 'waiting') && Date.now() - s.clickedAt > (TEST.slowMs || SLOW_MS);
-        $('liveText').textContent = slow ? SLOW_TEXT : LIVE_TEXT[s.phase][2];
+        $('liveText').textContent = slow ? SLOW_TEXT : liveLine(s, 2);
     }
 }
 
@@ -454,12 +465,12 @@ function render() {
     }
 
     if (view === 'live') {
-        const [chip, title, text] = LIVE_TEXT[s.phase] || LIVE_TEXT.starting;
+        const chip = liveLine(s, 0);
         const name = tvName(s);
         $('liveChip').textContent = chip;
         $('liveChip').classList.toggle('on', s.phase === 'sharing');
-        $('liveLabel').textContent = title.replace('{tv}', name);
-        $('liveText').textContent = text;
+        $('liveLabel').textContent = liveLine(s, 1);
+        $('liveText').textContent = liveLine(s, 2);
         $('stopLabel').textContent = s.phase === 'sharing' || s.phase === 'reconnecting' ? 'Stop sharing' : 'Cancel';
         $('onAir').hidden = s.phase !== 'sharing';
         $('veil').hidden = s.phase === 'sharing';
@@ -478,7 +489,8 @@ function render() {
             glimpse();
         }
         renderSound(s);
-        document.title = (s.phase === 'sharing' ? 'Sharing to ' : s.phase === 'reconnecting' ? 'Reconnecting to ' : 'Connecting to ') + name + ' · Office TV';
+        document.title = (s.phase === 'sharing' ? 'Sharing to ' : s.phase === 'reconnecting' ? 'Reconnecting to '
+            : s.phase === 'approval' ? 'Waiting for ' : 'Connecting to ') + name + ' · Office TV';
     } else {
         if ($('preview').srcObject) { clearInterval($('preview')._otvGlimpse); $('preview').srcObject = null; }
         document.title = 'Office TV · Share your laptop screen';

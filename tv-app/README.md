@@ -151,6 +151,15 @@ sound travels as uncompressed 16-bit PCM, 48 kHz stereo, in 10 ms chunks on the 
 (about 1.5 Mbit/s, PROTOCOL.md section 10); the TV keeps at most about 150 ms of it waiting, so it stays in step
 with the picture. A TV with an older Office TV shows the picture without sound.
 
+## Office TV 4.3 changes (guest sharing)
+
+- A laptop on another network (a guest on mobile data or a hotspot) can share with the 4-digit code: the TV
+  shows "A guest laptop wants to share its screen" with a 3-digit number that the guest's laptop shows too.
+  OK on the remote (or a tap on the panel) allows it; Back or "Don't allow" refuses; no answer in 90 s
+  refuses. Nothing from the laptop (picture, sound or direct video) reaches the screen before the OK.
+- Laptops on the school network connect as before, with no question.
+- For guests behind mobile data, set up the free TURN relay once: see turn-worker/README.md.
+
 ## Office TV 4.2 changes (long meetings)
 
 - Wi-Fi hiccups no longer end a share: the laptop reconnects as often as needed (for up to 90 s each time),

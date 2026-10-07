@@ -12,6 +12,67 @@ import { DirectSender, FrameAssembler, directSupported, toBase64 } from './direc
 
 export const RECEIVER_URL = 'https://nikhildiwakar-bit.github.io/Portfolio/tv/receive.html';
 export const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+/**
+ * The school's TURN credentials service (tv-app/turn-worker, a Cloudflare Worker): short-lived TURN servers,
+ * so a guest laptop on another network (or behind Wi-Fi isolation) still reaches the TV through a relay.
+ * '' = STUN only: on the same network nothing changes; across networks it works only where NAT allows.
+ */
+export const ICE_URL = '';
+
+let iceCache = null;
+
+/** Only well-formed STUN/TURN entries (at most 8), with string credentials. */
+export function validIceServers(list) {
+    const out = [];
+    for (const e of Array.isArray(list) ? list : []) {
+        if (!e || typeof e !== 'object') continue;
+        const urls = [].concat(e.urls || e.url || []).filter(u => typeof u === 'string' && /^(stun|turns?):[^\s]{3,200}$/.test(u));
+        if (!urls.length) continue;
+        const entry = { urls };
+        if (urls.some(u => /^turns?:/.test(u))) {
+            if (typeof e.username !== 'string' || typeof e.credential !== 'string') continue;
+            entry.username = e.username;
+            entry.credential = e.credential;
+        }
+        out.push(entry);
+        if (out.length >= 8) break;
+    }
+    return out;
+}
+
+export const hasTurn = servers => (servers || []).some(e => [].concat(e.urls || []).some(u => /^turns?:/.test(u)));
+
+/**
+ * ICE servers for a new connection: STUN, plus TURN from ICE_URL when it is set (cached for an hour; the
+ * credentials last 8 h). Never fails and never waits more than timeoutMs: STUN only if the service is down.
+ */
+export async function loadIceServers({ url = ICE_URL, fetch: f = globalThis.fetch, timeoutMs = 2500, now = Date.now } = {}) {
+    if (!url || typeof f !== 'function') return ICE_SERVERS;
+    if (iceCache && iceCache.url === url && now() - iceCache.at < 3600000) return iceCache.servers;
+    let timer = null;
+    try {
+        const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+        const r = await Promise.race([
+            f(url, { cache: 'no-store', signal: ctl ? ctl.signal : undefined }),
+            new Promise((_, reject) => { timer = setTimeout(() => { if (ctl) ctl.abort(); reject(new Error('timeout')); }, timeoutMs); }),
+        ]);
+        clearTimeout(timer);
+        if (!r || !r.ok) return ICE_SERVERS;
+        const list = validIceServers((await r.json() || {}).iceServers);
+        if (!hasTurn(list)) return ICE_SERVERS;
+        const servers = ICE_SERVERS.concat(list);
+        iceCache = { url, at: now(), servers };
+        return servers;
+    } catch (e) {
+        clearTimeout(timer);
+        return ICE_SERVERS;
+    }
+}
+
+/** Tests: forget the cached TURN servers. */
+export function resetIceCache() {
+    iceCache = null;
+}
 /** Max characters of signal payload per relay message; keeps each envelope well under 3,900 bytes. */
 export const SIGNAL_CHUNK = 2400;
 export const MAX_SIGNAL_PARTS = 8;
@@ -31,6 +92,8 @@ export const DEGRADATION_NEW = 'maintain-framerate-and-resolution';
 export const CONTENT_HINT = 'detail';
 /** ICE gathering wait: stop at 1.5 s, or as soon as a host and a server-reflexive (STUN) address are known. */
 export const ICE_WAIT_MS = 1500;
+/** With TURN configured: a little longer, for the relay candidate a guest on another network needs. */
+export const ICE_TURN_WAIT_MS = 2500;
 /** The tick worker of the steady frame rate (steady.js); relative to this module, so the TV app can serve it too. */
 const TICK_URL = (() => { try { return new URL('./tick.js', import.meta.url).href; } catch (e) { return ''; } })();
 /** The receiver ended the session because the laptop is not on the TV's network (4-digit codes). */
@@ -64,6 +127,10 @@ function relayProblem(e) {
 }
 
 /** The TV ended the session because this laptop is on another network (4-digit codes, receiver LAN check). */
+function deniedError() {
+    return castError('denied', 'The TV did not allow sharing.');
+}
+
 function networkError() {
     const e = castError('network', NETWORK_TEXT);
     e.lan = true;
@@ -211,8 +278,25 @@ export function readControl(data) {
     if (typeof data !== 'string' || data.length > 2048 || data[0] !== '{') return null;
     let m;
     try { m = JSON.parse(data); } catch (e) { return null; }
-    if (!m || (m.type !== 'native' && m.type !== 'keyframe' && m.type !== 'video')) return null;
+    if (!m || (m.type !== 'native' && m.type !== 'keyframe' && m.type !== 'video' && m.type !== 'guest')) return null;
     return m;
+}
+
+/**
+ * Guest sharing (a laptop on another network): a 3-digit check number both sides derive from the session id,
+ * so the person at the TV can see that the request is from the guest in the room before pressing OK.
+ */
+export async function guestPin(session) {
+    const subtle = globalThis.crypto && globalThis.crypto.subtle;
+    const data = new TextEncoder().encode('otv-guest:' + String(session || ''));
+    let n = 0;
+    if (subtle) {
+        const h = new Uint8Array(await subtle.digest('SHA-256', data));
+        n = ((h[0] << 16) | (h[1] << 8) | h[2]) % 1000;
+    } else {
+        for (const b of data) n = (n * 31 + b) % 1000;
+    }
+    return String(n).padStart(3, '0');
 }
 
 /** Codecs for the TV's answer: H.264 (packetization-mode=1, constrained baseline first), then VP8, VP9, the rest. */
@@ -735,7 +819,7 @@ export class CastChannel {
  * After an ICE restart: setLocalDescription starts a new gathering a moment later, so iceGatheringState can
  * still read 'complete' from the old one. Wait for the new gathering to begin (briefly) before collecting.
  */
-export async function iceRestartGathered(pc, ms = ICE_WAIT_MS) {
+export async function iceRestartGathered(pc, ms = ICE_WAIT_MS, opts = {}) {
     if (pc.iceGatheringState === 'complete' && typeof pc.addEventListener === 'function') {
         await new Promise(resolve => {
             const done = () => { clearTimeout(t); pc.removeEventListener('icegatheringstatechange', done); resolve(); };
@@ -743,10 +827,11 @@ export async function iceRestartGathered(pc, ms = ICE_WAIT_MS) {
             pc.addEventListener('icegatheringstatechange', done);
         });
     }
-    return iceGathered(pc, ms);
+    return iceGathered(pc, ms, opts);
 }
 
-export function iceGathered(pc, ms = ICE_WAIT_MS) {
+/** relay: TURN is configured, so a relay candidate is waited for too (the one a guest on another network needs). */
+export function iceGathered(pc, ms = ICE_WAIT_MS, { relay = false } = {}) {
     if (pc.iceGatheringState === 'complete') return Promise.resolve(true);
     return new Promise(resolve => {
         const t = setTimeout(() => { cleanup(); resolve(false); }, ms);
@@ -758,8 +843,9 @@ export function iceGathered(pc, ms = ICE_WAIT_MS) {
             if (!e.candidate) { cleanup(); resolve(true); return; }
             const c = e.candidate;
             const type = c.type || (/ typ (\w+)/.exec(c.candidate || '') || [])[1] || '';
-            seen.add(type === 'relay' ? 'srflx' : type);
-            if (seen.has('host') && seen.has('srflx')) { cleanup(); resolve(true); }
+            seen.add(type);
+            const reachable = seen.has('srflx') || (!relay && seen.has('relay'));
+            if (seen.has('host') && reachable && (!relay || seen.has('relay'))) { cleanup(); resolve(true); }
         };
         function cleanup() {
             clearTimeout(t);
@@ -838,7 +924,7 @@ export function sameNetworkAddress(address, tvIp) {
 }
 
 const connState = pc => pc.connectionState || pc.iceConnectionState;
-const SENDER_LIVE = ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting'];
+const SENDER_LIVE = ['starting', 'waiting', 'connecting', 'sharing', 'reconnecting', 'approval'];
 
 /**
  * Laptop side.
@@ -865,8 +951,10 @@ export class CastSender {
     constructor({
         link, RTCPeerConnection: PC, onstate, window: w,
         ackTimeoutMs = 20000, answerTimeoutMs = 30000, connectTimeoutMs = 20000, dropMs = 3000, reconnectTimeoutMs = 12000,
-        lostMs = 90000, repeatMs = 2000,
+        lostMs = 90000, repeatMs = 2000, iceUrl, fetch: fetchIce,
     } = {}) {
+        this._iceUrl = iceUrl;   // tests; default ICE_URL
+        this._fetchIce = fetchIce;
         this.link = link;
         this.state = 'idle';
         this.onstate = onstate || null;
@@ -944,6 +1032,7 @@ export class CastSender {
         }
         const log = timingLog('tx');
         this._log = log;
+        const iceP = loadIceServers({ url: this._iceUrl, fetch: this._fetchIce });
         this.session = newId(16);
         this.short = isShortCode(this.link.code);
         const ch = new CastChannel({ link: this.link, session: this.session, out: 'c2r' });
@@ -975,7 +1064,10 @@ export class CastSender {
             }
         }
         log('steady', this.steady ? STEADY_FPS + 'fps' : 'off');
-        const pc = new this._PC({ iceServers: ICE_SERVERS });
+        const iceServers = await iceP;
+        this._turn = hasTurn(iceServers);
+        if (!this.active) return;
+        const pc = new this._PC({ iceServers });
         this.pc = pc;
         this.videoSender = addMedia(pc, media, this._w);
         const dc = pc.createDataChannel('otv');
@@ -995,6 +1087,7 @@ export class CastSender {
             if (this.dc !== dc) return;
             if (e.data === 'bye') { this.stop('tv'); return; }
             if (e.data === 'bye:network') { this._fail(networkError(), false); return; }
+            if (e.data === 'bye:denied') { this._fail(deniedError(), false); return; }
             const ctl = readControl(e.data);
             if (ctl) { this._onControl(ctl); return; }
             const st = readReceiverMessage(e.data);
@@ -1009,7 +1102,7 @@ export class CastSender {
         pc.addEventListener('iceconnectionstatechange', () => this._onConn());
         const offer = (async () => {
             await pc.setLocalDescription(await pc.createOffer());
-            await iceGathered(pc);
+            await iceGathered(pc, this._turn ? ICE_TURN_WAIT_MS : ICE_WAIT_MS, { relay: this._turn });
             log('ice-gathered');
         })();
         offer.catch(() => {});
@@ -1084,6 +1177,21 @@ export class CastSender {
     // ---------- direct video (direct.js): the TV app decodes the laptop's own stream natively ----------
 
     _onControl(m) {
+        if (m.type === 'guest') {
+            // Another network: the TV asks the person in front of it first (the same check number on both screens).
+            if (m.state === 'waiting' && this.state === 'sharing') {
+                this.guestPin = /^\d{3}$/.test(String(m.pin)) ? String(m.pin) : '';
+                this._guestPending = true;
+                this._set('approval');
+            } else if (m.state === 'allowed') {
+                this._guestPending = false;
+                if (this.state === 'approval') {
+                    this._set('sharing');
+                    this._startAdapt();
+                }
+            }
+            return;
+        }
         if (m.type === 'native') {
             if (m.off) this._stopDirect('tv');
             else if (!this.direct && !this._directTried && directSupported(this._w)) this._startDirect(m).catch(() => this._stopDirect('error'));
@@ -1260,7 +1368,8 @@ export class CastSender {
         } else if (cast === 'bye') {
             // The receiver gave up (e.g. it could not use the offer), closed, or refused this laptop's network.
             if (data === 'network') this._fail(networkError(), false);
-            else if (this.state === 'sharing' || this.state === 'reconnecting') this.stop('tv');
+            else if (data === 'denied') this._fail(deniedError(), false);
+            else if (this.state === 'sharing' || this.state === 'reconnecting' || this.state === 'approval') this.stop('tv');
             else this._fail(castError('tv_error', 'The TV could not show the screen.'), false);
         }
     }
@@ -1275,13 +1384,13 @@ export class CastSender {
                 clearTimeout(this._restartTimer);
                 if (this.state === 'reconnecting') { this._reconnectGen++; this._stopRepeat(); } // the loop stops
                 if (this._log) this._log(this.state === 'connecting' ? 'connected' : 'reconnected');
-                this._set('sharing');
+                this._set(this._guestPending ? 'approval' : 'sharing'); // still waiting for the OK at the TV
                 tuneSender(this.videoSender, this.fpsLevel);
                 this._startAdapt();
             }
         } else if (s === 'failed') {
             this._dropped();
-        } else if (s === 'disconnected' && this.state === 'sharing') {
+        } else if (s === 'disconnected' && (this.state === 'sharing' || this.state === 'approval')) {
             // Often a short Wi-Fi hiccup that heals by itself; restart only if it lasts.
             clearTimeout(this._dropTimer);
             this._dropTimer = setTimeout(() => {
@@ -1293,7 +1402,7 @@ export class CastSender {
 
     _dropped() {
         if (this.state === 'reconnecting') return; // the reconnect loop decides
-        if (this.state === 'sharing') this.reconnect();
+        if (this.state === 'sharing' || this.state === 'approval') this.reconnect();
         else this._fail(castError('ice', 'Could not connect to the TV.'));
     }
 
@@ -1304,7 +1413,7 @@ export class CastSender {
      * longer than that (graceMs). Resolves true once connected again.
      */
     async reconnect() {
-        if (this.state !== 'sharing' || !this.pc) return false;
+        if ((this.state !== 'sharing' && this.state !== 'approval') || !this.pc) return false;
         this.reconnects++;
         const gen = ++this._reconnectGen;
         clearTimeout(this._dropTimer);
@@ -1329,7 +1438,7 @@ export class CastSender {
                     try { await pc.setLocalDescription({ type: 'rollback' }); } catch (e) { /* a fresh offer replaces it */ }
                 }
                 await pc.setLocalDescription(await pc.createOffer({ iceRestart: true }));
-                await iceRestartGathered(pc);
+                await iceRestartGathered(pc, this._turn ? ICE_TURN_WAIT_MS : ICE_WAIT_MS, { relay: this._turn });
                 if (!going()) break;
                 const answer = this._expect(Math.min(this._reconnectTimeoutMs, left), 'lost', 'The connection to the TV was lost.');
                 this._repeatSignal('offer', await encodeSignal(pc.localDescription, { compress: false }));
@@ -1513,6 +1622,7 @@ export class CastReceiver {
     constructor({
         code, relay, session, ip = '', RTCPeerConnection: PC, fetch: fetchFn, EventSource: ES, WebSocket: WS, brokers, repeatMs,
         offerTimeoutMs = 90000, graceMs = 120000, statsMs = STATS_MS, extraStats = null, onstate, ontrack, onend, window: w, video = null,
+        approve = null, approveMs = 90000, iceServers = null,
     } = {}) {
         this._w = w || globalThis;
         // The TV's LAN address (receiver URL ip=): added to the answer next to the hidden .local candidates, and
@@ -1556,6 +1666,13 @@ export class CastReceiver {
         this._gotOffer = false;
         this._lastOffer = '';
         this._graceTimer = null;
+        // Guest sharing: a laptop on another network may share once someone at the TV allows it.
+        // approve(pin) -> Promise<boolean> shows the question on the TV; without it such a laptop is refused.
+        this._approve = typeof approve === 'function' ? approve : null;
+        this._approveMs = approveMs;
+        this.guest = false;
+        this._iceServers = iceServers; // tests; the page loads them with loadIceServers()
+        this._fetchIceFn = fetchFn ? (...a) => fetchFn(...a) : undefined;
     }
 
     _set(s, detail) {
@@ -1569,6 +1686,8 @@ export class CastReceiver {
     async start() {
         this._log = timingLog('rx');
         this._set('waiting');
+        // TURN (if configured) loads while the TV waits for the offer.
+        this._iceP = this._iceServers ? Promise.resolve(this._iceServers) : loadIceServers({ fetch: this._fetchIceFn });
         // since=5m: the laptop may publish the offer before this page finished loading; ntfy replays it.
         // 4-digit codes also use the MQTT brokers, which keep no history: the channel says 'ready' until the
         // offer comes (announce), and the laptop then sends it again.
@@ -1604,7 +1723,10 @@ export class CastReceiver {
         this._lastOffer = data;
         this._set('connecting');
         this._log('offer');
-        const pc = new this._PC({ iceServers: ICE_SERVERS });
+        const iceServers = await (this._iceP || Promise.resolve(ICE_SERVERS));
+        if (this.state === 'ended') return;
+        this._turn = hasTurn(iceServers);
+        const pc = new this._PC({ iceServers });
         this.pc = pc;
         pc.addEventListener('track', e => {
             this.lowLatency = lowLatencyReceiver(e.receiver) || this.lowLatency || '';
@@ -1630,7 +1752,7 @@ export class CastReceiver {
         }
         this.codecPrefs = preferReceiveCodecs(pc, this._w);
         await pc.setLocalDescription(await pc.createAnswer());
-        await iceGathered(pc);
+        await iceGathered(pc, this._turn ? ICE_TURN_WAIT_MS : ICE_WAIT_MS, { relay: this._turn });
         this._log('ice-gathered');
         if (this.state === 'ended') return;
         await this._sendAnswer(data, await encodeSignal(this._answerDesc(pc)));
@@ -1670,26 +1792,67 @@ export class CastReceiver {
         const ok = sameNetworkAddress(this.remoteAddress, this.ip);
         this._log('network', (ok ? 'ok ' : 'refused ') + (this.remoteAddress || 'unknown') + ' tv=' + (this.ip || 'unknown'));
         if (!ok) {
-            this._refuseNetwork();
-            return;
+            if (!this._approve) { this._refuseNetwork(); return; }
+            // One question per session: a connection blip while it is on screen must not ask (and refuse) again.
+            if (this._asking) return;
+            this._asking = true;
+            let allowed = false;
+            try { allowed = await this._askGuest(pc); } finally { this._asking = false; }
+            if (!allowed) return;
         }
         this.lanChecked = true;
         const m = this._media;
         this._media = null;
         if (m) this._show(m[0], m[1]);
+        this._helloNative(); // direct video only once the laptop may be shown
+    }
+
+    /**
+     * A laptop on another network: tell it to wait (with the check number), ask the person at the TV, and
+     * either go on (true) or end with 'denied' (no answer within approveMs counts as no).
+     */
+    async _askGuest(pc) {
+        this.guest = true;
+        const pin = await guestPin(this.session);
+        if (this.pc !== pc || this.state === 'ended') return false;
+        this._sendControlSoon({ type: 'guest', state: 'waiting', pin });
+        this._log('guest', 'asking pin=' + pin);
+        let allowed = false;
+        let timer = null;
+        try {
+            allowed = await Promise.race([
+                Promise.resolve(this._approve(pin)).then(v => v === true, () => false),
+                new Promise(r => { timer = setTimeout(() => r(false), this._approveMs); }),
+            ]);
+        } finally {
+            clearTimeout(timer);
+        }
+        if (this.pc !== pc || this.state === 'ended') return false;
+        this._log('guest', allowed ? 'allowed' : 'denied');
+        if (!allowed) {
+            this._refuse('denied');
+            return false;
+        }
+        this._sendControlSoon({ type: 'guest', state: 'allowed' });
+        return true;
     }
 
     /** Tells the laptop why (data channel if open, and the relay), then ends with 'network'. */
     _refuseNetwork() {
+        this._refuse('network');
+    }
+
+    /** reason 'network' (another network, no guest sharing here) | 'denied' (the person at the TV said no). */
+    _refuse(reason) {
         const dc = this.dc;
         if (dc && dc.readyState === 'open') {
-            try { dc.send('bye:network'); } catch (e) { /* the relay message below still goes */ }
+            try { dc.send('bye:' + reason); } catch (e) { /* the relay message below still goes */ }
         }
-        if (this.channel) this.channel.send('bye', 'network').catch(() => {});
+        if (this.channel) this.channel.send('bye', reason).catch(() => {});
         this._media = null;
-        this._refused = true; // the laptop closing its end now does not make this a plain 'stopped'
+        this._refused = reason; // the laptop closing its end now does not make this a plain 'stopped'
         // A moment for the goodbye to leave before the connection closes.
-        this._ending = setTimeout(() => this.end('network'), 600);
+        this._ending = setTimeout(() => this.end(reason), 600);
     }
 
     /** The laptop's data channel: 'bye' and its closing end the session; once open, stats go out on it. */
@@ -1703,7 +1866,7 @@ export class CastReceiver {
             if (ctl && ctl.type === 'video') this._onVideoControl(ctl);
         });
         // Tell the laptop this TV can show its own stream through the hardware decoder (direct video).
-        const hello = () => this._helloNative();
+        const hello = () => { this._flushControl(); this._helloNative(); };
         if (dc.readyState === 'open') hello();
         else dc.addEventListener('open', hello);
         // The laptop closed the connection (tab closed, sharing stopped). A close while the network is down is the
@@ -1723,6 +1886,8 @@ export class CastReceiver {
     _helloNative() {
         const v = this.video;
         if (!v || typeof v.caps !== 'function' || this._helloSent) return;
+        if (this.lanOnly && !this.lanChecked) return; // not before the network check (or the guest's OK)
+        if (!this.dc || this.dc.readyState !== 'open') return;
         let caps;
         try { caps = JSON.parse(v.caps()); } catch (e) { return; }
         if (!caps || !Array.isArray(caps.codecs) || !caps.codecs.length) return;
@@ -1740,9 +1905,23 @@ export class CastReceiver {
         }
     }
 
+    /** Like _sendControl, but kept until the data channel opens (it may open after the connection is up). */
+    _sendControlSoon(obj) {
+        const dc = this.dc;
+        if (dc && dc.readyState === 'open') { this._sendControl(obj); return; }
+        (this._ctlQueue = this._ctlQueue || []).push(obj);
+    }
+
+    _flushControl() {
+        const q = this._ctlQueue || [];
+        this._ctlQueue = [];
+        for (const o of q) this._sendControl(o);
+    }
+
     _onVideoControl(m) {
         const v = this.video;
         if (!v) return;
+        if (m.state === 'start' && this.lanOnly && !this.lanChecked) return; // nothing on screen before that
         if (m.state === 'start') {
             let ok = false;
             try { ok = !!v.start(String(m.codec || ''), m.width | 0, m.height | 0); } catch (e) { ok = false; }
@@ -1835,7 +2014,7 @@ export class CastReceiver {
         const pc = this.pc;
         await pc.setRemoteDescription(desc);
         await pc.setLocalDescription(await pc.createAnswer());
-        await iceRestartGathered(pc);
+        await iceRestartGathered(pc, this._turn ? ICE_TURN_WAIT_MS : ICE_WAIT_MS, { relay: this._turn });
         if (this.state === 'ended' || this.pc !== pc) return;
         await this._sendAnswer(data, await encodeSignal(this._answerDesc(pc)));
     }
@@ -1897,7 +2076,7 @@ export class CastReceiver {
 
     end(reason, err) {
         if (this.state === 'ended') return;
-        if (this._refused) reason = 'network';
+        if (this._refused) reason = this._refused;
         clearTimeout(this._ending);
         clearTimeout(this._offerTimer);
         clearTimeout(this._graceTimer);
@@ -1907,7 +2086,7 @@ export class CastReceiver {
         // Tell the laptop at once (it otherwise keeps trying to reconnect), over the data channel and the relay.
         let bye = null;
         // Not when the laptop ended it, or when it is told separately (network refusal, setup error).
-        if (!this._byLaptop && reason !== 'network' && reason !== 'error') {
+        if (!this._byLaptop && reason !== 'network' && reason !== 'denied' && reason !== 'error') {
             const dc = this.dc;
             if (dc && dc.readyState === 'open') { try { dc.send('bye'); } catch (e) { /* the relay copy goes */ } }
             if (this.channel && this.pc) bye = this.channel.send('bye', reason).catch(() => {});
