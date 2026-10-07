@@ -659,13 +659,22 @@ function renderPeople(list){
 }
 
 
-/* ---------- today's birthdays come from the server (/api/birthdays) ---------- */
+/* ---------- today's birthdays ----------
+   With server.py running: /api/birthdays (Nucleus).
+   Static hosting (GitHub Pages): falls back to staff.json in this folder. */
 (async()=>{
   const q = new URLSearchParams(location.search).get('date');
   try{
-    const r = await fetch('/api/birthdays' + (q ? '?date='+encodeURIComponent(q) : ''), {cache:'no-store'});
+    const r = await fetch('api/birthdays' + (q ? '?date='+encodeURIComponent(q) : ''), {cache:'no-store'});
+    if(!r.ok || !(r.headers.get('content-type')||'').includes('json')) throw 0;
     renderPeople(await r.json());
-  }catch(e){ renderPeople([]); }
+  }catch(e){
+    try{
+      const all = await (await fetch('staff.json', {cache:'no-store'})).json();
+      const md = todayMD();
+      renderPeople(all.filter(p=>p.dob && p.dob.slice(5,10)===md));
+    }catch(e2){ renderPeople([]); }
+  }
 })();
 </script>
 
