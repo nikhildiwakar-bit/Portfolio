@@ -292,7 +292,7 @@ playBtn.addEventListener('click', ()=>{
 /* ---------- Nucleus data (photo + years) ---------- */
 /* TODO: API key / endpoint / employee id milne par yahan bharna hai */
 const NUCLEUS_CONFIG = {
-  apiUrl: '/api/employee',   // Nucleus se connect karte waqt yahan asli URL aayega
+  apiUrl: 'data/employees.json', // abhi sample data (GitHub Pages par bhi chalta hai); Nucleus milne par asli URL
   apiKey: '',                // Nucleus API key (localhost mock me zaroorat nahi)
   getEmployeeId: ()=> new URLSearchParams(location.search).get('empId') || '101'
 };
@@ -329,7 +329,9 @@ async function fetchFromNucleus(){
       headers: NUCLEUS_CONFIG.apiKey ? { 'Authorization': 'Bearer ' + NUCLEUS_CONFIG.apiKey } : {}
     });
     if(!res.ok) throw new Error('HTTP ' + res.status);
-    const json = await res.json();
+    let json = await res.json();
+    if(json && json[empId]) json = json[empId];   /* sample file me sab employees ek saath hain */
+    else if(json && !json.name && !json.photoUrl) return;
     /* response ke field names Nucleus ke hisaab se yahan map honge */
     applyEmployee({ name: json.name, photoUrl: json.photoUrl, years: json.years });
   }catch(err){
